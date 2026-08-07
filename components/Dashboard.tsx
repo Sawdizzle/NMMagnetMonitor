@@ -17,12 +17,12 @@ const POLL_MS = 30_000;
 const HISTORY_HOURS = 1;
 
 const METRICS: { key: keyof TelemetrySample; label: string; unit: string; color: string }[] = [
-  { key: "he_lvl", label: "He Lvl", unit: "%", color: "#5b8def" },
-  { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#2fd47a" },
-  { key: "he_press", label: "He Press", unit: "psi", color: "#f0a84a" },
-  { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#e15b8f" },
-  { key: "shield", label: "Shield", unit: "", color: "#a679f2" },
-  { key: "cs1", label: "CS1", unit: "", color: "#4ad4d4" },
+  { key: "he_lvl", label: "He Lvl", unit: "%", color: "#22d3ee" },
+  { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#5b93f7" },
+  { key: "he_press", label: "He Press", unit: "psi", color: "#77dc3c" },
+  { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#fbbf24" },
+  { key: "shield", label: "Shield", unit: "", color: "#f0575a" },
+  { key: "cs1", label: "CS1", unit: "", color: "#a78bfa" },
 ];
 
 export default function Dashboard() {
@@ -47,8 +47,8 @@ export default function Dashboard() {
       supabase
         .from("telemetry_samples")
         .select("*")
-        .gte("recorded_at", historyCutoff)
-        .order("recorded_at", { ascending: true })
+        .gte("created_at", historyCutoff)
+        .order("created_at", { ascending: true })
         .limit(5000),
     ]);
 
@@ -90,13 +90,6 @@ export default function Dashboard() {
   const filteredAssets =
     statusFilter === "all" ? assets : assets.filter((a) => computeAssetHealth(a) === statusFilter);
 
-  const bySite = new Map<string, AssetWithTelemetry[]>();
-  for (const a of filteredAssets) {
-    const key = a.site?.name ?? "Unassigned";
-    if (!bySite.has(key)) bySite.set(key, []);
-    bySite.get(key)!.push(a);
-  }
-
   const onlineCount = assets.filter((a) => computeAssetHealth(a) === "online").length;
   const offlineCount = assets.filter((a) => computeAssetHealth(a) === "offline").length;
   const unknownCount = assets.filter((a) => computeAssetHealth(a) === "unknown").length;
@@ -110,7 +103,11 @@ export default function Dashboard() {
           </p>
           <h1 className="text-2xl md:text-3xl font-semibold">MagMon Fleet Dashboard</h1>
         </div>
-        <div className="flex items-center gap-6 font-mono-data text-sm" role="group" aria-label="Filter assets by status">
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-x-6 font-mono-data text-sm"
+          role="group"
+          aria-label="Filter assets by status"
+        >
           <StatusPill
             color={STATUS_COLORS.online}
             label={`${onlineCount} online`}
@@ -137,8 +134,17 @@ export default function Dashboard() {
               clear filter
             </button>
           )}
-          <span className="text-[var(--text-dim)]">
-            {lastRefreshed ? `updated ${lastRefreshed.toLocaleTimeString()}` : ""}
+          <span className="flex items-center gap-x-3 flex-wrap">
+            <span className="flex items-center gap-1.5 text-[var(--text-dim)]">
+              <span className="relative flex h-2 w-2" aria-hidden="true">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ backgroundColor: "var(--status-online)" }} />
+                <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: "var(--status-online)" }} />
+              </span>
+              LIVE
+            </span>
+            <span className="text-[var(--text-dim)]">
+              {lastRefreshed ? `updated ${lastRefreshed.toLocaleTimeString()}` : ""}
+            </span>
           </span>
         </div>
       </header>
@@ -160,18 +166,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="flex flex-col gap-10">
-        {[...bySite.entries()].map(([siteName, siteAssets]) => (
-          <section key={siteName}>
-            <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-              {siteName}
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {siteAssets.map((a) => (
-                <AssetCard key={a.id} asset={a} />
-              ))}
-            </div>
-          </section>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {filteredAssets.map((a) => (
+          <AssetCard key={a.id} asset={a} />
         ))}
       </div>
     </div>
@@ -197,6 +194,7 @@ function StatusPill({
       style={{
         backgroundColor: active ? "var(--bg-elevated)" : "transparent",
         border: active ? "1px solid var(--border)" : "1px solid transparent",
+        color: color,
       }}
     >
       <span
@@ -223,7 +221,7 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
         <div>
           <p className="font-semibold text-base">{asset.name}</p>
           <p className="text-xs text-[var(--text-dim)] mt-0.5">
-            {asset.magmon_version.toUpperCase()}
+            {asset.site?.name ?? "Unassigned site"} &middot; {asset.magmon_version.toUpperCase()}
           </p>
         </div>
         <FieldRing status={status} />

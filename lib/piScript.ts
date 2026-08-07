@@ -299,16 +299,15 @@ def parse_minutes(raw_html):
         raise RuntimeError("Parsed 0 rows.")
     return rows
 
-def parse_recorded_at(date_str, time_str):
-    # Device format: "19-Dec-25" "10:02"
-    dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%d-%b-%y %H:%M")
-    return dt.isoformat() + "Z"
-
 # ========= Report to Supabase =========
 def report(row):
+    # Timestamp using THIS machine's clock (the Pi), not the MagMon's.
+    # The Pi is a normal Linux box with internet access and keeps
+    # accurate time via NTP; the embedded MagMon controller does not.
+    recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     payload = {
         "p_gateway_token": GATEWAY_TOKEN,
-        "p_recorded_at": parse_recorded_at(row["Date"], row["Time"]),
+        "p_recorded_at": recorded_at,
         "p_he_lvl": row.get("HeLvl"),
         "p_he_press": row.get("HePress"),
         "p_h2o_flow": row.get("H20_Flow"),

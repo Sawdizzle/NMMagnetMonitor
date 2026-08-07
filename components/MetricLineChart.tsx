@@ -9,7 +9,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
-import type { TelemetrySample } from "@/lib/supabase";
+import type { TelemetryBucket } from "@/lib/supabase";
 
 export default function MetricLineChart({
   samples,
@@ -18,15 +18,16 @@ export default function MetricLineChart({
   unit,
   color,
 }: {
-  samples: TelemetrySample[]; // oldest-first
-  metricKey: keyof TelemetrySample;
+  samples: TelemetryBucket[]; // oldest-first, one row per 15-minute bucket
+  metricKey: keyof Omit<TelemetryBucket, "created_at" | "sample_count">;
   label: string;
   unit: string;
   color: string;
 }) {
   const chartData = samples.map((s) => ({
-    time: new Date(s.recorded_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    time: new Date(s.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     value: s[metricKey] as number | null,
+    count: s.sample_count,
   }));
 
   const hasData = chartData.some((d) => d.value !== null);
@@ -57,6 +58,13 @@ export default function MetricLineChart({
                 fontSize: 11,
               }}
               labelStyle={{ color: "var(--text-dim)" }}
+              formatter={(value, _name, item) => {
+                const count = (item?.payload as { count?: number } | undefined)?.count;
+                return [
+                  `${value ?? "—"}${unit ? ` ${unit}` : ""}${count ? ` (avg of ${count})` : ""}`,
+                  label,
+                ];
+              }}
             />
             <Line
               type="monotone"

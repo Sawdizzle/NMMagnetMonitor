@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { supabase, type Asset, type Site, type TelemetrySample } from "@/lib/supabase";
+import { supabase, type Asset, type Site, type TelemetrySample, type TelemetryBucket } from "@/lib/supabase";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -10,19 +10,20 @@ import MetricLineChart from "@/components/MetricLineChart";
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 24;
 
-const METRICS: { key: keyof TelemetrySample; label: string; unit: string; color: string }[] = [
-  { key: "he_lvl", label: "He Lvl", unit: "%", color: "#5b8def" },
-  { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#2fd47a" },
-  { key: "he_press", label: "He Press", unit: "psi", color: "#f0a84a" },
-  { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#e15b8f" },
-  { key: "shield", label: "Shield", unit: "", color: "#a679f2" },
-  { key: "cs1", label: "CS1", unit: "", color: "#4ad4d4" },
+const METRICS: { key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">; label: string; unit: string; color: string }[] = [
+  { key: "he_lvl", label: "He Lvl", unit: "%", color: "#22d3ee" },
+  { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#5b93f7" },
+  { key: "he_press", label: "He Press", unit: "psi", color: "#77dc3c" },
+  { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#fbbf24" },
+  { key: "shield", label: "Shield", unit: "", color: "#f0575a" },
+  { key: "cs1", label: "CS1", unit: "", color: "#a78bfa" },
 ];
 
 export default function AssetDetail({ assetId }: { assetId: string }) {
   const [asset, setAsset] = useState<Asset | null>(null);
   const [site, setSite] = useState<Site | null>(null);
-  const [samples, setSamples] = useState<TelemetrySample[]>([]);
+  const [latest, setLatest] = useState<TelemetrySample | null>(null);
+  const [buckets, setBuckets] = useState<TelemetryBucket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,27 +40,25 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       return;
     }
 
-    const historyCutoff = new Date(Date.now() - HISTORY_HOURS * 60 * 60 * 1000).toISOString();
-    const [{ data: siteRow }, { data: history, error: histErr }] = await Promise.all([
+    const [{ data: siteRow }, { data: latestRow }, { data: bucketRows, error: bucketErr }] = await Promise.all([
       supabase.from("sites").select("*").eq("id", assetRow.site_id).single(),
-      supabase
-        .from("telemetry_samples")
-        .select("*")
-        .eq("asset_id", assetId)
-        .gte("recorded_at", historyCutoff)
-        .order("recorded_at", { ascending: true })
-        .limit(2000),
+      supabase.from("latest_telemetry").select("*").eq("asset_id", assetId).maybeSingle(),
+      // Pre-aggregated in Postgres into 15-minute averaged buckets --
+      // at most 96 rows for a 24h window, regardless of how many raw
+      // readings a gateway actually sent.
+      supabase.rpc("asset_telemetry_15min", { p_asset_id: assetId, p_hours: HISTORY_HOURS }),
     ]);
 
-    if (histErr) {
-      setError(histErr.message);
+    if (bucketErr) {
+      setError(bucketErr.message);
       setLoading(false);
       return;
     }
 
     setAsset(assetRow);
     setSite(siteRow ?? null);
-    setSamples(history ?? []);
+    setLatest(latestRow ?? null);
+    setBuckets(bucketRows ?? []);
     setError(null);
     setLoading(false);
   }, [assetId]);
@@ -76,8 +75,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
 
   const status = computeAssetHealth(asset);
   const mins = minutesSince(asset.last_seen_at);
-  const latest = samples[samples.length - 1];
-  const tableRows = [...samples].reverse(); // newest-first for the table
+  const tableRows = [...buckets].reverse(); // newest-first for the table
 
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
@@ -114,13 +112,13 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       )}
 
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-        Trends (last 24 hours)
+        Trends (last 24 hours &middot; 15-min averages)
       </h2>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-10">
         {METRICS.map((m) => (
           <MetricLineChart
             key={m.key}
-            samples={samples}
+            samples={buckets}
             metricKey={m.key}
             label={m.label}
             unit={m.unit}
@@ -130,14 +128,17 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       </div>
 
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-        Recent readings ({tableRows.length} in last 24h)
+        Recent readings ({tableRows.length} &middot; 15-min averages, last 24h)
       </h2>
 
       {/* Mobile: stacked cards, no horizontal scroll needed */}
       <div className="flex flex-col gap-2 md:hidden">
-        {tableRows.slice(0, 200).map((s) => (
-          <div key={s.id} className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
-            <p className="text-xs text-[var(--text-dim)] mb-2">{new Date(s.recorded_at).toLocaleString()}</p>
+        {tableRows.map((s) => (
+          <div key={s.created_at} className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
+            <p className="text-xs text-[var(--text-dim)] mb-2 flex items-center justify-between">
+              <span>{new Date(s.created_at).toLocaleString()}</span>
+              <span className="text-[10px]">avg of {s.sample_count}</span>
+            </p>
             <div className="grid grid-cols-3 gap-2 font-mono-data text-sm">
               <ReadingCell label="He Lvl" value={s.he_lvl} />
               <ReadingCell label="He Press" value={s.he_press} />
@@ -167,13 +168,14 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
               <th className="px-3 py-2 font-normal">H2O Temp</th>
               <th className="px-3 py-2 font-normal">Shield</th>
               <th className="px-3 py-2 font-normal">CS1</th>
+              <th className="px-3 py-2 font-normal">Samples</th>
             </tr>
           </thead>
           <tbody>
-            {tableRows.slice(0, 200).map((s) => (
-              <tr key={s.id} className="border-b border-[var(--border)] last:border-0">
+            {tableRows.map((s) => (
+              <tr key={s.created_at} className="border-b border-[var(--border)] last:border-0">
                 <td className="px-3 py-2 text-[var(--text-muted)]">
-                  {new Date(s.recorded_at).toLocaleString()}
+                  {new Date(s.created_at).toLocaleString()}
                 </td>
                 <td className="px-3 py-2">{s.he_lvl ?? "—"}</td>
                 <td className="px-3 py-2">{s.he_press ?? "—"}</td>
@@ -181,28 +183,19 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
                 <td className="px-3 py-2">{s.h2o_temp ?? "—"}</td>
                 <td className="px-3 py-2">{s.shield ?? "—"}</td>
                 <td className="px-3 py-2">{s.cs1 ?? "—"}</td>
+                <td className="px-3 py-2 text-[var(--text-dim)]">{s.sample_count}</td>
               </tr>
             ))}
             {tableRows.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-[var(--text-dim)]">
+                <td colSpan={8} className="px-3 py-6 text-center text-[var(--text-dim)]">
                   No telemetry received yet.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-        {tableRows.length > 200 && (
-          <p className="text-xs text-[var(--text-dim)] px-3 py-2 border-t border-[var(--border)]">
-            Showing the most recent 200 of {tableRows.length} readings.
-          </p>
-        )}
       </div>
-      {tableRows.length > 200 && (
-        <p className="text-xs text-[var(--text-dim)] md:hidden mt-2">
-          Showing the most recent 200 of {tableRows.length} readings.
-        </p>
-      )}
     </div>
   );
 }

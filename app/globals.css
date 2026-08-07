@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap");
 @import "tailwindcss";
 
 :root {
@@ -9,18 +9,28 @@
   --border: #232a3a;
   --text: #e8ebf2;
   --text-muted: #8891a7;
-  --text-dim: #7c869c;
-  --accent: #5b8def;
-  --status-online: #2fd47a;
-  --status-offline: #f0475a;
+  --text-dim: #8b96ac;
+  --accent: #22d3ee;
+  --accent-foreground: #0a0d13;
+  --status-online: #77dc3c;
+  --status-offline: #f0575a;
   --status-unknown: #6b7280;
+  --status-warning: #fbbf24;
+
+  /* Chart series palette, in order, for the 6 tracked metrics */
+  --chart-1: #22d3ee; /* He Lvl - cyan */
+  --chart-2: #5b93f7; /* H2O Flow - blue */
+  --chart-3: #77dc3c; /* He Press - green */
+  --chart-4: #fbbf24; /* H2O Temp - amber */
+  --chart-5: #f0575a; /* Shield - red */
+  --chart-6: #a78bfa; /* CS1 - violet */
 }
 
 html,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
   overflow-x: hidden;
   max-width: 100vw;
@@ -75,7 +85,7 @@ button {
 }
 
 .font-mono-data {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
 /* 16px minimum on all form fields — anything smaller triggers unwanted
@@ -98,11 +108,11 @@ button {
 
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: var(--accent-foreground);
   border-radius: 0.375rem;
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
 }
 .btn-primary:hover {
   opacity: 0.9;

@@ -19,7 +19,7 @@ export function minutesSince(dateStr: string | null): number | null {
 }
 
 export const STATUS_COLORS: Record<HealthStatus, string> = {
-  online: "#22c55e",
-  offline: "#ef4444",
+  online: "#77dc3c",
+  offline: "#f0575a",
   unknown: "#a1a1aa",
 };

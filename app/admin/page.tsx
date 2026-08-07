@@ -486,7 +486,7 @@ function AdminPanel({ me }: { me: Session }) {
               <button type="button" onClick={() => setEditingAssetId(null)} className="btn-secondary">Cancel</button>
             </div>
             <p className="text-xs text-[var(--text-dim)]">
-              Note: if you change the local IP, port, username, or password here, re-download the install script for this asset so the Pi's copy matches.
+              Note: if you change the local IP, port, username, or password here, re-download the install script for this asset so the Pi&apos;s copy matches.
             </p>
           </form>
         </section>
