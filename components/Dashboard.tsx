@@ -229,37 +229,21 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
         <FieldRing status={status} />
       </div>
 
-     {/* Grid Container: 2 columns on iOS mobile, scaling up to 3/4 on larger screens */}
-<div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 ios-pb-safe">
-  {assets.map((asset) => (
-    <div
-      key={asset.id}
-      className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-900/80 p-3 shadow-md transition-transform active:scale-[0.98] touch-manipulation"
-    >
-      <div className="flex items-center justify-between gap-1 mb-2">
-        <h3 className="text-sm font-semibold truncate text-slate-100">
-          {asset.name}
-        </h3>
-        <span
-          className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${
-            asset.status === 'online' ? 'bg-emerald-500' : 'bg-amber-500'
-          }`}
-        />
+      <div className="grid grid-cols-3 gap-2">
+        {METRICS.map((m) => {
+          const value = asset.latest?.[m.key] as number | null | undefined;
+          const series = asset.history.map((h) => h[m.key] as number | null | undefined);
+          return (
+            <div key={m.key} className="rounded-md bg-[var(--bg-elevated)] px-2 py-1.5 flex flex-col gap-1">
+              <p className="text-[var(--text-dim)] text-[10px] uppercase tracking-wide">{m.label}</p>
+              <p className="font-mono-data text-sm text-[var(--text)]">
+                {value ?? "—"} <span className="text-[var(--text-dim)] text-[10px]">{m.unit}</span>
+              </p>
+              <MiniLineChart values={series} width={90} height={22} color={m.color} />
+            </div>
+          );
+        })}
       </div>
-
-      <div className="space-y-1 text-xs text-slate-400">
-        <div className="flex justify-between">
-          <span>Field:</span>
-          <span className="font-mono text-slate-200">{asset.fieldStrength}T</span>
-        </div>
-        <div className="flex justify-between">
-          <span>Temp:</span>
-          <span className="font-mono text-slate-200">{asset.temp}°C</span>
-        </div>
-      </div>
-    </div>
-  ))}
-</div>
 
       <div className="flex items-center justify-between text-xs text-[var(--text-dim)] pt-1 border-t border-[var(--border)]">
         <span className="capitalize" style={{ color: STATUS_COLORS[status] }}>
