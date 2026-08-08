@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { supabase, type Site, type Asset } from "@/lib/supabase";
-import { generatePiScript } from "@/lib/piScript";
+import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
 import Protected from "@/components/Protected";
 import type { Session } from "@/lib/auth";
 
@@ -297,15 +297,33 @@ function AdminPanel({ me }: { me: Session }) {
     setScriptForAsset(asset.id);
   }
 
-  function downloadScript() {
-    if (!scriptText) return;
-    const blob = new Blob([scriptText], { type: "text/x-python" });
+  function downloadFile(contents: string, filename: string, mime: string) {
+    const blob = new Blob([contents], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "nm-magmon-gateway.py";
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function downloadScript() {
+    if (!scriptText) return;
+    // Name the file per asset so nine downloads in a row don't overwrite
+    // each other in ~/Downloads and get installed on the wrong Pi.
+    const asset = assets.find((a) => a.id === scriptForAsset);
+    const suffix = asset ? `-${asset.name}` : "";
+    downloadFile(scriptText, `nm-magmon-gateway${suffix}.py`, "text/x-python");
+  }
+
+  function downloadUnitFile() {
+    const asset = assets.find((a) => a.id === scriptForAsset);
+    if (!asset) return;
+    downloadFile(
+      generateSystemdUnit({ assetName: asset.name }),
+      "nm-magmon-gateway.service",
+      "text/plain"
+    );
   }
 
   return (
@@ -511,7 +529,18 @@ function AdminPanel({ me }: { me: Session }) {
               Regenerate with this interval
             </button>
             <button onClick={downloadScript} className="btn-primary">Download script</button>
+            <button onClick={downloadUnitFile} className="btn-secondary">Download systemd unit</button>
           </div>
+          <p className="mb-3 text-xs rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-muted)]">
+            <strong className="text-[var(--text)]">Run this under systemd, not cron.</strong>{" "}
+            The collector runs continuously and sleeps between polls on its own. A
+            cron entry would launch an additional copy on every tick while the
+            earlier copies keep running. Install both files, then:{" "}
+            <code className="font-mono-data">sudo systemctl enable --now nm-magmon-gateway</code>{" "}
+            and confirm with{" "}
+            <code className="font-mono-data">pgrep -c -f nm-magmon-gateway</code>{" "}
+            (must print 1).
+          </p>
           <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4 overflow-x-auto text-xs font-mono-data max-h-96 whitespace-pre">
             {scriptText}
           </pre>

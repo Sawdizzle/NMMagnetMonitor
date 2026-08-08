@@ -46,17 +46,47 @@ WHAT THIS DOES
    report_telemetry function, authenticated with this asset's gateway
    token (scoped to only this asset).
 
+HOW THIS RUNS -- READ THIS FIRST
+This script runs CONTINUOUSLY. It has its own internal timer and sleeps
+${intervalMinutes} minutes between polls. It is designed to be started ONCE
+and left running under systemd.
+
+  *** DO NOT SCHEDULE THIS SCRIPT WITH CRON. ***
+
+Cron does not check whether the previous run finished. Because this script
+never exits, a "*/${intervalMinutes} * * * *" cron entry starts a BRAND NEW
+copy every ${intervalMinutes} minutes while every earlier copy keeps running.
+After a day you have hundreds of copies all polling at once. In August 2026
+this filled most of a 500 MB database in about 37 hours and eventually
+crashed the Pis. A flock guard below now makes this impossible, but the
+correct answer is still systemd, not cron.
+
 SETUP ON THE PI
   sudo apt-get install -y python3-pip
   pip3 install requests --break-system-packages
+
+  sudo install -m 700 nm-magmon-gateway-${assetName}.py /opt/magmon-gateway.py
   sudo nano /etc/systemd/system/nm-magmon-gateway.service   (see bottom of this file)
   sudo systemctl daemon-reload
   sudo systemctl enable --now nm-magmon-gateway
+
+VERIFY IT IS HEALTHY
+  sudo journalctl -u nm-magmon-gateway -f     # watch it report
+  pgrep -c -f nm-magmon-gateway               # MUST print 1, never more
+  crontab -l                                  # MUST NOT mention magmon
+
+NOTE ON FILE PERMISSIONS
+This file contains this asset's gateway token in plain text. Install it with
+mode 700 as shown above so other local users cannot read the token.
 """
 
+import os
 import re
+import sys
 import time
 import json
+import fcntl
+import signal
 import base64
 import socket
 import datetime
@@ -327,6 +357,40 @@ def report(row):
     else:
         print(f"[nm-magmon-gateway] reported OK: {row['Date']} {row['Time']}")
 
+# ========= Single-instance guard =========
+# systemd already guarantees one copy per asset. This flock is a second,
+# independent line of defence: even if someone ALSO adds a cron entry by
+# mistake, the extra copies take one look at this lock and exit immediately
+# instead of piling up. See the "DO NOT SCHEDULE WITH CRON" note at the top.
+LOCK_PATH = "/var/lock/nm-magmon-gateway-${assetName}.lock"
+_LOCK_HANDLE = None
+_RUNNING = True
+
+def acquire_singleton_lock():
+    global _LOCK_HANDLE
+    try:
+        _LOCK_HANDLE = open(LOCK_PATH, "w")
+        fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _LOCK_HANDLE.write(str(os.getpid()))
+        _LOCK_HANDLE.flush()
+        return True
+    except (IOError, OSError):
+        print("[nm-magmon-gateway] another copy is already running -- exiting so we do not double the poll rate")
+        return False
+
+def handle_shutdown(signum, frame):
+    # systemd sends SIGTERM on "systemctl stop" / "restart". Exit between
+    # polls rather than mid-request so we never half-report a reading.
+    global _RUNNING
+    print(f"[nm-magmon-gateway] shutdown signal {signum} received, stopping after this cycle")
+    _RUNNING = False
+
+def sleep_interruptible(seconds):
+    for _ in range(int(seconds)):
+        if not _RUNNING:
+            return
+        time.sleep(1)
+
 def probe_tcp_connect(host, port, timeout=5):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -336,8 +400,16 @@ def probe_tcp_connect(host, port, timeout=5):
         return False
 
 def main():
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+
     print(f"[nm-magmon-gateway] starting for asset '${assetName}' @ {MAGMON_HOST}:{MAGMON_PORT}, polling every ${intervalMinutes} min")
-    while True:
+
+    if not acquire_singleton_lock():
+        sys.exit(0)  # Not an error: the other copy is already doing the work.
+
+    while _RUNNING:
+        cycle_started = time.monotonic()
         try:
             if not probe_tcp_connect(MAGMON_HOST, MAGMON_PORT):
                 raise RuntimeError(f"Cannot reach MagMon at {MAGMON_HOST}:{MAGMON_PORT}")
@@ -347,13 +419,20 @@ def main():
         except Exception as e:
             print(f"[nm-magmon-gateway] error: {e}")
             traceback.print_exc()
-        time.sleep(POLL_INTERVAL_SECONDS)
+
+        # Subtract however long the cycle took so the poll rate does not
+        # drift later and later over weeks of uptime.
+        elapsed = time.monotonic() - cycle_started
+        sleep_interruptible(max(1, POLL_INTERVAL_SECONDS - int(elapsed)))
+
+    print("[nm-magmon-gateway] stopped cleanly")
 
 if __name__ == "__main__":
     main()
 
 
 # --- systemd unit (save as /etc/systemd/system/nm-magmon-gateway.service) ---
+# You can also download this as a separate file from the admin panel.
 #
 # [Unit]
 # Description=NM Magnet Monitor gateway reporter -- ${assetName}
@@ -361,12 +440,63 @@ if __name__ == "__main__":
 # Wants=network-online.target
 #
 # [Service]
-# ExecStart=/usr/bin/python3 /home/pi/nm-magmon-gateway.py
+# Type=simple
+# ExecStart=/usr/bin/python3 /opt/magmon-gateway.py
 # Restart=always
-# RestartSec=10
-# User=pi
+# RestartSec=30
+# KillSignal=SIGTERM
+# TimeoutStopSec=45
+# User=root
+# StandardOutput=journal
+# StandardError=journal
+# SyslogIdentifier=magmon-${assetName}
 #
 # [Install]
 # WantedBy=multi-user.target
+`;
+}
+
+/**
+ * The systemd unit for an asset, as a standalone downloadable file.
+ *
+ * Kept separate from the Python script so the admin panel can hand over both
+ * files ready to drop in place. The collector is a long-running daemon, so
+ * systemd -- not cron -- is the only supported way to run it: cron would
+ * launch an additional copy on every tick while the previous ones keep
+ * running. Restart=always also means a Pi that loses power at a customer
+ * site comes back on its own.
+ */
+export function generateSystemdUnit(opts: {
+  assetName: string;
+  scriptPath?: string;
+}) {
+  const { assetName, scriptPath = "/opt/magmon-gateway.py" } = opts;
+
+  return `[Unit]
+Description=NM Magnet Monitor gateway reporter -- ${assetName}
+Documentation=https://github.com/Sawdizzle/NMMagnetMonitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 ${scriptPath}
+
+# Restart forever: a crashed or wedged collector comes back without anyone
+# driving to the site. This is the main reason to prefer systemd over cron.
+Restart=always
+RestartSec=30
+
+# The collector traps SIGTERM and finishes its current cycle before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=magmon-${assetName}
+
+[Install]
+WantedBy=multi-user.target
 `;
 }
