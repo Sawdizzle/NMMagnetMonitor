@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { supabase, type Site, type Asset } from "@/lib/supabase";
 import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
+import { actionError } from "@/lib/errors";
 import Protected from "@/components/Protected";
 import type { Session } from "@/lib/auth";
 
@@ -82,7 +83,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_name: siteName,
       p_address: siteAddress || null,
     });
-    if (error) return setStatus(`Error adding site: ${error.message}`);
+    if (error) return setStatus(actionError("Could not add site", error));
     setSiteName("");
     setSiteAddress("");
     setStatus(`Site "${siteName}" added.`);
@@ -104,7 +105,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_monitor_username: monitorUsername,
       p_monitor_password: monitorPassword,
     });
-    if (error) return setStatus(`Error adding asset: ${error.message}`);
+    if (error) return setStatus(actionError("Could not add asset", error));
     setStatus(`Asset "${assetName}" added. Generate its install script below.`);
     setAssetName("");
     load();
@@ -131,7 +132,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_new_pin: userPin,
       p_role: userRole,
     });
-    if (error) return setStatus(`Error adding user: ${error.message}`);
+    if (error) return setStatus(actionError("Could not add user", error));
     setStatus(`User "${userName}" created.`);
     setUserName("");
     setUserPin("");
@@ -148,7 +149,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_target_username: u.username,
       p_new_pin: newPin,
     });
-    setStatus(error ? `Error: ${error.message}` : `PIN reset for ${u.username}.`);
+    setStatus(error ? actionError("Could not reset PIN", error) : `PIN reset for ${u.username}.`);
   }
 
   async function handleToggleRole(u: AppUser) {
@@ -159,7 +160,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_target_username: u.username,
       p_new_role: newRole,
     });
-    if (error) return setStatus(`Error: ${error.message}`);
+    if (error) return setStatus(actionError("Could not change role", error));
     setStatus(`${u.username} is now ${newRole}.`);
     load();
   }
@@ -172,7 +173,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_asset_id: asset.id,
     });
     const config = data && data[0];
-    if (error || !config) return setStatus(`Error loading asset: ${error?.message ?? "not found"}`);
+    if (error || !config) return setStatus(error ? actionError("Could not load asset", error) : "Could not load asset: not found.");
     setEditingAssetId(asset.id);
     setEditName(asset.name);
     setEditSiteId(asset.site_id);
@@ -201,7 +202,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_monitor_username: editUsername,
       p_monitor_password: editPassword,
     });
-    if (error) return setStatus(`Error saving asset: ${error.message}`);
+    if (error) return setStatus(actionError("Could not save asset", error));
     setStatus(`Asset "${editName}" updated.`);
     setEditingAssetId(null);
     load();
@@ -215,7 +216,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_actor_pin: me.pin,
       p_asset_id: a.id,
     });
-    if (error) return setStatus(`Error deleting asset: ${error.message}`);
+    if (error) return setStatus(actionError("Could not delete asset", error));
     setStatus(`Asset "${a.name}" deleted.`);
     if (editingAssetId === a.id) setEditingAssetId(null);
     load();
@@ -238,26 +239,35 @@ function AdminPanel({ me }: { me: Session }) {
       p_name: editSiteName,
       p_address: editSiteAddress || null,
     });
-    if (error) return setStatus(`Error saving site: ${error.message}`);
+    if (error) return setStatus(actionError("Could not save site", error));
     setStatus(`Site "${editSiteName}" updated.`);
     setEditingSiteId(null);
     load();
   }
 
   async function handleDeleteSite(s: Site) {
-    const assetCount = assets.filter((a) => a.site_id === s.id).length;
-    const warning =
-      assetCount > 0
-        ? `Delete site "${s.name}"? This will also delete its ${assetCount} asset(s) and all their telemetry history. This cannot be undone.`
-        : `Delete site "${s.name}"? This cannot be undone.`;
-    if (!confirm(warning)) return;
+    // The database now refuses this outright (admin_delete_site raises when
+    // assets are attached), because assets.site_id and telemetry_samples both
+    // cascade — deleting a site would silently take out the asset, its gateway
+    // token, and every reading. Catch it here so the admin gets a useful
+    // explanation instead of a round trip to a server error; the RPC guard is
+    // still the real enforcement.
+    const attached = assets.filter((a) => a.site_id === s.id);
+    if (attached.length > 0) {
+      return setStatus(
+        `Cannot delete site "${s.name}": ${attached.length} asset(s) still attached (${attached
+          .map((a) => a.name)
+          .join(", ")}). Delete or move them first.`
+      );
+    }
+    if (!confirm(`Delete site "${s.name}"? This cannot be undone.`)) return;
     setStatus(null);
     const { error } = await supabase.rpc("admin_delete_site", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_site_id: s.id,
     });
-    if (error) return setStatus(`Error deleting site: ${error.message}`);
+    if (error) return setStatus(actionError("Could not delete site", error));
     setStatus(`Site "${s.name}" deleted.`);
     load();
   }
@@ -292,7 +302,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_asset_id: asset.id,
     });
     const config = data && data[0];
-    if (error || !config) return setStatus(`Error retrieving config: ${error?.message ?? "not found"}`);
+    if (error || !config) return setStatus(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
     buildScript(asset.name, config.gateway_token, config.monitor_host, config.monitor_port, config.monitor_username, config.monitor_password);
     setScriptForAsset(asset.id);
   }
@@ -319,9 +329,12 @@ function AdminPanel({ me }: { me: Session }) {
   function downloadUnitFile() {
     const asset = assets.find((a) => a.id === scriptForAsset);
     if (!asset) return;
+    // Named per asset for the same reason as the script: nine downloads in a
+    // row must not collide in ~/Downloads and get installed on the wrong Pi.
+    // The file is installed on the Pi as nm-magmon-gateway.service regardless.
     downloadFile(
       generateSystemdUnit({ assetName: asset.name }),
-      "nm-magmon-gateway.service",
+      `nm-magmon-gateway-${asset.name}.service`,
       "text/plain"
     );
   }
