@@ -62,10 +62,9 @@ crashed the Pis. A flock guard below now makes this impossible, but the
 correct answer is still systemd, not cron.
 
 SETUP ON THE PI
-  sudo apt-get install -y python3-pip
-  pip3 install requests --break-system-packages
+  sudo apt-get install -y python3-requests
 
-  sudo install -m 700 nm-magmon-gateway-${assetName}.py /opt/magmon-gateway.py
+  sudo install -o pi -g pi -m 700 nm-magmon-gateway-${assetName}.py /opt/magmon-gateway.py
   sudo nano /etc/systemd/system/nm-magmon-gateway.service   (see bottom of this file)
   sudo systemctl daemon-reload
   sudo systemctl enable --now nm-magmon-gateway
@@ -76,8 +75,13 @@ VERIFY IT IS HEALTHY
   crontab -l                                  # MUST NOT mention magmon
 
 NOTE ON FILE PERMISSIONS
-This file contains this asset's gateway token in plain text. Install it with
-mode 700 as shown above so other local users cannot read the token.
+This file contains this asset's gateway token in plain text. Install it owned
+by 'pi' with mode 700 as shown above: the service runs as 'pi', so root-owned
+mode 700 would be unreadable, and a world-readable file would leak the token.
+
+If 'requests' is missing at startup, install it system-wide with apt as shown.
+A user-level "pip3 install --user" is NOT enough if the service ever runs as a
+different user than the one that ran pip.
 """
 
 import os
@@ -446,7 +450,8 @@ if __name__ == "__main__":
 # RestartSec=30
 # KillSignal=SIGTERM
 # TimeoutStopSec=45
-# User=root
+# User=pi
+# Group=pi
 # StandardOutput=journal
 # StandardError=journal
 # SyslogIdentifier=magmon-${assetName}
@@ -491,7 +496,8 @@ RestartSec=30
 KillSignal=SIGTERM
 TimeoutStopSec=45
 
-User=root
+User=pi
+Group=pi
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=magmon-${assetName}

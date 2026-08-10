@@ -307,6 +307,29 @@ function AdminPanel({ me }: { me: Session }) {
     setScriptForAsset(asset.id);
   }
 
+  async function handleRotateToken() {
+    const asset = assets.find((a) => a.id === scriptForAsset);
+    if (!asset) return;
+    if (
+      !confirm(
+        `Rotate the gateway token for "${asset.name}"?\n\nThe Pi will stop reporting until you download the new script and deploy it. Telemetry already collected is NOT affected.`
+      )
+    )
+      return;
+    setStatus(null);
+    const { error } = await supabase.rpc("admin_rotate_gateway_token", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_asset_id: asset.id,
+    });
+    if (error) return setStatus(actionError("Could not rotate token", error));
+    setStatus(
+      `Token rotated for "${asset.name}". Download the script again and deploy it — the Pi is offline until you do.`
+    );
+    // Clear the stale script so the old token can't be downloaded by mistake.
+    setScriptText("");
+  }
+
   function downloadFile(contents: string, filename: string, mime: string) {
     const blob = new Blob([contents], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -543,6 +566,7 @@ function AdminPanel({ me }: { me: Session }) {
             </button>
             <button onClick={downloadScript} className="btn-primary">Download script</button>
             <button onClick={downloadUnitFile} className="btn-secondary">Download systemd unit</button>
+            <button onClick={handleRotateToken} className="btn-secondary">Rotate token</button>
           </div>
           <p className="mb-3 text-xs rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-muted)]">
             <strong className="text-[var(--text)]">Run this under systemd, not cron.</strong>{" "}
