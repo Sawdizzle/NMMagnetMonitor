@@ -770,7 +770,7 @@ from (values
   (null::uuid, 'h2o_flow', '<',  0.6::numeric, true),
   (null::uuid, 'h2o_temp', '>',  75::numeric,  true),
   (null::uuid, 'shield',   '>',  80::numeric,  true),
-  (null::uuid, 'cs1',      '=',  1::numeric,   true)   -- compressor: 0 normal, 1 alarm
+  (null::uuid, 'cs1',      '>',  0::numeric,   true)   -- compressor: 0 = ON (normal), >0 = OFF (alarm)
 ) as v(asset_id, field, comparator, threshold, enabled)
 where not exists (
   select 1 from public.alert_rules ar where ar.asset_id is null and ar.field = v.field
