@@ -366,21 +366,75 @@ def report(row):
 # independent line of defence: even if someone ALSO adds a cron entry by
 # mistake, the extra copies take one look at this lock and exit immediately
 # instead of piling up. See the "DO NOT SCHEDULE WITH CRON" note at the top.
-LOCK_PATH = "/var/lock/nm-magmon-gateway-${assetName}.lock"
+#
+# It is deliberately self-healing about the lock FILE so an in-place upgrade
+# (for example switching this service from the old root user to 'pi') can
+# never silently take a Pi offline:
+#   * If a stale lock file left by an earlier run cannot be opened -- e.g. a
+#     root-owned file from the previous version sitting in a sticky /var/lock
+#     that 'pi' may not remove -- we try to delete it, and failing that fall
+#     back to a lock path this user CAN write. A file-permission problem is
+#     NOT the same thing as "another copy is running".
+#   * We exit ONLY when flock actually reports the lock is held by a live
+#     process. If no lock can be established anywhere, we WARN and keep
+#     monitoring rather than going dark -- the lock is a backstop, not a
+#     reason to stop reporting telemetry.
+LOCK_CANDIDATES = [
+    "/var/lock/nm-magmon-gateway-${assetName}.lock",
+    "/tmp/nm-magmon-gateway-${assetName}.lock",
+]
 _LOCK_HANDLE = None
 _RUNNING = True
 
+class _AlreadyRunning(Exception):
+    pass
+
+def _open_flock(path):
+    # Open (creating if needed) and take a non-blocking exclusive lock.
+    # Returns an open handle on success, or None if this path is unusable.
+    # Raises _AlreadyRunning if the path is fine but a live copy holds the lock.
+    try:
+        fh = open(path, "a+")
+    except OSError:
+        # Something is in the way (e.g. a root-owned stale file). Best-effort
+        # remove and retry; if we still cannot, this path is out and we move on.
+        try:
+            os.unlink(path)
+            fh = open(path, "a+")
+        except OSError as e:
+            print(f"[nm-magmon-gateway] lock path unusable: {path} ({e})")
+            return None
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        raise _AlreadyRunning()
+    except OSError as e:
+        print(f"[nm-magmon-gateway] cannot lock {path} ({e})")
+        fh.close()
+        return None
+    try:
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(str(os.getpid()))
+        fh.flush()
+    except OSError:
+        pass  # recording our PID is a nicety, not required for the lock
+    return fh
+
 def acquire_singleton_lock():
     global _LOCK_HANDLE
-    try:
-        _LOCK_HANDLE = open(LOCK_PATH, "w")
-        fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _LOCK_HANDLE.write(str(os.getpid()))
-        _LOCK_HANDLE.flush()
-        return True
-    except (IOError, OSError):
-        print("[nm-magmon-gateway] another copy is already running -- exiting so we do not double the poll rate")
-        return False
+    for path in LOCK_CANDIDATES:
+        try:
+            fh = _open_flock(path)
+        except _AlreadyRunning:
+            print("[nm-magmon-gateway] another copy already holds the lock -- exiting so we do not double the poll rate")
+            return False
+        if fh is not None:
+            _LOCK_HANDLE = fh
+            return True
+    print("[nm-magmon-gateway] WARNING: could not acquire any lock file; continuing without the singleton backstop")
+    return True
 
 def handle_shutdown(signum, frame):
     # systemd sends SIGTERM on "systemctl stop" / "restart". Exit between
