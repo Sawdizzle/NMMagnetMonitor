@@ -10,7 +10,27 @@ import type { Session } from "@/lib/auth";
 
 const MAGMON_VERSIONS = ["v1", "v2", "v3"];
 
+const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
+  { key: "he_lvl", label: "Helium level", unit: "%" },
+  { key: "he_press", label: "Helium pressure", unit: "" },
+  { key: "h2o_flow", label: "Water flow", unit: "gpm" },
+  { key: "h2o_temp", label: "Water temp", unit: "°F" },
+  { key: "shield", label: "Shield temp", unit: "" },
+  { key: "cs1", label: "CS1 / compressor", unit: "" },
+];
+const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
+
 type AppUser = { username: string; role: "viewer" | "admin"; created_at: string };
+type AlertRule = {
+  id: string;
+  asset_id: string | null;
+  asset_name: string | null;
+  field: string;
+  comparator: string;
+  threshold: number;
+  enabled: boolean;
+  created_at: string;
+};
 
 export default function AdminPage() {
   return <Protected requireAdmin>{(session) => <AdminPanel me={session} />}</Protected>;
@@ -47,6 +67,15 @@ function AdminPanel({ me }: { me: Session }) {
   // server that runs several assets. Flows into install ownership + the unit's User=.
   const [serviceUser, setServiceUser] = useState("pi");
 
+  // alert rules
+  const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [ruleScope, setRuleScope] = useState<string>(""); // "" = all assets (fleet default)
+  const [ruleField, setRuleField] = useState<string>(ALERT_METRICS[1].key);
+  const [ruleComparator, setRuleComparator] = useState<string>(">");
+  const [ruleThreshold, setRuleThreshold] = useState<number>(3);
+  const [ruleEnabled, setRuleEnabled] = useState<boolean>(true);
+
   // editing
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -63,14 +92,16 @@ function AdminPanel({ me }: { me: Session }) {
   const [editSiteAddress, setEditSiteAddress] = useState("");
 
   const load = useCallback(async () => {
-    const [{ data: siteRows }, { data: assetRows }, { data: userRows }] = await Promise.all([
+    const [{ data: siteRows }, { data: assetRows }, { data: userRows }, { data: ruleRows }] = await Promise.all([
       supabase.from("sites").select("*").order("name"),
       supabase.from("public_assets").select("*").order("name"),
       supabase.rpc("admin_list_users", { p_actor_username: me.username, p_actor_pin: me.pin }),
+      supabase.rpc("admin_list_alert_rules", { p_actor_username: me.username, p_actor_pin: me.pin }),
     ]);
     setSites(siteRows ?? []);
     setAssets(assetRows ?? []);
     setUsers((userRows as AppUser[]) ?? []);
+    setAlertRules((ruleRows as AlertRule[]) ?? []);
     if (siteRows && siteRows.length > 0 && !assetSiteId) setAssetSiteId(siteRows[0].id);
   }, [assetSiteId, me.username, me.pin]);
 
@@ -335,6 +366,73 @@ function AdminPanel({ me }: { me: Session }) {
     setScriptText("");
   }
 
+  function resetRuleForm() {
+    setEditingRuleId(null);
+    setRuleScope("");
+    setRuleField(ALERT_METRICS[1].key);
+    setRuleComparator(">");
+    setRuleThreshold(3);
+    setRuleEnabled(true);
+  }
+
+  function handleEditRule(r: AlertRule) {
+    setEditingRuleId(r.id);
+    setRuleScope(r.asset_id ?? "");
+    setRuleField(r.field);
+    setRuleComparator(r.comparator);
+    setRuleThreshold(Number(r.threshold));
+    setRuleEnabled(r.enabled);
+  }
+
+  async function handleSaveRule(e: React.FormEvent) {
+    e.preventDefault();
+    setStatus(null);
+    const { error } = await supabase.rpc("admin_upsert_alert_rule", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_rule_id: editingRuleId,
+      p_asset_id: ruleScope || null,
+      p_field: ruleField,
+      p_comparator: ruleComparator,
+      p_threshold: ruleThreshold,
+      p_enabled: ruleEnabled,
+    });
+    if (error) return setStatus(actionError("Could not save alert rule", error));
+    setStatus(editingRuleId ? "Alert rule updated." : "Alert rule added.");
+    resetRuleForm();
+    load();
+  }
+
+  async function handleToggleRule(r: AlertRule) {
+    const { error } = await supabase.rpc("admin_upsert_alert_rule", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_rule_id: r.id,
+      p_asset_id: r.asset_id,
+      p_field: r.field,
+      p_comparator: r.comparator,
+      p_threshold: Number(r.threshold),
+      p_enabled: !r.enabled,
+    });
+    if (error) return setStatus(actionError("Could not update alert rule", error));
+    load();
+  }
+
+  async function handleDeleteRule(r: AlertRule) {
+    const metric = ALERT_METRICS.find((m) => m.key === r.field)?.label ?? r.field;
+    if (!confirm(`Delete this alert rule (${metric} ${r.comparator} ${Number(r.threshold)})?`)) return;
+    setStatus(null);
+    const { error } = await supabase.rpc("admin_delete_alert_rule", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_rule_id: r.id,
+    });
+    if (error) return setStatus(actionError("Could not delete alert rule", error));
+    setStatus("Alert rule deleted.");
+    if (editingRuleId === r.id) resetRuleForm();
+    load();
+  }
+
   function downloadFile(contents: string, filename: string, mime: string) {
     const blob = new Blob([contents], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -591,6 +689,75 @@ function AdminPanel({ me }: { me: Session }) {
           </pre>
         </section>
       )}
+
+      <section className="mb-10">
+        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Alerts</h2>
+        <p className="text-xs text-[var(--text-dim)] mb-3">
+          A rule scoped to <strong>All assets</strong> is the fleet default. Scope a rule to a single asset to
+          override the fleet default for just that unit.
+        </p>
+        <form onSubmit={handleSaveRule} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
+          <Field label="Scope">
+            <select value={ruleScope} onChange={(e) => setRuleScope(e.target.value)} className="input">
+              <option value="">All assets</option>
+              {assets.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Metric">
+            <select value={ruleField} onChange={(e) => setRuleField(e.target.value)} className="input">
+              {ALERT_METRICS.map((m) => (
+                <option key={m.key} value={m.key}>{m.label}{m.unit ? ` (${m.unit})` : ""}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Condition">
+            <select value={ruleComparator} onChange={(e) => setRuleComparator(e.target.value)} className="input w-20 font-mono-data">
+              {ALERT_COMPARATORS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Threshold">
+            <input type="number" step="any" value={ruleThreshold} onChange={(e) => setRuleThreshold(Number(e.target.value))} className="input w-28 font-mono-data" />
+          </Field>
+          <label className="flex items-center gap-2 text-xs text-[var(--text-dim)]">
+            <input type="checkbox" checked={ruleEnabled} onChange={(e) => setRuleEnabled(e.target.checked)} />
+            Enabled
+          </label>
+          <button type="submit" className="btn-primary">{editingRuleId ? "Save rule" : "Add rule"}</button>
+          {editingRuleId && (
+            <button type="button" onClick={resetRuleForm} className="btn-secondary">Cancel</button>
+          )}
+        </form>
+
+        <div className="rounded-lg border border-[var(--border)] overflow-hidden mb-10">
+          {alertRules.map((r) => {
+            const metric = ALERT_METRICS.find((m) => m.key === r.field);
+            return (
+              <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+                <div>
+                  <p className="font-medium">
+                    {metric?.label ?? r.field}{" "}
+                    <span className="font-mono-data text-sm text-[var(--text-muted)]">{r.comparator} {Number(r.threshold)}</span>
+                    {!r.enabled && <span className="ml-2 text-xs text-[var(--text-dim)]">(disabled)</span>}
+                  </p>
+                  <p className="text-xs text-[var(--text-dim)]">
+                    {r.asset_name ? `Override — ${r.asset_name}` : "All assets"}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => handleToggleRule(r)} className="btn-secondary">{r.enabled ? "Disable" : "Enable"}</button>
+                  <button onClick={() => handleEditRule(r)} className="btn-secondary">Edit</button>
+                  <button onClick={() => handleDeleteRule(r)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+          {alertRules.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No alert rules yet.</p>}
+        </div>
+      </section>
 
       <section className="mb-10">
         <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Users</h2>
