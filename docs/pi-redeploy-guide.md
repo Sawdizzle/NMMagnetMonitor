@@ -1,137 +1,160 @@
-# Pi redeploy runbook — new gateway script + systemd unit
+# Gateway deploy runbook — per-asset script + systemd unit
 
-Foolproof, copy-paste steps to move one Raspberry Pi from the old (root) collector
-to the new one that runs as the **`pi`** user. Do **one Pi end-to-end as a canary**,
-confirm every check is green, then repeat for the rest.
+Every download is now **per-asset and self-contained**: its own script
+(`/opt/magmon-gateway-<asset>.py`), its own service
+(`nm-magmon-gateway-<asset>.service`), its own lock file, and its own log tag
+(`magmon-<asset>`). So this one procedure covers **both** cases:
 
-> Each asset has its **own** script — it carries that asset's unique gateway token
-> and its MagMon's IP/credentials. Never install one asset's script on a different
-> Pi. The filename includes the asset name to keep them straight.
+- a **standalone Raspberry Pi** running a single asset, and
+- a **shared server** (e.g. one reaching several sites over a VPN) running many.
 
-Legend: replace `<asset>` with the asset name (e.g. `CA1012-SETONSW`) and `<pi-ip>`
-with the Pi's address. "**On your Mac**" vs "**On the Pi**" tells you where each
-command runs.
+The only per-machine difference is the **service user**, which you set in the
+admin panel before downloading.
+
+> Each asset's script carries that asset's unique gateway token and its MagMon's
+> IP/credentials. Never install one asset's files on the wrong machine. The
+> filenames include the asset name to keep them straight.
+
+Legend: replace `<asset>` with the asset name (e.g. `CA1012`), `<user>` with the
+login user on the target machine, `<host>` with its address. "**On your Mac**" vs
+"**On the machine**" says where each command runs.
 
 ---
 
-## 0. Download the two files (On your Mac, in the web app)
+## 0. Set the service user, then download (On your Mac, in the web app)
 
 1. **Admin → Existing assets →** the asset **→ Get install script**.
-2. Set the poll interval if needed, then **Download script** and **Download systemd unit**.
-3. You now have, in `~/Downloads`:
+2. In the script panel, set **Service user**:
+   - `pi` for a standalone Raspberry Pi (the default), or
+   - the login user of the shared server (e.g. `Numed`) — check it with `whoami`
+     on that machine if unsure.
+3. Set the poll interval if needed, click **Regenerate**, then **Download script**
+   and **Download systemd unit**. You now have in `~/Downloads`:
    - `nm-magmon-gateway-<asset>.py`
-   - `nm-magmon-gateway-<asset>.service`
+   - `nm-magmon-gateway-<asset>.service`  ← already has the right `User=` and path
 
-## 1. Copy them to the Pi (On your Mac)
+Repeat for every asset you're deploying (each is its own pair of files).
 
-```
-scp ~/Downloads/nm-magmon-gateway-<asset>.py      pi@<pi-ip>:/home/pi/
-scp ~/Downloads/nm-magmon-gateway-<asset>.service pi@<pi-ip>:/home/pi/
-```
-
-(No SSH/scp? Put both files on a USB stick and copy them into `/home/pi/` on the Pi.)
-
-## 2. Connect to the Pi (On your Mac)
+## 1. Copy the files over (On your Mac)
 
 ```
-ssh pi@<pi-ip>
+scp ~/Downloads/nm-magmon-gateway-<asset>.py      <user>@<host>:/home/<user>/
+scp ~/Downloads/nm-magmon-gateway-<asset>.service <user>@<host>:/home/<user>/
 ```
 
-Everything below runs **On the Pi**.
-
-## 3. Stop the old collector
+## 2. Connect (On your Mac)
 
 ```
-sudo systemctl stop nm-magmon-gateway
+ssh <user>@<host>
 ```
 
-## 4. Clear any stale lock (belt-and-suspenders)
+Everything below runs **On the machine**.
 
-The new script self-heals around a leftover root-owned lock, so this is optional —
-but it keeps the logs clean:
-
-```
-sudo rm -f /var/lock/nm-magmon-gateway-*.lock
-```
-
-## 5. Make sure the HTTP library is installed (new apt method)
+## 3. Install the HTTP library — once per machine (not per asset)
 
 ```
 sudo apt-get update && sudo apt-get install -y python3-requests
 ```
 
-## 6. Install the new script — owned by `pi`, mode 700
+## 4. Install one asset
+
+The downloaded `.service` is already correct, so there is **no file to edit** —
+install, copy, enable:
 
 ```
-sudo install -o pi -g pi -m 700 /home/pi/nm-magmon-gateway-<asset>.py /opt/magmon-gateway.py
-```
+sudo install -o <user> -g "$(id -gn <user>)" -m 700 \
+  /home/<user>/nm-magmon-gateway-<asset>.py /opt/magmon-gateway-<asset>.py
 
-## 7. Install the new systemd unit
+sudo cp /home/<user>/nm-magmon-gateway-<asset>.service \
+        /etc/systemd/system/nm-magmon-gateway-<asset>.service
 
-It always lands as `nm-magmon-gateway.service`, regardless of the download name:
-
-```
-sudo cp /home/pi/nm-magmon-gateway-<asset>.service /etc/systemd/system/nm-magmon-gateway.service
-```
-
-## 8. Reload and start
-
-```
 sudo systemctl daemon-reload
-sudo systemctl enable --now nm-magmon-gateway
+sudo systemctl enable --now nm-magmon-gateway-<asset>
+```
+
+## 5. Verify this asset — all must pass
+
+```
+systemctl status nm-magmon-gateway-<asset> --no-pager      # active (running)
+journalctl -u nm-magmon-gateway-<asset> -n 30 --no-pager   # "reported OK", no errors
+pgrep -c -f magmon-gateway-<asset>                          # prints 1
+```
+
+…and the asset flips to **online** in the dashboard within a couple of minutes.
+
+## 6. Tidy up (optional)
+
+```
+rm -f /home/<user>/nm-magmon-gateway-<asset>.py /home/<user>/nm-magmon-gateway-<asset>.service
 ```
 
 ---
 
-## 9. VERIFY — all four must pass before you move on
+## Shared server — several assets on one box
+
+Same steps, repeated per asset. Do **step 3 once**, then loop steps 1/4/5 for each
+asset. Example for the VPN server hosting CA1012, NM1003, NM1019, NM1027, NM1034,
+NM1037 (service user `Numed`):
 
 ```
-# a) Service is running (look for "active (running)", not "activating"/"failed")
-systemctl status nm-magmon-gateway --no-pager
+# once
+sudo apt-get update && sudo apt-get install -y python3-requests
 
-# b) Logs show a successful report and NO lock complaint
-journalctl -u nm-magmon-gateway -n 40 --no-pager
-#    WANT: "starting for asset '<asset>'..." then "reported OK: ..."
-#    NOT:  "another copy already holds the lock" repeating
-
-# c) Exactly one process
-pgrep -c -f nm-magmon-gateway        # must print: 1
-
-# d) It is running as pi, and cron is clean
-ps -o user= -p "$(pgrep -f magmon-gateway | head -1)"   # must print: pi
-crontab -l 2>/dev/null | grep -i magmon || echo "user cron clean"
-sudo crontab -l 2>/dev/null | grep -i magmon || echo "root cron clean"
+# per asset — set ASSET and repeat the block for each of the six
+ASSET=CA1012
+USER=Numed
+sudo install -o "$USER" -g "$(id -gn "$USER")" -m 700 \
+  /home/$USER/nm-magmon-gateway-$ASSET.py /opt/magmon-gateway-$ASSET.py
+sudo cp /home/$USER/nm-magmon-gateway-$ASSET.service \
+        /etc/systemd/system/nm-magmon-gateway-$ASSET.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now nm-magmon-gateway-$ASSET
 ```
 
-Then check the **web dashboard**: the asset should flip to **online** within a
-couple of minutes (its last-seen resets on the first successful report).
-
-## 10. Tidy up (optional)
-
-The token-bearing script now lives at `/opt/magmon-gateway.py` (mode 700). Remove
-the copies left in the home directory so there's no world-readable copy of the token:
+Check the whole box once all six are in:
 
 ```
-rm -f /home/pi/nm-magmon-gateway-<asset>.py /home/pi/nm-magmon-gateway-<asset>.service
+systemctl list-units 'nm-magmon-gateway-*' --no-pager   # six, all running
+pgrep -c -f magmon-gateway                              # prints 6
 ```
+
+**Before you wire up a shared server, confirm routing:** each MagMon must be
+reachable *from this server* at a distinct address (the `monitor_host` set on each
+asset). If two sites reuse the same private subnet behind the tunnel, they'll
+collide — give them distinct routes/NAT first.
+
+---
+
+## Migrating a Pi that already runs the OLD single-name service
+
+Earlier builds installed a fixed `nm-magmon-gateway.service` at
+`/opt/magmon-gateway.py`. If a machine still has that, remove it **before**
+installing the per-asset version, or you'll run two collectors at once:
+
+```
+sudo systemctl disable --now nm-magmon-gateway
+sudo rm -f /etc/systemd/system/nm-magmon-gateway.service /opt/magmon-gateway.py
+sudo rm -f /var/lock/nm-magmon-gateway-*.lock
+sudo systemctl daemon-reload
+```
+
+Then follow steps 3–5 above.
 
 ---
 
 ## If a check fails
 
-| Symptom (in `journalctl` / `status`) | Cause | Fix |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `ModuleNotFoundError: No module named 'requests'` | Step 5 skipped | Run step 5, then `sudo systemctl restart nm-magmon-gateway` |
-| `Permission denied` opening `/opt/magmon-gateway.py` | Wrong owner/mode | Re-run step 6 exactly |
-| Service state `217/USER` or "user pi does not exist" | This Pi's login user isn't `pi` | Edit `/etc/systemd/system/nm-magmon-gateway.service`: set `User=` and `Group=` to the real user; re-run step 6 with `-o <user> -g <user>`; then steps 8–9 |
-| `another copy already holds the lock` (repeating) | A real second copy is running | `pgrep -a -f magmon-gateway` → `sudo kill <pids>`; make sure no cron entry exists; `sudo systemctl restart nm-magmon-gateway` |
-| `Cannot reach MagMon at <ip>:<port>` | Wrong MagMon IP/port for this site | Fix the asset's IP in **Admin → Edit**, re-download the script (step 0), redo from step 6 |
-| Asset still offline after a few minutes | Token mismatch (e.g. token was rotated) | Re-download the current script for this asset and redo from step 6 |
+| `ModuleNotFoundError: No module named 'requests'` | Step 3 skipped | Run step 3, then `sudo systemctl restart nm-magmon-gateway-<asset>` |
+| `Permission denied` on `/opt/magmon-gateway-<asset>.py` | Wrong owner/mode | Re-run the `install` in step 4 exactly |
+| Service state `217/USER` | The `Service user` you set doesn't exist on this machine | Confirm with `whoami`; re-download with the correct user, or edit `User=` in the unit and re-run steps 4–5 |
+| `another copy already holds the lock` (repeating) | A real second copy is running | `pgrep -a -f magmon-gateway-<asset>` → `sudo kill <pids>`; ensure no cron; restart |
+| `Cannot reach MagMon at <ip>:<port>` | Wrong/unroutable MagMon IP for this site | Fix the asset's IP in **Admin → Edit**, re-download, redo from step 4 |
+| Asset still offline after a few minutes | Token mismatch (e.g. token was rotated) | Re-download the current script for this asset and redo from step 4 |
 
-## Rolling out to the rest
+## Rolling out
 
-- Canary **one** Pi through step 9 with all checks green **and** the dashboard
-  showing it online before touching any others.
-- Keep a simple checklist: `asset name → Pi IP → done ✅`.
-- Repeat steps 0–10 per Pi. Because each script is asset-specific, download fresh
-  per asset — don't reuse one Pi's file on another.
+Canary **one** asset through step 5 with all checks green **and** the dashboard
+showing it online before doing the rest. Keep a checklist: `asset → machine → done ✅`.
+Download fresh per asset — never reuse one machine's file on another.

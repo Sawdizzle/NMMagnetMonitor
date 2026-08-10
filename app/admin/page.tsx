@@ -42,6 +42,10 @@ function AdminPanel({ me }: { me: Session }) {
   const [scriptText, setScriptText] = useState<string | null>(null);
   const [scriptForAsset, setScriptForAsset] = useState<string | null>(null);
   const [pollMinutes, setPollMinutes] = useState(5);
+  // The OS user the collector runs as on the target machine. Default "pi" for a
+  // standalone Raspberry Pi; set to the login user (e.g. "Numed") on a shared
+  // server that runs several assets. Flows into install ownership + the unit's User=.
+  const [serviceUser, setServiceUser] = useState("pi");
 
   // editing
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
@@ -290,6 +294,7 @@ function AdminPanel({ me }: { me: Session }) {
       supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
       supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       intervalMinutes: pollMinutes,
+      serviceUser,
     });
     setScriptText(script);
   }
@@ -356,7 +361,7 @@ function AdminPanel({ me }: { me: Session }) {
     // row must not collide in ~/Downloads and get installed on the wrong Pi.
     // The file is installed on the Pi as nm-magmon-gateway.service regardless.
     downloadFile(
-      generateSystemdUnit({ assetName: asset.name }),
+      generateSystemdUnit({ assetName: asset.name, serviceUser }),
       `nm-magmon-gateway-${asset.name}.service`,
       "text/plain"
     );
@@ -555,6 +560,9 @@ function AdminPanel({ me }: { me: Session }) {
             <Field label="Poll interval (min)">
               <input type="number" min={1} value={pollMinutes} onChange={(e) => setPollMinutes(Number(e.target.value))} className="input w-24" />
             </Field>
+            <Field label="Service user">
+              <input value={serviceUser} onChange={(e) => setServiceUser(e.target.value)} placeholder="pi" className="input w-28 font-mono-data" />
+            </Field>
             <button
               onClick={() => {
                 const a = assets.find((x) => x.id === scriptForAsset);
@@ -562,7 +570,7 @@ function AdminPanel({ me }: { me: Session }) {
               }}
               className="btn-secondary"
             >
-              Regenerate with this interval
+              Regenerate
             </button>
             <button onClick={downloadScript} className="btn-primary">Download script</button>
             <button onClick={downloadUnitFile} className="btn-secondary">Download systemd unit</button>

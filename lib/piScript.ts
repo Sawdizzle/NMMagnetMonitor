@@ -8,6 +8,7 @@ export function generatePiScript(opts: {
   supabaseUrl: string;
   supabaseAnonKey: string;
   intervalMinutes: number;
+  serviceUser?: string;
 }) {
   const {
     assetName,
@@ -19,6 +20,7 @@ export function generatePiScript(opts: {
     supabaseUrl,
     supabaseAnonKey,
     intervalMinutes,
+    serviceUser = "pi",
   } = opts;
 
   return `#!/usr/bin/env python3
@@ -61,23 +63,31 @@ this filled most of a 500 MB database in about 37 hours and eventually
 crashed the Pis. A flock guard below now makes this impossible, but the
 correct answer is still systemd, not cron.
 
-SETUP ON THE PI
-  sudo apt-get install -y python3-requests
+SETUP -- ONE ASSET (a single machine can run several of these side by side)
+  sudo apt-get install -y python3-requests   # once per machine, not per asset
 
-  sudo install -o pi -g pi -m 700 nm-magmon-gateway-${assetName}.py /opt/magmon-gateway.py
-  sudo nano /etc/systemd/system/nm-magmon-gateway.service   (see bottom of this file)
+  sudo install -o ${serviceUser} -g "$(id -gn ${serviceUser})" -m 700 nm-magmon-gateway-${assetName}.py /opt/magmon-gateway-${assetName}.py
+  sudo cp nm-magmon-gateway-${assetName}.service /etc/systemd/system/nm-magmon-gateway-${assetName}.service
   sudo systemctl daemon-reload
-  sudo systemctl enable --now nm-magmon-gateway
+  sudo systemctl enable --now nm-magmon-gateway-${assetName}
 
 VERIFY IT IS HEALTHY
-  sudo journalctl -u nm-magmon-gateway -f     # watch it report
-  pgrep -c -f nm-magmon-gateway               # MUST print 1, never more
-  crontab -l                                  # MUST NOT mention magmon
+  sudo journalctl -u nm-magmon-gateway-${assetName} -f     # watch it report
+  pgrep -c -f magmon-gateway-${assetName}                  # MUST print 1, never more
+  crontab -l                                               # MUST NOT mention magmon
+
+RUNNING SEVERAL ON ONE MACHINE
+Each asset has its OWN script (/opt/magmon-gateway-${assetName}.py), its OWN
+systemd unit (nm-magmon-gateway-${assetName}.service), its OWN lock file, and
+its OWN log identifier (magmon-${assetName}). Nothing is shared, so one server
+-- e.g. one reaching several sites over a VPN -- can run any number of them at
+once. Just repeat this setup for each asset.
 
 NOTE ON FILE PERMISSIONS
-This file contains this asset's gateway token in plain text. Install it owned
-by 'pi' with mode 700 as shown above: the service runs as 'pi', so root-owned
-mode 700 would be unreadable, and a world-readable file would leak the token.
+This file contains this asset's gateway token in plain text. Install it owned by
+'${serviceUser}' with mode 700 as shown above: the service runs as '${serviceUser}',
+so a root-owned mode-700 file would be unreadable and a world-readable one would
+leak the token.
 
 If 'requests' is missing at startup, install it system-wide with apt as shown.
 A user-level "pip3 install --user" is NOT enough if the service ever runs as a
@@ -489,7 +499,7 @@ if __name__ == "__main__":
     main()
 
 
-# --- systemd unit (save as /etc/systemd/system/nm-magmon-gateway.service) ---
+# --- systemd unit (save as /etc/systemd/system/nm-magmon-gateway-${assetName}.service) ---
 # You can also download this as a separate file from the admin panel.
 #
 # [Unit]
@@ -499,13 +509,12 @@ if __name__ == "__main__":
 #
 # [Service]
 # Type=simple
-# ExecStart=/usr/bin/python3 /opt/magmon-gateway.py
+# ExecStart=/usr/bin/python3 /opt/magmon-gateway-${assetName}.py
 # Restart=always
 # RestartSec=30
 # KillSignal=SIGTERM
 # TimeoutStopSec=45
-# User=pi
-# Group=pi
+# User=${serviceUser}
 # StandardOutput=journal
 # StandardError=journal
 # SyslogIdentifier=magmon-${assetName}
@@ -528,8 +537,12 @@ if __name__ == "__main__":
 export function generateSystemdUnit(opts: {
   assetName: string;
   scriptPath?: string;
+  serviceUser?: string;
 }) {
-  const { assetName, scriptPath = "/opt/magmon-gateway.py" } = opts;
+  const { assetName, serviceUser = "pi" } = opts;
+  // Per-asset script path by default so one machine can run several collectors
+  // without their units colliding on a shared /opt/magmon-gateway.py.
+  const scriptPath = opts.scriptPath ?? `/opt/magmon-gateway-${assetName}.py`;
 
   return `[Unit]
 Description=NM Magnet Monitor gateway reporter -- ${assetName}
@@ -550,8 +563,9 @@ RestartSec=30
 KillSignal=SIGTERM
 TimeoutStopSec=45
 
-User=pi
-Group=pi
+# Runs as an unprivileged user, never root. Group is intentionally omitted so
+# systemd uses this user's primary group; set Group= only if you need another.
+User=${serviceUser}
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=magmon-${assetName}
