@@ -766,10 +766,11 @@ create policy "public read alert_events" on public.alert_events      for select 
 insert into public.alert_rules (asset_id, field, comparator, threshold, enabled)
 select v.asset_id, v.field, v.comparator, v.threshold, v.enabled
 from (values
-  (null::uuid, 'he_press', '>', 3.0::numeric, true),
-  (null::uuid, 'h2o_flow', '<', 0.6::numeric, true),
-  (null::uuid, 'h2o_temp', '>', 75::numeric, true),
-  (null::uuid, 'shield',   '>', 80::numeric, true)
+  (null::uuid, 'he_press', '>',  3.0::numeric, true),
+  (null::uuid, 'h2o_flow', '<',  0.6::numeric, true),
+  (null::uuid, 'h2o_temp', '>',  75::numeric,  true),
+  (null::uuid, 'shield',   '>',  80::numeric,  true),
+  (null::uuid, 'cs1',      '=',  1::numeric,   true)   -- compressor: 0 normal, 1 alarm
 ) as v(asset_id, field, comparator, threshold, enabled)
 where not exists (
   select 1 from public.alert_rules ar where ar.asset_id is null and ar.field = v.field
