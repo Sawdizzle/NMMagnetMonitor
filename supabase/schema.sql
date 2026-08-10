@@ -120,15 +120,26 @@ create table if not exists public.alert_rules (
   created_at  timestamptz not null default now()
 );
 
--- --- alert_events (fired alerts; currently unused) -------------------
+-- --- alert_events (fired alerts; opened/resolved by evaluate_alerts) --
 create table if not exists public.alert_events (
   id             bigint      generated always as identity primary key,
   asset_id       uuid        not null references public.assets(id) on delete cascade,
   alert_rule_id  uuid        references public.alert_rules(id) on delete set null,
-  kind           text        not null,   -- e.g. 'offline', 'threshold'
+  kind           text        not null,   -- 'offline' | 'threshold'
   message        text        not null,
   triggered_at   timestamptz not null default now(),
-  resolved_at    timestamptz
+  resolved_at    timestamptz,
+  notified_at    timestamptz             -- set once a notifier has delivered it
+);
+
+-- --- alert_recipients (who receives alert emails) --------------------
+-- Reached only via SECURITY DEFINER / service_role (no public policy).
+create table if not exists public.alert_recipients (
+  id         uuid primary key default gen_random_uuid(),
+  channel    text not null default 'email' check (channel in ('email','sms')),
+  address    text not null,
+  enabled    boolean not null default true,
+  created_at timestamptz not null default now()
 );
 
 
@@ -564,6 +575,157 @@ AS $function$
 $function$;
 
 
+-- ── Gateway token rotation (backs the admin "Rotate token" button) ──
+CREATE OR REPLACE FUNCTION public.admin_rotate_gateway_token(p_actor_username text, p_actor_pin text, p_asset_id uuid)
+ RETURNS text
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+declare
+  v_token text;
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then
+    raise exception 'not authorized';
+  end if;
+  update assets
+     set gateway_token = encode(extensions.gen_random_bytes(24), 'hex')
+   where id = p_asset_id
+  returning gateway_token into v_token;
+  if v_token is null then
+    raise exception 'Asset not found.';
+  end if;
+  return v_token;
+end;
+$function$;
+
+
+-- =====================================================================
+-- ALERTING (offline + threshold/state rules; evaluated by pg_cron once live)
+-- =====================================================================
+
+-- Evaluate offline + threshold/state conditions and open/resolve alert_events.
+-- Idempotent. A per-asset rule overrides the global (asset_id NULL) rule for
+-- the same field. Inert until scheduled with pg_cron; sends nothing itself.
+CREATE OR REPLACE FUNCTION public.evaluate_alerts()
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare r record;
+begin
+  -- OFFLINE open
+  for r in
+    select a.id, a.name, a.last_seen_at, a.offline_threshold_minutes
+    from assets a
+    where a.last_seen_at is not null
+      and a.last_seen_at < now() - make_interval(mins => a.offline_threshold_minutes)
+  loop
+    if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
+      insert into alert_events (asset_id, kind, message)
+      values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
+    end if;
+  end loop;
+  -- OFFLINE resolve
+  update alert_events e set resolved_at=now()
+  from assets a
+  where e.asset_id=a.id and e.kind='offline' and e.resolved_at is null
+    and a.last_seen_at >= now() - make_interval(mins => a.offline_threshold_minutes);
+
+  -- THRESHOLD / STATE with per-asset override
+  for r in
+    with effective as (
+      select distinct on (a.id, ar.field)
+        a.id as asset_id, a.name, ar.id as rule_id, ar.field, ar.comparator, ar.threshold
+      from assets a
+      join alert_rules ar on (ar.asset_id = a.id or ar.asset_id is null)
+      where ar.enabled
+      order by a.id, ar.field, (ar.asset_id is not null) desc
+    )
+    select e.asset_id, e.name, e.rule_id, e.field, e.comparator, e.threshold,
+      case e.field when 'he_lvl' then lt.he_lvl when 'he_press' then lt.he_press
+        when 'h2o_flow' then lt.h2o_flow when 'h2o_temp' then lt.h2o_temp
+        when 'shield' then lt.shield when 'cs1' then lt.cs1 end as value
+    from effective e
+    join latest_telemetry lt on lt.asset_id = e.asset_id
+  loop
+    if r.value is null then continue; end if;
+    if (r.comparator='<' and r.value<r.threshold) or (r.comparator='<=' and r.value<=r.threshold)
+    or (r.comparator='>' and r.value>r.threshold) or (r.comparator='>=' and r.value>=r.threshold)
+    or (r.comparator='=' and r.value=r.threshold) or (r.comparator='!=' and r.value<>r.threshold) then
+      if not exists (select 1 from alert_events e where e.alert_rule_id=r.rule_id and e.asset_id=r.asset_id and e.resolved_at is null) then
+        insert into alert_events (asset_id, alert_rule_id, kind, message)
+        values (r.asset_id, r.rule_id, 'threshold', format('%s %s %s %s (now %s)', r.name, r.field, r.comparator, r.threshold, r.value));
+      end if;
+    else
+      update alert_events set resolved_at=now() where alert_rule_id=r.rule_id and asset_id=r.asset_id and resolved_at is null;
+    end if;
+  end loop;
+end;
+$function$;
+
+-- Admin RPCs to manage alert rules (PIN-gated, same pattern as other admin_*).
+CREATE OR REPLACE FUNCTION public.admin_list_alert_rules(p_actor_username text, p_actor_pin text)
+ RETURNS TABLE(id uuid, asset_id uuid, asset_name text, field text, comparator text, threshold numeric, enabled boolean, created_at timestamptz)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  return query
+    select ar.id, ar.asset_id, a.name, ar.field, ar.comparator, ar.threshold, ar.enabled, ar.created_at
+    from alert_rules ar
+    left join assets a on a.id = ar.asset_id
+    order by (ar.asset_id is not null), a.name nulls first, ar.field;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.admin_upsert_alert_rule(p_actor_username text, p_actor_pin text, p_rule_id uuid, p_asset_id uuid, p_field text, p_comparator text, p_threshold numeric, p_enabled boolean)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+declare v_id uuid;
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  if p_field not in ('he_lvl','he_press','h2o_flow','h2o_temp','shield','cs1') then
+    raise exception 'unknown metric: %', p_field;
+  end if;
+  if p_comparator not in ('<','<=','>','>=','=','!=') then
+    raise exception 'invalid comparator: %', p_comparator;
+  end if;
+  if p_rule_id is null then
+    insert into alert_rules (asset_id, field, comparator, threshold, enabled)
+    values (p_asset_id, p_field, p_comparator, p_threshold, coalesce(p_enabled, true))
+    returning id into v_id;
+  else
+    update alert_rules
+       set asset_id = p_asset_id, field = p_field, comparator = p_comparator,
+           threshold = p_threshold, enabled = coalesce(p_enabled, true)
+     where id = p_rule_id
+     returning id into v_id;
+  end if;
+  return v_id;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.admin_delete_alert_rule(p_actor_username text, p_actor_pin text, p_rule_id uuid)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  delete from alert_rules where id = p_rule_id;
+  return true;
+end;
+$function$;
+
+
 -- =====================================================================
 -- ROW LEVEL SECURITY
 -- =====================================================================
@@ -579,6 +741,7 @@ alter table public.assets            enable row level security;
 alter table public.telemetry_samples enable row level security;
 alter table public.alert_rules       enable row level security;
 alter table public.alert_events      enable row level security;
+alter table public.alert_recipients  enable row level security;  -- no policy: SECURITY DEFINER / service_role only
 
 -- Open read policies (candidates for tightening under F-1).
 create policy "public read sites"        on public.sites             for select to public using (true);
@@ -593,3 +756,21 @@ create policy "public read alert_events" on public.alert_events      for select 
 -- grants; RLS (above) is what actually gates access. Reproduced here as a
 -- reminder that the security boundary is the POLICY set, not the GRANTs.
 -- (Left as Supabase defaults; no custom GRANT statements were in use.)
+
+
+-- =====================================================================
+-- SEED — fleet-wide alert defaults (global rules; asset_id NULL)
+-- =====================================================================
+-- The confirmed starting thresholds. Per-asset overrides and the compressor
+-- rule are added through the admin Alerts UI. Idempotent (skips if present).
+insert into public.alert_rules (asset_id, field, comparator, threshold, enabled)
+select v.asset_id, v.field, v.comparator, v.threshold, v.enabled
+from (values
+  (null::uuid, 'he_press', '>', 3.0::numeric, true),
+  (null::uuid, 'h2o_flow', '<', 0.6::numeric, true),
+  (null::uuid, 'h2o_temp', '>', 75::numeric, true),
+  (null::uuid, 'shield',   '>', 80::numeric, true)
+) as v(asset_id, field, comparator, threshold, enabled)
+where not exists (
+  select 1 from public.alert_rules ar where ar.asset_id is null and ar.field = v.field
+);
