@@ -467,19 +467,23 @@ function AdminPanel({ me }: { me: Session }) {
 
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10 max-w-5xl mx-auto" role="main">
-      <Link href="/" className="text-xs text-[var(--text-dim)] hover:text-[var(--accent)]">
-        &larr; Back to dashboard
+      <Link href="/" className="back-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Back to fleet
       </Link>
-      <h1 className="text-2xl md:text-3xl font-semibold mt-4 mb-8">Admin</h1>
+      <p className="eyebrow mt-4 mb-1.5">Fleet management</p>
+      <h1 className="text-2xl md:text-3xl font-semibold tracking-tight mb-8">Admin</h1>
 
       {status && (
-        <p className="mb-6 text-sm font-mono-data rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-2" role="status" aria-live="polite">
+        <p className="mb-6 text-sm font-mono-data rounded-md border border-[var(--border-soft)] bg-[var(--card)] px-3 py-2" role="status" aria-live="polite">
           {status}
         </p>
       )}
 
       <div className="grid md:grid-cols-2 gap-6 mb-10">
-        <form onSubmit={handleAddSite} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-col gap-3">
+        <form onSubmit={handleAddSite} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add site</h2>
           <Field label="Site name">
             <input required value={siteName} onChange={(e) => setSiteName(e.target.value)} className="input" />
@@ -490,7 +494,7 @@ function AdminPanel({ me }: { me: Session }) {
           <button type="submit" className="btn-primary">Add site</button>
         </form>
 
-        <form onSubmit={handleAddAsset} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-col gap-3">
+        <form onSubmit={handleAddAsset} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add MagMon asset</h2>
           <Field label="Site">
             <select required value={assetSiteId} onChange={(e) => setAssetSiteId(e.target.value)} className="input">
@@ -533,7 +537,7 @@ function AdminPanel({ me }: { me: Session }) {
 
       <section className="mb-10">
         <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Existing sites</h2>
-        <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
           {sites.map((s) => (
             <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
               <div>
@@ -555,7 +559,7 @@ function AdminPanel({ me }: { me: Session }) {
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
             Edit site &mdash; {sites.find((s) => s.id === editingSiteId)?.name}
           </h2>
-          <form onSubmit={handleSaveSiteEdit} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-col gap-3 max-w-md">
+          <form onSubmit={handleSaveSiteEdit} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 max-w-md">
             <Field label="Site name">
               <input required value={editSiteName} onChange={(e) => setEditSiteName(e.target.value)} className="input" />
             </Field>
@@ -572,7 +576,7 @@ function AdminPanel({ me }: { me: Session }) {
 
       <section className="mb-10">
         <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Existing assets</h2>
-        <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
           {assets.map((a) => (
             <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
               <div>
@@ -595,7 +599,7 @@ function AdminPanel({ me }: { me: Session }) {
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
             Edit asset &mdash; {assets.find((a) => a.id === editingAssetId)?.name}
           </h2>
-          <form onSubmit={handleSaveAssetEdit} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-col gap-3 max-w-xl">
+          <form onSubmit={handleSaveAssetEdit} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 max-w-xl">
             <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
               Site
               <select required value={editSiteId} onChange={(e) => setEditSiteId(e.target.value)} className="input">
@@ -654,7 +658,7 @@ function AdminPanel({ me }: { me: Session }) {
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
             Pi install script {scriptForAsset ? `— ${assets.find((a) => a.id === scriptForAsset)?.name ?? ""}` : ""}
           </h2>
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 mb-3 flex flex-wrap items-end gap-4">
+          <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-4 mb-3 flex flex-wrap items-end gap-4">
             <Field label="Poll interval (min)">
               <input type="number" min={1} value={pollMinutes} onChange={(e) => setPollMinutes(Number(e.target.value))} className="input w-24" />
             </Field>
@@ -696,7 +700,7 @@ function AdminPanel({ me }: { me: Session }) {
           A rule scoped to <strong>All assets</strong> is the fleet default. Scope a rule to a single asset to
           override the fleet default for just that unit.
         </p>
-        <form onSubmit={handleSaveRule} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
+        <form onSubmit={handleSaveRule} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
           <Field label="Scope">
             <select value={ruleScope} onChange={(e) => setRuleScope(e.target.value)} className="input">
               <option value="">All assets</option>
@@ -732,7 +736,7 @@ function AdminPanel({ me }: { me: Session }) {
           )}
         </form>
 
-        <div className="rounded-lg border border-[var(--border)] overflow-hidden mb-10">
+        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden mb-10">
           {alertRules.map((r) => {
             const metric = ALERT_METRICS.find((m) => m.key === r.field);
             return (
@@ -761,7 +765,7 @@ function AdminPanel({ me }: { me: Session }) {
 
       <section className="mb-10">
         <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Users</h2>
-        <form onSubmit={handleAddUser} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
+        <form onSubmit={handleAddUser} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
           <Field label="Username">
             <input required value={userName} onChange={(e) => setUserName(e.target.value)} className="input" />
           </Field>
@@ -777,7 +781,7 @@ function AdminPanel({ me }: { me: Session }) {
           <button type="submit" className="btn-primary">Add user</button>
         </form>
 
-        <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
           {users.map((u) => (
             <div key={u.username} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
               <div>

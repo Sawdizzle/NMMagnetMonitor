@@ -47,21 +47,24 @@ function AccountPanel({ session }: { session: Session }) {
 
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10 max-w-lg mx-auto" role="main">
-      <Link href="/" className="text-xs text-[var(--text-dim)] hover:text-[var(--accent)]">
-        &larr; Back to dashboard
+      <Link href="/" className="back-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Back to fleet
       </Link>
-      <h1 className="text-2xl font-semibold mt-4 mb-1">Account</h1>
+      <h1 className="text-2xl font-semibold mt-4 mb-1 tracking-tight">Account</h1>
       <p className="text-xs text-[var(--text-dim)] mb-8">
         Signed in as {session.username} &middot; {session.role}
       </p>
 
       {status && (
-        <p className="mb-6 text-sm font-mono-data rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-2" role="status" aria-live="polite">
+        <p className="mb-6 text-sm font-mono-data rounded-md border border-[var(--border-soft)] bg-[var(--card)] px-3 py-2" role="status" aria-live="polite">
           {status}
         </p>
       )}
 
-      <form onSubmit={handleNameChange} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
+      <form onSubmit={handleNameChange} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
         <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Change username</h2>
         <Field label="New username">
           <input required value={newName} onChange={(e) => setNewName(e.target.value)} className="input" />
@@ -69,7 +72,7 @@ function AccountPanel({ session }: { session: Session }) {
         <button type="submit" className="btn-primary">Save</button>
       </form>
 
-      <form onSubmit={handlePinChange} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
+      <form onSubmit={handlePinChange} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
         <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Change PIN</h2>
         <Field label="Current PIN">
           <input

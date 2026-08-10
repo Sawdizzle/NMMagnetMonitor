@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import { supabase, type Site, type Asset, type TelemetrySample } from "@/lib/supabase";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
@@ -19,7 +19,7 @@ const HISTORY_HOURS = 1;
 const METRICS: { key: keyof TelemetrySample; label: string; unit: string; color: string }[] = [
   { key: "he_lvl", label: "He Lvl", unit: "%", color: "#22d3ee" },
   { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#5b93f7" },
-  { key: "he_press", label: "He Press", unit: "psi", color: "#77dc3c" },
+  { key: "he_press", label: "He Press", unit: "psi", color: "#4ade80" },
   { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#fbbf24" },
   { key: "shield", label: "Shield", unit: "", color: "#f0575a" },
   { key: "cs1", label: "CS1", unit: "", color: "#a78bfa" },
@@ -94,60 +94,104 @@ export default function Dashboard() {
   const offlineCount = assets.filter((a) => computeAssetHealth(a) === "offline").length;
   const unknownCount = assets.filter((a) => computeAssetHealth(a) === "unknown").length;
 
+  const siteCount = new Set(assets.map((a) => a.site_id)).size;
+
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
-      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between mb-10">
-        <div>
-          <p className="text-xs tracking-[0.2em] uppercase text-[var(--text-dim)] mb-1">
-            Numed &middot; Remote Monitoring
-          </p>
-          <h1 className="text-2xl md:text-3xl font-semibold">MagMon Fleet Dashboard</h1>
-        </div>
-        <div
-          className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-x-6 font-mono-data text-sm"
-          role="group"
-          aria-label="Filter assets by status"
-        >
-          <StatusPill
-            color={STATUS_COLORS.online}
-            label={`${onlineCount} online`}
-            active={statusFilter === "online"}
-            onClick={() => setStatusFilter(statusFilter === "online" ? "all" : "online")}
-          />
-          <StatusPill
-            color={STATUS_COLORS.offline}
-            label={`${offlineCount} offline`}
-            active={statusFilter === "offline"}
-            onClick={() => setStatusFilter(statusFilter === "offline" ? "all" : "offline")}
-          />
-          <StatusPill
-            color={STATUS_COLORS.unknown}
-            label={`${unknownCount} unknown`}
-            active={statusFilter === "unknown"}
-            onClick={() => setStatusFilter(statusFilter === "unknown" ? "all" : "unknown")}
-          />
-          {statusFilter !== "all" && (
-            <button
-              onClick={() => setStatusFilter("all")}
-              className="text-[var(--text-dim)] hover:text-[var(--accent)] text-xs underline"
-            >
-              clear filter
-            </button>
-          )}
-          <span className="flex items-center gap-x-3 flex-wrap">
-            <span className="flex items-center gap-1.5 text-[var(--text-dim)]">
-              <span className="relative flex h-2 w-2" aria-hidden="true">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ backgroundColor: "var(--status-online)" }} />
-                <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: "var(--status-online)" }} />
-              </span>
-              LIVE
-            </span>
-            <span className="text-[var(--text-dim)]">
-              {lastRefreshed ? `updated ${lastRefreshed.toLocaleTimeString()}` : ""}
-            </span>
+      <header className="mb-6">
+        <p className="eyebrow mb-1.5">Numed &middot; Remote Monitoring</p>
+        <div className="flex items-center gap-3">
+          {/* The desktop top bar already carries the brand mark, so hide it here
+              at md+ to avoid a duplicate; keep it on mobile where there's no top bar. */}
+          <span className="dash-mark md:hidden" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M5 4v7a7 7 0 0 0 14 0V4" stroke="#3fb9e0" strokeWidth="2.2" strokeLinecap="round" />
+              <path d="M3.5 4h4M16.5 4h4" stroke="#3fb9e0" strokeWidth="2.2" strokeLinecap="round" />
+              <circle cx="12" cy="19.5" r="1.6" fill="var(--status-online)" />
+            </svg>
           </span>
+          <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-[var(--text-dim)]">
+          <span className="flex items-center gap-1.5 text-[var(--text-muted)]">
+            <span className="relative flex h-1.5 w-1.5" aria-hidden="true">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-70" style={{ backgroundColor: "var(--status-online)" }} />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: "var(--status-online)" }} />
+            </span>
+            Live
+          </span>
+          <span aria-hidden="true">&middot;</span>
+          <span className="font-mono-data">
+            {lastRefreshed ? `updated ${lastRefreshed.toLocaleTimeString()}` : "connecting…"}
+          </span>
+          {assets.length > 0 && (
+            <>
+              <span aria-hidden="true">&middot;</span>
+              <span>
+                {assets.length} {assets.length === 1 ? "asset" : "assets"} &middot; {siteCount}{" "}
+                {siteCount === 1 ? "site" : "sites"}
+              </span>
+            </>
+          )}
         </div>
       </header>
+
+      <div
+        className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-7"
+        role="group"
+        aria-label="Filter assets by status"
+      >
+        <StatusTile
+          color="var(--accent)"
+          count={assets.length}
+          label="All assets"
+          active={statusFilter === "all"}
+          onClick={() => setStatusFilter("all")}
+          icon={
+            <>
+              <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
+              <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
+              <rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
+              <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
+            </>
+          }
+        />
+        <StatusTile
+          color={STATUS_COLORS.online}
+          count={onlineCount}
+          label="Online"
+          active={statusFilter === "online"}
+          onClick={() => setStatusFilter(statusFilter === "online" ? "all" : "online")}
+          icon={<path d="M5 12.5l4 4 10-10" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />}
+        />
+        <StatusTile
+          color={STATUS_COLORS.offline}
+          count={offlineCount}
+          label="Offline"
+          active={statusFilter === "offline"}
+          onClick={() => setStatusFilter(statusFilter === "offline" ? "all" : "offline")}
+          icon={
+            <>
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 7v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+              <circle cx="12" cy="17" r="1.3" fill="currentColor" />
+            </>
+          }
+        />
+        <StatusTile
+          color={STATUS_COLORS.unknown}
+          count={unknownCount}
+          label="Unknown"
+          active={statusFilter === "unknown"}
+          onClick={() => setStatusFilter(statusFilter === "unknown" ? "all" : "unknown")}
+          icon={
+            <>
+              <path d="M9.2 9a2.8 2.8 0 1 1 3.8 2.6c-.8.4-1 .9-1 1.7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <circle cx="12" cy="17" r="1.3" fill="currentColor" />
+            </>
+          }
+        />
+      </div>
 
       {loading && <p className="text-[var(--text-muted)]" aria-live="polite">Loading fleet status&hellip;</p>}
       {error && (
@@ -175,34 +219,38 @@ export default function Dashboard() {
   );
 }
 
-function StatusPill({
+function StatusTile({
   color,
+  count,
   label,
   active,
   onClick,
+  icon,
 }: {
   color: string;
+  count: number;
   label: string;
   active?: boolean;
   onClick?: () => void;
+  icon: ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
       aria-pressed={active}
-      className="flex items-center gap-2 rounded-full px-3 transition-colors"
-      style={{
-        backgroundColor: active ? "var(--bg-elevated)" : "transparent",
-        border: active ? "1px solid var(--border)" : "1px solid transparent",
-        color: color,
-      }}
+      aria-label={`${count} ${label}${active ? ", active filter" : ""}`}
+      className={`stat-tile${active ? " active" : ""}`}
+      style={{ ["--sc" as string]: color }}
     >
-      <span
-        className="inline-block w-2 h-2 rounded-full"
-        style={{ backgroundColor: color }}
-        aria-hidden="true"
-      />
-      {label}
+      <span className="st-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          {icon}
+        </svg>
+      </span>
+      <span>
+        <span className="st-num font-mono-data block">{count}</span>
+        <span className="st-lbl block">{label}</span>
+      </span>
     </button>
   );
 }
@@ -215,7 +263,8 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
     <Link
       href={`/asset/${asset.id}`}
       aria-label={`${asset.name}, ${status}, ${mins === null ? "never reported" : `last seen ${mins} minutes ago`}. View details.`}
-      className="group rounded-xl border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--card-hover)] transition-colors p-5 flex flex-col gap-4"
+      className="asset-card group rounded-2xl border border-[var(--border-soft)] bg-[var(--card)] hover:bg-[var(--card-hover)] hover:border-[var(--border)] transition-colors p-5 pl-6 flex flex-col gap-4"
+      style={{ ["--sc" as string]: STATUS_COLORS[status] }}
     >
       <div className="flex items-start justify-between">
         <div>
@@ -232,7 +281,7 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
           const value = asset.latest?.[m.key] as number | null | undefined;
           const series = asset.history.map((h) => h[m.key] as number | null | undefined);
           return (
-            <div key={m.key} className="rounded-md bg-[var(--bg-elevated)] px-2 py-1.5 flex flex-col gap-1">
+            <div key={m.key} className="metric-tile flex flex-col gap-1">
               <p className="text-[var(--text-dim)] text-[10px] uppercase tracking-wide">{m.label}</p>
               <p className="font-mono-data text-sm text-[var(--text)]">
                 {value ?? "—"} <span className="text-[var(--text-dim)] text-[10px]">{m.unit}</span>
@@ -243,8 +292,9 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
         })}
       </div>
 
-      <div className="flex items-center justify-between text-xs text-[var(--text-dim)] pt-1 border-t border-[var(--border)]">
-        <span className="capitalize" style={{ color: STATUS_COLORS[status] }}>
+      <div className="flex items-center justify-between text-xs text-[var(--text-dim)] pt-3 border-t border-[var(--border-soft)]">
+        <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
+          <span className="cd" aria-hidden="true" />
           {status}
         </span>
         <span>{mins === null ? "never reported" : `${mins} min ago`}</span>

@@ -7,12 +7,13 @@
   --card: #131826;
   --card-hover: #171d2d;
   --border: #232a3a;
+  --border-soft: #1b2130;
   --text: #e8ebf2;
   --text-muted: #8891a7;
   --text-dim: #8b96ac;
   --accent: #22d3ee;
   --accent-foreground: #0a0d13;
-  --status-online: #77dc3c;
+  --status-online: #4ade80;
   --status-offline: #f0575a;
   --status-unknown: #6b7280;
   --status-warning: #fbbf24;
@@ -20,7 +21,7 @@
   /* Chart series palette, in order, for the 6 tracked metrics */
   --chart-1: #22d3ee; /* He Lvl - cyan */
   --chart-2: #5b93f7; /* H2O Flow - blue */
-  --chart-3: #77dc3c; /* He Press - green */
+  --chart-3: #4ade80; /* He Press - green */
   --chart-4: #fbbf24; /* H2O Temp - amber */
   --chart-5: #f0575a; /* Shield - red */
   --chart-6: #a78bfa; /* CS1 - violet */
@@ -133,6 +134,225 @@ button {
 .btn-secondary:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* ---- Dashboard header ---- */
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: color 0.15s;
+}
+.back-link:hover {
+  color: var(--accent);
+}
+.back-link svg {
+  transition: transform 0.15s;
+}
+.back-link:hover svg {
+  transform: translateX(-2px);
+}
+.dash-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(150deg, #16324a, #0e1a2a);
+  border: 1px solid #24435c;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+/* ---- Fleet status tiles (summary + filter) ----
+   Each tile's status color is passed in via the --sc custom property. */
+.stat-tile {
+  position: relative;
+  text-align: left;
+  cursor: pointer;
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: 13px;
+  padding: 13px 15px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.stat-tile:hover {
+  background: var(--card-hover);
+  border-color: var(--border);
+}
+.stat-tile:active {
+  transform: translateY(1px);
+}
+.stat-tile .st-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--sc) 15%, transparent);
+  color: var(--sc);
+}
+.stat-tile .st-num {
+  font-size: 1.5rem;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+.stat-tile .st-lbl {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.stat-tile.active {
+  border-color: var(--sc);
+  background: color-mix(in srgb, var(--sc) 9%, var(--card));
+}
+.stat-tile.active::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 13px;
+  box-shadow: 0 0 0 1px var(--sc), 0 6px 20px -8px var(--sc);
+  pointer-events: none;
+}
+
+/* ---- Status chip (dot + label) ---- */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+  padding: 3px 9px 3px 8px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--sc) 14%, transparent);
+  color: var(--sc);
+  border: 1px solid color-mix(in srgb, var(--sc) 30%, transparent);
+}
+.status-chip .cd {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ---- Asset card status rail + metric tiles ---- */
+.asset-card {
+  position: relative;
+  overflow: hidden;
+}
+.asset-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--sc);
+  opacity: 0.85;
+}
+.metric-tile {
+  background: var(--bg-elevated);
+  border-radius: 9px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+}
+
+/* ---- Adaptive app nav: top bar on desktop, bottom tab bar on mobile ---- */
+.app-topbar {
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+@media (min-width: 768px) {
+  .app-topbar {
+    padding-left: 40px;
+    padding-right: 40px;
+  }
+}
+.app-toplink {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: color 0.15s, background 0.15s;
+}
+.app-toplink:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+.app-toplink.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.app-bottomnav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border-soft);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.app-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 9px 0 7px;
+  min-height: 56px;
+  color: var(--text-dim);
+  transition: color 0.15s;
+}
+.app-tab.active {
+  color: var(--accent);
+}
+.app-tab-icon {
+  display: grid;
+  place-items: center;
+  height: 24px;
+}
+.app-tab-label {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+/* Keep page content clear of the fixed bottom bar on mobile. The ID selector
+   outranks the Tailwind p-6 utility, so only the bottom side is overridden. */
+@media (max-width: 767px) {
+  #main-content {
+    padding-bottom: calc(56px + env(safe-area-inset-bottom) + 1rem);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

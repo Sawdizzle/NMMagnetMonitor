@@ -3,7 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 
 export const metadata: Metadata = {
-  title: "MagMon Fleet Dashboard | Numed",
+  title: "Magnet Monitor Dashboard | Numed",
   description: "Remote monitoring for GE MagMon magnet monitors",
   manifest: "/manifest.webmanifest",
   appleWebApp: {

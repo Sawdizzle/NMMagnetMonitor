@@ -1,6 +1,7 @@
 "use client";
 
 import LoginScreen from "./LoginScreen";
+import AppNav from "./AppNav";
 import { useAuth } from "@/lib/auth";
 import type { Session } from "@/lib/auth";
 
@@ -23,12 +24,18 @@ export default function Protected({
   if (!session) {
     return <LoginScreen />;
   }
-  if (requireAdmin && session.role !== "admin") {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-[var(--text-muted)] text-sm" role="alert">
-        You don&apos;t have access to this page.
-      </div>
-    );
-  }
-  return <>{children(session)}</>;
+
+  const denied = requireAdmin && session.role !== "admin";
+  return (
+    <>
+      <AppNav session={session} />
+      {denied ? (
+        <div className="min-h-screen flex items-center justify-center text-[var(--text-muted)] text-sm" role="alert">
+          You don&apos;t have access to this page.
+        </div>
+      ) : (
+        children(session)
+      )}
+    </>
+  );
 }

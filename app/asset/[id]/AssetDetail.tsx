@@ -13,7 +13,7 @@ const HISTORY_HOURS = 24;
 const METRICS: { key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">; label: string; unit: string; color: string }[] = [
   { key: "he_lvl", label: "He Lvl", unit: "%", color: "#22d3ee" },
   { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#5b93f7" },
-  { key: "he_press", label: "He Press", unit: "psi", color: "#77dc3c" },
+  { key: "he_press", label: "He Press", unit: "psi", color: "#4ade80" },
   { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#fbbf24" },
   { key: "shield", label: "Shield", unit: "", color: "#f0575a" },
   { key: "cs1", label: "CS1", unit: "", color: "#a78bfa" },
@@ -79,23 +79,27 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
 
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
-      <Link href="/" className="text-xs text-[var(--text-dim)] hover:text-[var(--accent)]">
-        &larr; Back to fleet
+      <Link href="/" className="back-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Back to fleet
       </Link>
 
       <header className="flex items-start justify-between mt-4 mb-8">
         <div>
-          <p className="text-xs tracking-[0.2em] uppercase text-[var(--text-dim)] mb-1">
-            {site?.name ?? "Unassigned site"}
-          </p>
-          <h1 className="text-2xl md:text-3xl font-semibold">{asset.name}</h1>
-          <p className="text-xs text-[var(--text-dim)] mt-1">
-            {asset.magmon_version.toUpperCase()} &middot;{" "}
-            <span style={{ color: STATUS_COLORS[status] }} className="capitalize">
+          <p className="eyebrow mb-1.5">{site?.name ?? "Unassigned site"}</p>
+          <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">{asset.name}</h1>
+          <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
+            <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
+              <span className="cd" aria-hidden="true" />
               {status}
-            </span>{" "}
-            &middot; {mins === null ? "never reported" : `last seen ${mins} min ago`}
-          </p>
+            </span>
+            <span className="text-xs text-[var(--text-dim)]">
+              {asset.magmon_version.toUpperCase()} &middot;{" "}
+              {mins === null ? "never reported" : `last seen ${mins} min ago`}
+            </span>
+          </div>
         </div>
         <FieldRing status={status} size={56} />
       </header>
@@ -134,7 +138,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       {/* Mobile: stacked cards, no horizontal scroll needed */}
       <div className="flex flex-col gap-2 md:hidden">
         {tableRows.map((s) => (
-          <div key={s.created_at} className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
+          <div key={s.created_at} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-3">
             <p className="text-xs text-[var(--text-dim)] mb-2 flex items-center justify-between">
               <span>{new Date(s.created_at).toLocaleString()}</span>
               <span className="text-[10px]">avg of {s.sample_count}</span>
@@ -150,14 +154,14 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           </div>
         ))}
         {tableRows.length === 0 && (
-          <p className="text-center text-[var(--text-dim)] py-6 rounded-lg border border-dashed border-[var(--border)]">
+          <p className="text-center text-[var(--text-dim)] py-6 rounded-xl border border-dashed border-[var(--border)]">
             No telemetry received yet.
           </p>
         )}
       </div>
 
       {/* Desktop/tablet: full table */}
-      <div className="hidden md:block overflow-x-auto rounded-lg border border-[var(--border)]">
+      <div className="hidden md:block overflow-x-auto rounded-xl border border-[var(--border-soft)]">
         <table className="w-full text-sm font-mono-data">
           <thead>
             <tr className="text-left text-[var(--text-dim)] border-b border-[var(--border)] bg-[var(--bg-elevated)]">
@@ -202,7 +206,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
 
 function ReadingCell({ label, value }: { label: string; value: number | null | undefined }) {
   return (
-    <div className="rounded-md bg-[var(--bg-elevated)] px-2 py-1">
+    <div className="metric-tile !py-1">
       <p className="text-[9px] uppercase tracking-wide text-[var(--text-dim)]">{label}</p>
       <p>{value ?? "—"}</p>
     </div>
@@ -211,7 +215,7 @@ function ReadingCell({ label, value }: { label: string; value: number | null | u
 
 function MetricCard({ label, value, unit }: { label: string; value: number | null | undefined; unit: string }) {
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-3">
+    <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-3 py-3">
       <p className="text-[10px] uppercase tracking-wide text-[var(--text-dim)]">{label}</p>
       <p className="font-mono-data text-lg mt-0.5">
         {value ?? "—"} <span className="text-xs text-[var(--text-dim)]">{unit}</span>
