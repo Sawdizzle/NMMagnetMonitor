@@ -5,7 +5,7 @@
  * DELETE statements, so a constraint violation propagates to the browser
  * verbatim — e.g.
  *
- *   duplicate key value violates unique constraint "sites_name_unique"
+ *   duplicate key value violates unique constraint "assets_name_unique"
  *
  * That is accurate but it reads like a crash, and it does not tell the person
  * what to do next. Map the cases we deliberately created constraints for to
@@ -22,8 +22,6 @@ export type SupabaseLikeError = {
 
 /** Constraint name -> what the admin should understand and do. */
 const CONSTRAINT_MESSAGES: Record<string, string> = {
-  sites_name_unique:
-    "A site with that name already exists. Site names are unique — each site maps to exactly one asset tag, so there is nothing to add here.",
   assets_name_unique:
     "An asset with that tag already exists. Asset tags are unique across the fleet. If you are re-deploying this unit, edit the existing asset instead of creating a second one.",
 };

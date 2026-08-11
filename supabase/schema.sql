@@ -46,15 +46,6 @@ create extension if not exists "uuid-ossp"   with schema extensions;
 -- TABLES
 -- =====================================================================
 
--- --- sites -----------------------------------------------------------
-create table if not exists public.sites (
-  id          uuid        primary key default gen_random_uuid(),
-  name        text        not null,
-  address     text,
-  created_at  timestamptz not null default now(),
-  constraint sites_name_unique unique (name)
-);
-
 -- --- users (custom PIN auth; PINs are bcrypt-hashed) ------------------
 create table if not exists public.users (
   id               uuid        primary key default gen_random_uuid(),
@@ -75,10 +66,14 @@ create table if not exists public.app_settings (
 );
 
 -- --- assets (one GE MagMon unit) -------------------------------------
+-- Location metadata (site_name/site_address) lives here as optional free
+-- text. The former normalized `sites` table was folded in: in practice the
+-- relationship was strictly 1:1, so a separate table was pure overhead.
 create table if not exists public.assets (
   id                         uuid        primary key default gen_random_uuid(),
-  site_id                    uuid        not null references public.sites(id) on delete cascade,
   name                       text        not null,
+  site_name                  text,
+  site_address               text,
   magmon_version             text        not null default 'v1',
   gateway_token              text        not null default encode(extensions.gen_random_bytes(24), 'hex'),
   offline_threshold_minutes  integer     not null default 15,
@@ -155,8 +150,8 @@ create table if not exists public.alert_recipients (
 -- monitor_password, monitor_host/port/username). This is the shape the
 -- dashboard reads.
 create or replace view public.public_assets as
-  select id, site_id, name, magmon_version, offline_threshold_minutes,
-         status, last_seen_at, created_at
+  select id, name, magmon_version, site_name, site_address,
+         offline_threshold_minutes, status, last_seen_at, created_at
   from public.assets;
 
 -- latest_telemetry: newest reading per asset.
@@ -299,71 +294,11 @@ $function$;
 
 -- --- admin (all gated by is_admin) -----------------------------------
 
-CREATE OR REPLACE FUNCTION public.admin_create_site(p_actor_username text, p_actor_pin text, p_name text, p_address text)
- RETURNS sites
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public', 'extensions'
-AS $function$
-declare
-  result sites;
-begin
-  if not is_admin(p_actor_username, p_actor_pin) then
-    raise exception 'not authorized';
-  end if;
-  insert into sites (name, address) values (p_name, p_address) returning * into result;
-  return result;
-end;
-$function$;
+-- The site CRUD RPCs (admin_create_site/admin_update_site/admin_delete_site)
+-- were dropped when `sites` was folded into `assets`. Location is now set on
+-- the asset via admin_create_asset / admin_update_asset below.
 
-CREATE OR REPLACE FUNCTION public.admin_update_site(p_actor_username text, p_actor_pin text, p_site_id uuid, p_name text, p_address text)
- RETURNS sites
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public'
-AS $function$
-declare
-  result sites;
-begin
-  if not is_admin(p_actor_username, p_actor_pin) then
-    raise exception 'not authorized';
-  end if;
-  update sites set name = p_name, address = p_address where id = p_site_id returning * into result;
-  return result;
-end;
-$function$;
-
-CREATE OR REPLACE FUNCTION public.admin_delete_site(p_actor_username text, p_actor_pin text, p_site_id uuid)
- RETURNS boolean
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public'
-AS $function$
-declare
-  v_count int;
-  v_names text;
-begin
-  if not is_admin(p_actor_username, p_actor_pin) then
-    raise exception 'not authorized';
-  end if;
-
-  select count(*), string_agg(name, ', ' order by name)
-    into v_count, v_names
-  from assets
-  where site_id = p_site_id;
-
-  if v_count > 0 then
-    raise exception
-      'This site still has % asset(s) attached (%). Delete or move them first. Deleting the site would also delete those assets, their gateway tokens, and all of their telemetry.',
-      v_count, v_names;
-  end if;
-
-  delete from sites where id = p_site_id;
-  return true;
-end;
-$function$;
-
-CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_site_id uuid, p_name text, p_magmon_version text, p_offline_threshold_minutes integer DEFAULT 15, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
+CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_magmon_version text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 15, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -376,19 +311,20 @@ begin
     raise exception 'not authorized';
   end if;
   insert into assets (
-    site_id, name, magmon_version, gateway_token, offline_threshold_minutes,
+    name, magmon_version, site_name, site_address, gateway_token, offline_threshold_minutes,
     status, monitor_host, monitor_port, monitor_username, monitor_password
   )
   values (
-    p_site_id, p_name, p_magmon_version, encode(extensions.gen_random_bytes(24), 'hex'), p_offline_threshold_minutes,
+    p_name, p_magmon_version, p_site_name, p_site_address, encode(extensions.gen_random_bytes(24), 'hex'), p_offline_threshold_minutes,
     'unknown', p_monitor_host, p_monitor_port, p_monitor_username, p_monitor_password
   )
   returning * into result;
+  perform _record_audit(p_actor_username, 'create_asset', 'asset', result.id::text, format('Added asset "%s"', p_name));
   return result;
 end;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.admin_update_asset(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_name text, p_site_id uuid, p_magmon_version text, p_offline_threshold_minutes integer, p_monitor_host text, p_monitor_port integer, p_monitor_username text, p_monitor_password text)
+CREATE OR REPLACE FUNCTION public.admin_update_asset(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_name text, p_magmon_version text, p_offline_threshold_minutes integer, p_monitor_host text, p_monitor_port integer, p_monitor_username text, p_monitor_password text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -402,8 +338,9 @@ begin
   end if;
   update assets set
     name = p_name,
-    site_id = p_site_id,
     magmon_version = p_magmon_version,
+    site_name = p_site_name,
+    site_address = p_site_address,
     offline_threshold_minutes = p_offline_threshold_minutes,
     monitor_host = p_monitor_host,
     monitor_port = p_monitor_port,
@@ -411,6 +348,7 @@ begin
     monitor_password = p_monitor_password
   where id = p_asset_id
   returning * into result;
+  perform _record_audit(p_actor_username, 'update_asset', 'asset', p_asset_id::text, format('Updated asset "%s"', p_name));
   return result;
 end;
 $function$;
@@ -743,7 +681,7 @@ $function$;
 -- written only from inside SECURITY DEFINER functions, so the client cannot
 -- bypass or forge them, and are read back through admin_list_audit_log.
 --
--- NOTE: every admin_* mutation RPC above (create/update/delete for sites,
+-- NOTE: every admin_* mutation RPC above (create/update/delete for
 -- assets, users, alert rules, plus reset_pin, set_role, set_invite_code, and
 -- rotate_gateway_token) was amended to call `perform _record_audit(...)` after
 -- its write. Only the audit line was added; those bodies are otherwise
@@ -842,9 +780,8 @@ $function$;
 -- RLS is enabled on every table. Tables with NO policy (users, assets,
 -- app_settings, audit_log) are therefore unreadable/unwritable directly — they
 -- are reached only through the SECURITY DEFINER functions and views above.
--- The four "public read" policies expose SELECT to everyone (see F-1).
+-- The "public read" policies expose SELECT to everyone (see F-1).
 
-alter table public.sites             enable row level security;
 alter table public.users             enable row level security;
 alter table public.app_settings      enable row level security;
 alter table public.assets            enable row level security;
@@ -855,7 +792,6 @@ alter table public.alert_recipients  enable row level security;  -- no policy: S
 alter table public.audit_log         enable row level security;  -- no policy: SECURITY DEFINER only (written by _record_audit, read by admin_list_audit_log)
 
 -- Open read policies (candidates for tightening under F-1).
-create policy "public read sites"        on public.sites             for select to public using (true);
 create policy "public read telemetry"    on public.telemetry_samples for select to public using (true);
 create policy "public read alert_rules"  on public.alert_rules       for select to public using (true);
 create policy "public read alert_events" on public.alert_events      for select to public using (true);

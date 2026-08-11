@@ -5,19 +5,15 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-export type Site = {
-  id: string;
-  name: string;
-  address: string | null;
-  created_at: string;
-};
-
-// Public-safe shape (from the `public_assets` view) — never includes gateway_token
+// Public-safe shape (from the `public_assets` view) — never includes gateway_token.
+// Location metadata (site_name/site_address) lives directly on the asset now;
+// both are optional free text, so either can be null.
 export type Asset = {
   id: string;
-  site_id: string;
   name: string;
   magmon_version: string;
+  site_name: string | null;
+  site_address: string | null;
   offline_threshold_minutes: number | null;
   status: string | null;
   last_seen_at: string | null;

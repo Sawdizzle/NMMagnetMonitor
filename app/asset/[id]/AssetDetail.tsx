@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { supabase, type Asset, type Site, type TelemetrySample, type TelemetryBucket } from "@/lib/supabase";
+import { supabase, type Asset, type TelemetrySample, type TelemetryBucket } from "@/lib/supabase";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -21,7 +21,6 @@ const METRICS: { key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">
 
 export default function AssetDetail({ assetId }: { assetId: string }) {
   const [asset, setAsset] = useState<Asset | null>(null);
-  const [site, setSite] = useState<Site | null>(null);
   const [latest, setLatest] = useState<TelemetrySample | null>(null);
   const [buckets, setBuckets] = useState<TelemetryBucket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,8 +39,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       return;
     }
 
-    const [{ data: siteRow }, { data: latestRow }, { data: bucketRows, error: bucketErr }] = await Promise.all([
-      supabase.from("sites").select("*").eq("id", assetRow.site_id).single(),
+    const [{ data: latestRow }, { data: bucketRows, error: bucketErr }] = await Promise.all([
       supabase.from("latest_telemetry").select("*").eq("asset_id", assetId).maybeSingle(),
       // Pre-aggregated in Postgres into 15-minute averaged buckets --
       // at most 96 rows for a 24h window, regardless of how many raw
@@ -56,7 +54,6 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     }
 
     setAsset(assetRow);
-    setSite(siteRow ?? null);
     setLatest(latestRow ?? null);
     setBuckets(bucketRows ?? []);
     setError(null);
@@ -88,8 +85,11 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
 
       <header className="flex items-start justify-between mt-4 mb-8">
         <div>
-          <p className="eyebrow mb-1.5">{site?.name ?? "Unassigned site"}</p>
+          <p className="eyebrow mb-1.5">{asset.site_name?.trim() || "No location set"}</p>
           <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">{asset.name}</h1>
+          {asset.site_address?.trim() && (
+            <p className="text-xs text-[var(--text-dim)] mt-1">{asset.site_address}</p>
+          )}
           <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
             <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
               <span className="cd" aria-hidden="true" />

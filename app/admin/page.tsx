@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
-import { supabase, type Site, type Asset } from "@/lib/supabase";
+import { supabase, type Asset } from "@/lib/supabase";
 import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
 import { actionError } from "@/lib/errors";
 import Protected from "@/components/Protected";
@@ -20,10 +20,11 @@ const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
 ];
 const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
 
-type TabId = "assets" | "sites" | "alerts" | "users" | "activity";
+const NO_LOCATION = "No location set";
+
+type TabId = "assets" | "alerts" | "users" | "activity";
 const TABS: { id: TabId; label: string }[] = [
   { id: "assets", label: "Assets" },
-  { id: "sites", label: "Sites" },
   { id: "alerts", label: "Alerts" },
   { id: "users", label: "Users" },
   { id: "activity", label: "Activity" },
@@ -66,7 +67,6 @@ export default function AdminPage() {
 function AdminPanel({ me }: { me: Session }) {
   const [activeTab, setActiveTab] = useState<TabId>("assets");
 
-  const [sites, setSites] = useState<Site[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
@@ -100,17 +100,14 @@ function AdminPanel({ me }: { me: Session }) {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // add-site / add-asset collapsibles
-  const [showAddSite, setShowAddSite] = useState(false);
+  // add-asset collapsible + list search
   const [showAddAsset, setShowAddAsset] = useState(false);
   const [assetSearch, setAssetSearch] = useState("");
 
-  const [siteName, setSiteName] = useState("");
-  const [siteAddress, setSiteAddress] = useState("");
-
-  const [assetSiteId, setAssetSiteId] = useState("");
   const [assetName, setAssetName] = useState("");
   const [assetVersion, setAssetVersion] = useState(MAGMON_VERSIONS[2]);
+  const [assetSiteName, setAssetSiteName] = useState("");
+  const [assetSiteAddress, setAssetSiteAddress] = useState("");
   const [offlineThreshold, setOfflineThreshold] = useState(15);
   const [monitorHost, setMonitorHost] = useState("");
   const [monitorPort, setMonitorPort] = useState(80);
@@ -139,20 +136,17 @@ function AdminPanel({ me }: { me: Session }) {
   const [ruleThreshold, setRuleThreshold] = useState<number>(3);
   const [ruleEnabled, setRuleEnabled] = useState<boolean>(true);
 
-  // inline editing
+  // inline asset editing (includes the asset's own location fields)
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
-  const [editSiteId, setEditSiteId] = useState("");
   const [editVersion, setEditVersion] = useState(MAGMON_VERSIONS[2]);
+  const [editSiteName, setEditSiteName] = useState("");
+  const [editSiteAddress, setEditSiteAddress] = useState("");
   const [editThreshold, setEditThreshold] = useState(15);
   const [editHost, setEditHost] = useState("");
   const [editPort, setEditPort] = useState(80);
   const [editUsername, setEditUsername] = useState("MMService");
   const [editPassword, setEditPassword] = useState("MagnetMonitor");
-
-  const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
-  const [editSiteName, setEditSiteName] = useState("");
-  const [editSiteAddress, setEditSiteAddress] = useState("");
 
   const loadAuditLog = useCallback(async () => {
     const { data } = await supabase.rpc("admin_list_audit_log", {
@@ -164,49 +158,30 @@ function AdminPanel({ me }: { me: Session }) {
   }, [me.username, me.pin]);
 
   const load = useCallback(async () => {
-    const [{ data: siteRows }, { data: assetRows }, { data: userRows }, { data: ruleRows }] = await Promise.all([
-      supabase.from("sites").select("*").order("name"),
+    const [{ data: assetRows }, { data: userRows }, { data: ruleRows }] = await Promise.all([
       supabase.from("public_assets").select("*").order("name"),
       supabase.rpc("admin_list_users", { p_actor_username: me.username, p_actor_pin: me.pin }),
       supabase.rpc("admin_list_alert_rules", { p_actor_username: me.username, p_actor_pin: me.pin }),
     ]);
-    setSites(siteRows ?? []);
     setAssets(assetRows ?? []);
     setUsers((userRows as AppUser[]) ?? []);
     setAlertRules((ruleRows as AlertRule[]) ?? []);
-    if (siteRows && siteRows.length > 0 && !assetSiteId) setAssetSiteId(siteRows[0].id);
     loadAuditLog();
-  }, [assetSiteId, me.username, me.pin, loadAuditLog]);
+  }, [me.username, me.pin, loadAuditLog]);
 
   useEffect(() => {
     load();
   }, [load]);
-
-  async function handleAddSite(e: React.FormEvent) {
-    e.preventDefault();
-    const { error } = await supabase.rpc("admin_create_site", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_name: siteName,
-      p_address: siteAddress || null,
-    });
-    if (error) return fail(actionError("Could not add site", error));
-    const added = siteName;
-    setSiteName("");
-    setSiteAddress("");
-    setShowAddSite(false);
-    notify(`Site "${added}" added.`);
-    load();
-  }
 
   async function handleAddAsset(e: React.FormEvent) {
     e.preventDefault();
     const { data, error } = await supabase.rpc("admin_create_asset", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
-      p_site_id: assetSiteId,
       p_name: assetName,
       p_magmon_version: assetVersion,
+      p_site_name: assetSiteName.trim() || null,
+      p_site_address: assetSiteAddress.trim() || null,
       p_offline_threshold_minutes: offlineThreshold,
       p_monitor_host: monitorHost,
       p_monitor_port: monitorPort,
@@ -216,6 +191,8 @@ function AdminPanel({ me }: { me: Session }) {
     if (error) return fail(actionError("Could not add asset", error));
     notify(`Asset "${assetName}" added. Install script generated below.`);
     setAssetName("");
+    setAssetSiteName("");
+    setAssetSiteAddress("");
     setShowAddAsset(false);
     load();
     const created = data as {
@@ -288,8 +265,9 @@ function AdminPanel({ me }: { me: Session }) {
     if (error || !config) return fail(error ? actionError("Could not load asset", error) : "Could not load asset: not found.");
     setEditingAssetId(asset.id);
     setEditName(asset.name);
-    setEditSiteId(asset.site_id);
     setEditVersion(asset.magmon_version);
+    setEditSiteName(asset.site_name ?? "");
+    setEditSiteAddress(asset.site_address ?? "");
     setEditThreshold(asset.offline_threshold_minutes ?? 15);
     setEditHost(config.monitor_host ?? "");
     setEditPort(config.monitor_port ?? 80);
@@ -305,8 +283,9 @@ function AdminPanel({ me }: { me: Session }) {
       p_actor_pin: me.pin,
       p_asset_id: editingAssetId,
       p_name: editName,
-      p_site_id: editSiteId,
       p_magmon_version: editVersion,
+      p_site_name: editSiteName.trim() || null,
+      p_site_address: editSiteAddress.trim() || null,
       p_offline_threshold_minutes: editThreshold,
       p_monitor_host: editHost,
       p_monitor_port: editPort,
@@ -329,54 +308,6 @@ function AdminPanel({ me }: { me: Session }) {
     if (error) return fail(actionError("Could not delete asset", error));
     notify(`Asset "${a.name}" deleted.`);
     if (editingAssetId === a.id) setEditingAssetId(null);
-    load();
-  }
-
-  function handleStartEditSite(s: Site) {
-    setEditingSiteId(s.id);
-    setEditSiteName(s.name);
-    setEditSiteAddress(s.address ?? "");
-  }
-
-  async function handleSaveSiteEdit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editingSiteId) return;
-    const { error } = await supabase.rpc("admin_update_site", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_site_id: editingSiteId,
-      p_name: editSiteName,
-      p_address: editSiteAddress || null,
-    });
-    if (error) return fail(actionError("Could not save site", error));
-    notify(`Site "${editSiteName}" updated.`);
-    setEditingSiteId(null);
-    load();
-  }
-
-  async function handleDeleteSite(s: Site) {
-    // The database now refuses this outright (admin_delete_site raises when
-    // assets are attached), because assets.site_id and telemetry_samples both
-    // cascade — deleting a site would silently take out the asset, its gateway
-    // token, and every reading. Catch it here so the admin gets a useful
-    // explanation instead of a round trip to a server error; the RPC guard is
-    // still the real enforcement.
-    const attached = assets.filter((a) => a.site_id === s.id);
-    if (attached.length > 0) {
-      return fail(
-        `Cannot delete site "${s.name}": ${attached.length} asset(s) still attached (${attached
-          .map((a) => a.name)
-          .join(", ")}). Delete or move them first.`
-      );
-    }
-    if (!(await askConfirm(`Delete site "${s.name}"? This cannot be undone.`, true))) return;
-    const { error } = await supabase.rpc("admin_delete_site", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_site_id: s.id,
-    });
-    if (error) return fail(actionError("Could not delete site", error));
-    notify(`Site "${s.name}" deleted.`);
     load();
   }
 
@@ -535,24 +466,27 @@ function AdminPanel({ me }: { me: Session }) {
     );
   }
 
-  // Assets filtered by search, grouped under their site.
+  // Assets filtered by search, grouped by their (optional) location. Assets
+  // with no site_name fall into a "No location set" bucket sorted last.
   const assetGroups = useMemo(() => {
     const q = assetSearch.trim().toLowerCase();
     const filtered = q ? assets.filter((a) => a.name.toLowerCase().includes(q)) : assets;
-    const siteName = (id: string) => sites.find((s) => s.id === id)?.name ?? "Unassigned";
     const groups = new Map<string, Asset[]>();
     for (const a of filtered) {
-      const key = siteName(a.site_id);
+      const key = a.site_name?.trim() || NO_LOCATION;
       const list = groups.get(key) ?? [];
       list.push(a);
       groups.set(key, list);
     }
-    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [assets, sites, assetSearch]);
+    return [...groups.entries()].sort((a, b) => {
+      if (a[0] === NO_LOCATION) return 1;
+      if (b[0] === NO_LOCATION) return -1;
+      return a[0].localeCompare(b[0]);
+    });
+  }, [assets, assetSearch]);
 
   const tabCounts: Record<TabId, number | null> = {
     assets: assets.length,
-    sites: sites.length,
     alerts: alertRules.length,
     users: users.length,
     activity: null,
@@ -598,19 +532,20 @@ function AdminPanel({ me }: { me: Session }) {
       {activeTab === "assets" && (
         <AssetsTab
           assets={assets}
-          sites={sites}
           assetGroups={assetGroups}
           assetSearch={assetSearch}
           setAssetSearch={setAssetSearch}
           showAddAsset={showAddAsset}
           setShowAddAsset={setShowAddAsset}
           handleAddAsset={handleAddAsset}
-          assetSiteId={assetSiteId}
-          setAssetSiteId={setAssetSiteId}
           assetName={assetName}
           setAssetName={setAssetName}
           assetVersion={assetVersion}
           setAssetVersion={setAssetVersion}
+          assetSiteName={assetSiteName}
+          setAssetSiteName={setAssetSiteName}
+          assetSiteAddress={assetSiteAddress}
+          setAssetSiteAddress={setAssetSiteAddress}
           offlineThreshold={offlineThreshold}
           setOfflineThreshold={setOfflineThreshold}
           monitorHost={monitorHost}
@@ -625,10 +560,12 @@ function AdminPanel({ me }: { me: Session }) {
           setEditingAssetId={setEditingAssetId}
           editName={editName}
           setEditName={setEditName}
-          editSiteId={editSiteId}
-          setEditSiteId={setEditSiteId}
           editVersion={editVersion}
           setEditVersion={setEditVersion}
+          editSiteName={editSiteName}
+          setEditSiteName={setEditSiteName}
+          editSiteAddress={editSiteAddress}
+          setEditSiteAddress={setEditSiteAddress}
           editThreshold={editThreshold}
           setEditThreshold={setEditThreshold}
           editHost={editHost}
@@ -652,29 +589,6 @@ function AdminPanel({ me }: { me: Session }) {
           downloadScript={downloadScript}
           downloadUnitFile={downloadUnitFile}
           handleRotateToken={handleRotateToken}
-        />
-      )}
-
-      {activeTab === "sites" && (
-        <SitesTab
-          sites={sites}
-          assets={assets}
-          showAddSite={showAddSite}
-          setShowAddSite={setShowAddSite}
-          handleAddSite={handleAddSite}
-          siteName={siteName}
-          setSiteName={setSiteName}
-          siteAddress={siteAddress}
-          setSiteAddress={setSiteAddress}
-          editingSiteId={editingSiteId}
-          setEditingSiteId={setEditingSiteId}
-          editSiteName={editSiteName}
-          setEditSiteName={setEditSiteName}
-          editSiteAddress={editSiteAddress}
-          setEditSiteAddress={setEditSiteAddress}
-          handleStartEditSite={handleStartEditSite}
-          handleSaveSiteEdit={handleSaveSiteEdit}
-          handleDeleteSite={handleDeleteSite}
         />
       )}
 
@@ -745,19 +659,20 @@ function AdminPanel({ me }: { me: Session }) {
 
 function AssetsTab(props: {
   assets: Asset[];
-  sites: Site[];
   assetGroups: [string, Asset[]][];
   assetSearch: string;
   setAssetSearch: (v: string) => void;
   showAddAsset: boolean;
   setShowAddAsset: (v: boolean) => void;
   handleAddAsset: (e: React.FormEvent) => void;
-  assetSiteId: string;
-  setAssetSiteId: (v: string) => void;
   assetName: string;
   setAssetName: (v: string) => void;
   assetVersion: string;
   setAssetVersion: (v: string) => void;
+  assetSiteName: string;
+  setAssetSiteName: (v: string) => void;
+  assetSiteAddress: string;
+  setAssetSiteAddress: (v: string) => void;
   offlineThreshold: number;
   setOfflineThreshold: (v: number) => void;
   monitorHost: string;
@@ -772,10 +687,12 @@ function AssetsTab(props: {
   setEditingAssetId: (v: string | null) => void;
   editName: string;
   setEditName: (v: string) => void;
-  editSiteId: string;
-  setEditSiteId: (v: string) => void;
   editVersion: string;
   setEditVersion: (v: string) => void;
+  editSiteName: string;
+  setEditSiteName: (v: string) => void;
+  editSiteAddress: string;
+  setEditSiteAddress: (v: string) => void;
   editThreshold: number;
   setEditThreshold: (v: number) => void;
   editHost: string;
@@ -800,16 +717,7 @@ function AssetsTab(props: {
   downloadUnitFile: () => void;
   handleRotateToken: () => void;
 }) {
-  const {
-    assets,
-    sites,
-    assetGroups,
-    assetSearch,
-    setAssetSearch,
-    showAddAsset,
-    setShowAddAsset,
-    editingAssetId,
-  } = props;
+  const { assets, assetGroups, assetSearch, setAssetSearch, showAddAsset, setShowAddAsset, editingAssetId } = props;
 
   return (
     <section className="mb-10">
@@ -821,25 +729,15 @@ function AssetsTab(props: {
           className="input flex-1 min-w-[12rem] max-w-sm"
           aria-label="Search assets"
         />
-        <button onClick={() => setShowAddAsset(!showAddAsset)} className="btn-primary" disabled={sites.length === 0}>
+        <button onClick={() => setShowAddAsset(!showAddAsset)} className="btn-primary">
           {showAddAsset ? "Cancel" : "+ Add asset"}
         </button>
       </div>
-      {sites.length === 0 && (
-        <p className="text-xs text-[var(--text-dim)] mb-4">Add a site first (Sites tab) before adding assets.</p>
-      )}
 
       {showAddAsset && (
         <form onSubmit={props.handleAddAsset} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add MagMon asset</h2>
-          <Field label="Site">
-            <select required value={props.assetSiteId} onChange={(e) => props.setAssetSiteId(e.target.value)} className="input">
-              {sites.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Asset name">
+          <Field label="Asset tag">
             <input required value={props.assetName} onChange={(e) => props.setAssetName(e.target.value)} placeholder="e.g. CA1012-SETONSW" className="input" />
           </Field>
           <Field label="MagMon version">
@@ -848,6 +746,12 @@ function AssetsTab(props: {
                 <option key={v} value={v}>{v.toUpperCase()}</option>
               ))}
             </select>
+          </Field>
+          <Field label="Site name (optional)">
+            <input value={props.assetSiteName} onChange={(e) => props.setAssetSiteName(e.target.value)} placeholder="e.g. Seton Northwest" className="input" />
+          </Field>
+          <Field label="Address (optional)">
+            <input value={props.assetSiteAddress} onChange={(e) => props.setAssetSiteAddress(e.target.value)} placeholder="e.g. 11113 Research Blvd, Austin TX" className="input" />
           </Field>
           <Field label="Offline alert threshold (minutes)">
             <input type="number" min={1} value={props.offlineThreshold} onChange={(e) => props.setOfflineThreshold(Number(e.target.value))} className="input" />
@@ -864,7 +768,7 @@ function AssetsTab(props: {
             </Field>
             <PasswordField label="Password" value={props.monitorPassword} onChange={props.setMonitorPassword} />
           </div>
-          <button type="submit" className="btn-primary" disabled={sites.length === 0}>Add asset</button>
+          <button type="submit" className="btn-primary">Add asset</button>
         </form>
       )}
 
@@ -947,13 +851,14 @@ function AssetsTab(props: {
 
 function AssetEditRow(props: {
   asset: Asset;
-  sites: Site[];
   editName: string;
   setEditName: (v: string) => void;
-  editSiteId: string;
-  setEditSiteId: (v: string) => void;
   editVersion: string;
   setEditVersion: (v: string) => void;
+  editSiteName: string;
+  setEditSiteName: (v: string) => void;
+  editSiteAddress: string;
+  setEditSiteAddress: (v: string) => void;
   editThreshold: number;
   setEditThreshold: (v: number) => void;
   editHost: string;
@@ -967,18 +872,10 @@ function AssetEditRow(props: {
   setEditingAssetId: (v: string | null) => void;
   handleSaveAssetEdit: (e: React.FormEvent) => void;
 }) {
-  const { sites } = props;
   return (
     <form onSubmit={props.handleSaveAssetEdit} className="flex flex-col gap-3 px-4 py-4 border-b border-[var(--border)] last:border-0 bg-[var(--bg-elevated)]">
       <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">Editing {props.asset.name}</p>
-      <Field label="Site">
-        <select required value={props.editSiteId} onChange={(e) => props.setEditSiteId(e.target.value)} className="input">
-          {sites.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Asset name">
+      <Field label="Asset tag">
         <input required value={props.editName} onChange={(e) => props.setEditName(e.target.value)} className="input" />
       </Field>
       <Field label="MagMon version">
@@ -987,6 +884,12 @@ function AssetEditRow(props: {
             <option key={v} value={v}>{v.toUpperCase()}</option>
           ))}
         </select>
+      </Field>
+      <Field label="Site name (optional)">
+        <input value={props.editSiteName} onChange={(e) => props.setEditSiteName(e.target.value)} placeholder="e.g. Seton Northwest" className="input" />
+      </Field>
+      <Field label="Address (optional)">
+        <input value={props.editSiteAddress} onChange={(e) => props.setEditSiteAddress(e.target.value)} placeholder="e.g. 11113 Research Blvd, Austin TX" className="input" />
       </Field>
       <Field label="Offline alert threshold (minutes)">
         <input type="number" min={1} value={props.editThreshold} onChange={(e) => props.setEditThreshold(Number(e.target.value))} className="input" />
@@ -1011,88 +914,6 @@ function AssetEditRow(props: {
         Note: if you change the local IP, port, username, or password here, re-download the install script for this asset so the Pi&apos;s copy matches.
       </p>
     </form>
-  );
-}
-
-/* ----------------------------------------------------------------- Sites tab */
-
-function SitesTab(props: {
-  sites: Site[];
-  assets: Asset[];
-  showAddSite: boolean;
-  setShowAddSite: (v: boolean) => void;
-  handleAddSite: (e: React.FormEvent) => void;
-  siteName: string;
-  setSiteName: (v: string) => void;
-  siteAddress: string;
-  setSiteAddress: (v: string) => void;
-  editingSiteId: string | null;
-  setEditingSiteId: (v: string | null) => void;
-  editSiteName: string;
-  setEditSiteName: (v: string) => void;
-  editSiteAddress: string;
-  setEditSiteAddress: (v: string) => void;
-  handleStartEditSite: (s: Site) => void;
-  handleSaveSiteEdit: (e: React.FormEvent) => void;
-  handleDeleteSite: (s: Site) => void;
-}) {
-  const { sites, assets, showAddSite, setShowAddSite, editingSiteId } = props;
-  const assetCount = (siteId: string) => assets.filter((a) => a.site_id === siteId).length;
-
-  return (
-    <section className="mb-10">
-      <div className="flex items-center justify-end mb-4">
-        <button onClick={() => setShowAddSite(!showAddSite)} className="btn-primary">
-          {showAddSite ? "Cancel" : "+ Add site"}
-        </button>
-      </div>
-
-      {showAddSite && (
-        <form onSubmit={props.handleAddSite} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6 max-w-md">
-          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add site</h2>
-          <Field label="Site name">
-            <input required value={props.siteName} onChange={(e) => props.setSiteName(e.target.value)} className="input" />
-          </Field>
-          <Field label="Address (optional)">
-            <input value={props.siteAddress} onChange={(e) => props.setSiteAddress(e.target.value)} className="input" />
-          </Field>
-          <button type="submit" className="btn-primary">Add site</button>
-        </form>
-      )}
-
-      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
-        {sites.map((s) =>
-          editingSiteId === s.id ? (
-            <form key={s.id} onSubmit={props.handleSaveSiteEdit} className="flex flex-col gap-3 px-4 py-4 border-b border-[var(--border)] last:border-0 bg-[var(--bg-elevated)]">
-              <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">Editing {s.name}</p>
-              <Field label="Site name">
-                <input required value={props.editSiteName} onChange={(e) => props.setEditSiteName(e.target.value)} className="input" />
-              </Field>
-              <Field label="Address (optional)">
-                <input value={props.editSiteAddress} onChange={(e) => props.setEditSiteAddress(e.target.value)} className="input" />
-              </Field>
-              <div className="flex flex-wrap gap-2">
-                <button type="submit" className="btn-primary">Save changes</button>
-                <button type="button" onClick={() => props.setEditingSiteId(null)} className="btn-secondary">Cancel</button>
-              </div>
-            </form>
-          ) : (
-            <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
-              <div>
-                <p className="font-medium">{s.name}</p>
-                {s.address && <p className="text-xs text-[var(--text-dim)]">{s.address}</p>}
-                <p className="text-xs text-[var(--text-dim)]">{assetCount(s.id)} asset(s)</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => props.handleStartEditSite(s)} className="btn-secondary">Edit</button>
-                <button onClick={() => props.handleDeleteSite(s)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
-              </div>
-            </div>
-          )
-        )}
-        {sites.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No sites yet.</p>}
-      </div>
-    </section>
   );
 }
 
@@ -1249,7 +1070,7 @@ function ActivityTab({ auditLog, loadAuditLog }: { auditLog: AuditEntry[]; loadA
     <section className="mb-10">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs text-[var(--text-dim)]">
-          Sign-ins, sign-outs, failed attempts, and every change made to sites, assets, users, and alert rules.
+          Sign-ins, sign-outs, failed attempts, and every change made to assets, users, and alert rules.
           Showing the most recent {auditLog.length}.
         </p>
         <button onClick={loadAuditLog} className="btn-secondary">Refresh</button>
@@ -1365,6 +1186,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   login: "Signed in",
   logout: "Signed out",
   login_failed: "Failed sign-in",
+  // Historical entries: sites were folded into assets, but old rows remain.
   create_site: "Site added",
   update_site: "Site edited",
   delete_site: "Site deleted",

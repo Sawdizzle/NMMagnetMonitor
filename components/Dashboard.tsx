@@ -2,14 +2,13 @@
 
 import { useEffect, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
-import { supabase, type Site, type Asset, type TelemetrySample } from "@/lib/supabase";
+import { supabase, type Asset, type TelemetrySample } from "@/lib/supabase";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
 import BrandMark from "./BrandMark";
 
 type AssetWithTelemetry = Asset & {
-  site: Site | null;
   latest: TelemetrySample | null;
   history: TelemetrySample[];
 };
@@ -37,12 +36,10 @@ export default function Dashboard() {
     const historyCutoff = new Date(Date.now() - HISTORY_HOURS * 60 * 60 * 1000).toISOString();
 
     const [
-      { data: sites, error: sitesErr },
       { data: assetRows, error: assetsErr },
       { data: latest, error: latestErr },
       { data: history, error: historyErr },
     ] = await Promise.all([
-      supabase.from("sites").select("*"),
       supabase.from("public_assets").select("*").order("name"),
       supabase.from("latest_telemetry").select("*"),
       supabase
@@ -53,14 +50,11 @@ export default function Dashboard() {
         .limit(5000),
     ]);
 
-    if (sitesErr || assetsErr || latestErr || historyErr) {
-      setError(
-        sitesErr?.message || assetsErr?.message || latestErr?.message || historyErr?.message || "Failed to load"
-      );
+    if (assetsErr || latestErr || historyErr) {
+      setError(assetsErr?.message || latestErr?.message || historyErr?.message || "Failed to load");
       return;
     }
 
-    const siteById = new Map((sites ?? []).map((s) => [s.id, s]));
     const latestByAsset = new Map((latest ?? []).map((t) => [t.asset_id, t]));
     const historyByAsset = new Map<string, TelemetrySample[]>();
     for (const sample of history ?? []) {
@@ -71,7 +65,6 @@ export default function Dashboard() {
 
     const merged: AssetWithTelemetry[] = (assetRows ?? []).map((a) => ({
       ...a,
-      site: siteById.get(a.site_id) ?? null,
       latest: latestByAsset.get(a.id) ?? null,
       history: historyByAsset.get(a.id) ?? [],
     }));
@@ -95,7 +88,9 @@ export default function Dashboard() {
   const offlineCount = assets.filter((a) => computeAssetHealth(a) === "offline").length;
   const unknownCount = assets.filter((a) => computeAssetHealth(a) === "unknown").length;
 
-  const siteCount = new Set(assets.map((a) => a.site_id)).size;
+  const siteCount = new Set(
+    assets.map((a) => a.site_name?.trim()).filter((n): n is string => !!n)
+  ).size;
 
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
@@ -123,8 +118,13 @@ export default function Dashboard() {
             <>
               <span aria-hidden="true">&middot;</span>
               <span>
-                {assets.length} {assets.length === 1 ? "asset" : "assets"} &middot; {siteCount}{" "}
-                {siteCount === 1 ? "site" : "sites"}
+                {assets.length} {assets.length === 1 ? "asset" : "assets"}
+                {siteCount > 0 && (
+                  <>
+                    {" "}
+                    &middot; {siteCount} {siteCount === 1 ? "site" : "sites"}
+                  </>
+                )}
               </span>
             </>
           )}
@@ -265,7 +265,7 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
         <div>
           <p className="font-semibold text-base">{asset.name}</p>
           <p className="text-xs text-[var(--text-dim)] mt-0.5">
-            {asset.site?.name ?? "Unassigned site"} &middot; {asset.magmon_version.toUpperCase()}
+            {asset.site_name?.trim() || "No location set"} &middot; {asset.magmon_version.toUpperCase()}
           </p>
         </div>
         <FieldRing status={status} />
