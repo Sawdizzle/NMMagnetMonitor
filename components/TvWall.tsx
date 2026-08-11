@@ -42,7 +42,6 @@ export default function TvWall() {
   const [assets, setAssets] = useState<FleetAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [now, setNow] = useState<number>(() => 0);
 
   // ---- data: poll the fleet, same source as the dashboard ----------------
@@ -58,7 +57,6 @@ export default function TvWall() {
       setAssets(rows);
       setError(null);
       setLoaded(true);
-      setLastRefreshed(new Date());
     };
     load();
     const id = setInterval(load, POLL_MS);
