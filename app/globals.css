@@ -320,7 +320,10 @@ button {
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--border-soft);
-  padding-bottom: env(safe-area-inset-bottom);
+  /* Extra breathing room below the tabs, on top of the iOS home-indicator
+     inset (which is 0 on devices without one, so the tabs would otherwise
+     sit flush against the screen edge). */
+  padding-bottom: calc(env(safe-area-inset-bottom) + 10px);
 }
 .app-tab {
   flex: 1;
@@ -351,7 +354,7 @@ button {
    outranks the Tailwind p-6 utility, so only the bottom side is overridden. */
 @media (max-width: 767px) {
   #main-content {
-    padding-bottom: calc(56px + env(safe-area-inset-bottom) + 1rem);
+    padding-bottom: calc(66px + env(safe-area-inset-bottom) + 1rem);
   }
 }
 
