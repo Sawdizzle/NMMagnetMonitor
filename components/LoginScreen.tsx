@@ -9,6 +9,7 @@ export default function LoginScreen() {
   const [username, setUsername] = useState("");
   const [pin, setPin] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -17,7 +18,9 @@ export default function LoginScreen() {
     setError(null);
     setSubmitting(true);
     const result =
-      mode === "login" ? await login(username, pin) : await register(inviteCode, username, pin);
+      mode === "login"
+        ? await login(username, pin, remember)
+        : await register(inviteCode, username, pin, remember);
     setSubmitting(false);
     if (result) setError(result);
   }
@@ -72,6 +75,15 @@ export default function LoginScreen() {
             />
           </label>
         )}
+
+        <label className="flex items-center gap-2 text-xs text-[var(--text-dim)] select-none cursor-pointer">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+          />
+          Keep me signed in on this device
+        </label>
 
         {error && <p className="text-[var(--status-offline)] text-sm" role="alert">{error}</p>}
 

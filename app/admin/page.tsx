@@ -21,6 +21,15 @@ const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
 const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
 
 type AppUser = { username: string; role: "viewer" | "admin"; created_at: string };
+type AuditEntry = {
+  id: number;
+  actor: string | null;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  detail: string | null;
+  created_at: string;
+};
 type AlertRule = {
   id: string;
   asset_id: string | null;
@@ -40,6 +49,7 @@ function AdminPanel({ me }: { me: Session }) {
   const [sites, setSites] = useState<Site[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [status, setStatus] = useState<string | null>(null);
 
   const [siteName, setSiteName] = useState("");
@@ -91,6 +101,15 @@ function AdminPanel({ me }: { me: Session }) {
   const [editSiteName, setEditSiteName] = useState("");
   const [editSiteAddress, setEditSiteAddress] = useState("");
 
+  const loadAuditLog = useCallback(async () => {
+    const { data } = await supabase.rpc("admin_list_audit_log", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_limit: 200,
+    });
+    setAuditLog((data as AuditEntry[]) ?? []);
+  }, [me.username, me.pin]);
+
   const load = useCallback(async () => {
     const [{ data: siteRows }, { data: assetRows }, { data: userRows }, { data: ruleRows }] = await Promise.all([
       supabase.from("sites").select("*").order("name"),
@@ -103,7 +122,8 @@ function AdminPanel({ me }: { me: Session }) {
     setUsers((userRows as AppUser[]) ?? []);
     setAlertRules((ruleRows as AlertRule[]) ?? []);
     if (siteRows && siteRows.length > 0 && !assetSiteId) setAssetSiteId(siteRows[0].id);
-  }, [assetSiteId, me.username, me.pin]);
+    loadAuditLog();
+  }, [assetSiteId, me.username, me.pin, loadAuditLog]);
 
   useEffect(() => {
     load();
@@ -799,8 +819,83 @@ function AdminPanel({ me }: { me: Session }) {
           {users.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No users yet.</p>}
         </div>
       </section>
+
+      <section className="mb-10">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Activity log</h2>
+          <button onClick={loadAuditLog} className="btn-secondary">Refresh</button>
+        </div>
+        <p className="text-xs text-[var(--text-dim)] mb-3">
+          Sign-ins, sign-outs, failed attempts, and every change made to sites, assets, users, and alert rules.
+          Showing the most recent {auditLog.length}.
+        </p>
+        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+          {auditLog.map((e) => (
+            <div key={e.id} className="flex flex-wrap items-start justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+              <div className="min-w-0">
+                <p className="text-sm">
+                  <span className="font-medium">{e.actor ?? "system"}</span>
+                  <span className="mx-2 text-[var(--text-dim)]">&middot;</span>
+                  <span
+                    className="text-xs font-mono-data uppercase tracking-wide"
+                    style={{ color: auditActionColor(e.action) }}
+                  >
+                    {auditActionLabel(e.action)}
+                  </span>
+                </p>
+                {e.detail && <p className="text-xs text-[var(--text-dim)] mt-0.5">{e.detail}</p>}
+              </div>
+              <p className="text-xs font-mono-data text-[var(--text-dim)] whitespace-nowrap" title={new Date(e.created_at).toLocaleString()}>
+                {formatAuditTime(e.created_at)}
+              </p>
+            </div>
+          ))}
+          {auditLog.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No activity recorded yet.</p>}
+        </div>
+      </section>
     </div>
   );
+}
+
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  login: "Signed in",
+  logout: "Signed out",
+  login_failed: "Failed sign-in",
+  create_site: "Site added",
+  update_site: "Site edited",
+  delete_site: "Site deleted",
+  create_asset: "Asset added",
+  update_asset: "Asset edited",
+  delete_asset: "Asset deleted",
+  rotate_token: "Token rotated",
+  create_user: "User created",
+  reset_pin: "PIN reset",
+  set_role: "Role changed",
+  set_invite_code: "Invite code changed",
+  create_alert_rule: "Alert rule added",
+  update_alert_rule: "Alert rule edited",
+  delete_alert_rule: "Alert rule deleted",
+};
+
+function auditActionLabel(action: string): string {
+  return AUDIT_ACTION_LABELS[action] ?? action.replace(/_/g, " ");
+}
+
+function auditActionColor(action: string): string {
+  if (action === "login_failed") return "var(--status-offline)";
+  if (action.startsWith("delete_")) return "var(--status-offline)";
+  if (action === "login" || action === "logout") return "var(--text-muted)";
+  return "var(--accent)";
+}
+
+function formatAuditTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const diffSec = Math.round((Date.now() - then) / 1000);
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

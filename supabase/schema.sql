@@ -213,11 +213,15 @@ begin
     update users set failed_attempts = 0, locked_until = null where id = v_user.id;
     return query select v_user.username, v_user.role;
   else
+    -- Wrong PIN. Persist the attempt/lockout, then return no rows (do NOT raise:
+    -- a raise here rolls this update back in the same transaction, which is why
+    -- the lockout never engaged before the fix_pin_lockout_persistence migration
+    -- of 2026-08-10). The client treats an empty result as a failed login.
     update users
       set failed_attempts = failed_attempts + 1,
           locked_until = case when failed_attempts + 1 >= 5 then now() + interval '15 minutes' else locked_until end
       where id = v_user.id;
-    raise exception 'invalid username or PIN';
+    return;
   end if;
 end;
 $function$;
@@ -249,6 +253,11 @@ CREATE OR REPLACE FUNCTION public.change_own_pin(p_username text, p_old_pin text
 AS $function$
 begin
   perform username from verify_user_login(p_username, p_old_pin);
+  -- verify_user_login now returns empty (instead of raising) on a wrong PIN, so
+  -- guard explicitly: a wrong current PIN must never change the PIN.
+  if not found then
+    raise exception 'incorrect current pin';
+  end if;
   update users set pin_hash = extensions.crypt(p_new_pin, extensions.gen_salt('bf')) where username = p_username;
   return true;
 end;
@@ -727,11 +736,112 @@ $function$;
 
 
 -- =====================================================================
+-- AUDIT LOG (added 2026-08-10)
+-- =====================================================================
+-- Applied via migrations `add_audit_log` and `instrument_admin_rpcs_audit`.
+-- Records auth events (login/logout/failed) and every admin mutation. Rows are
+-- written only from inside SECURITY DEFINER functions, so the client cannot
+-- bypass or forge them, and are read back through admin_list_audit_log.
+--
+-- NOTE: every admin_* mutation RPC above (create/update/delete for sites,
+-- assets, users, alert rules, plus reset_pin, set_role, set_invite_code, and
+-- rotate_gateway_token) was amended to call `perform _record_audit(...)` after
+-- its write. Only the audit line was added; those bodies are otherwise
+-- unchanged. `supabase db dump` remains the byte-exact source for them.
+
+create table if not exists public.audit_log (
+  id          bigint      generated always as identity primary key,
+  actor       text,                          -- username of the acting user (null = system)
+  action      text        not null,          -- e.g. 'login','create_asset','delete_site'
+  entity_type text,                          -- 'auth','site','asset','user','alert_rule','app'
+  entity_id   text,                          -- uuid/name of the affected row, when applicable
+  detail      text,                          -- human-readable summary
+  created_at  timestamptz not null default now()
+);
+create index if not exists idx_audit_log_created_at on public.audit_log using btree (created_at desc);
+
+-- Internal writer. Execute is revoked from the API roles so it cannot be called
+-- directly to forge rows; the SECURITY DEFINER callers reach it as the owner.
+CREATE OR REPLACE FUNCTION public._record_audit(p_actor text, p_action text, p_entity_type text, p_entity_id text, p_detail text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  insert into audit_log (actor, action, entity_type, entity_id, detail)
+  values (p_actor, p_action, p_entity_type, p_entity_id, p_detail);
+end;
+$function$;
+revoke execute on function public._record_audit(text, text, text, text, text) from anon, authenticated, public;
+
+-- Session events. Verifies credentials so the actor can't be spoofed. Called by
+-- the client on a real sign-in/sign-out, NOT on the silent re-verify each page
+-- load performs (which would otherwise log a "login" on every refresh).
+CREATE OR REPLACE FUNCTION public.log_session_event(p_username text, p_pin text, p_event text)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+begin
+  if p_event not in ('login','logout') then
+    raise exception 'invalid session event';
+  end if;
+  if not exists (
+    select 1 from users where username = p_username and pin_hash = extensions.crypt(p_pin, pin_hash)
+  ) then
+    raise exception 'invalid credentials';
+  end if;
+  perform _record_audit(p_username, p_event, 'auth', null,
+    case when p_event = 'login' then 'Signed in' else 'Signed out' end);
+  return true;
+end;
+$function$;
+
+-- Failed sign-in. Recorded client-side after verify_user_login rejects the
+-- attempt — that function raises, rolling back anything it wrote, so the
+-- failure must be its own committed transaction. The username is the
+-- (unverified) value that was tried.
+CREATE OR REPLACE FUNCTION public.record_login_failure(p_username text)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  perform _record_audit(nullif(p_username, ''), 'login_failed', 'auth', null,
+    format('Failed sign-in attempt for "%s"', coalesce(nullif(p_username, ''), '(blank)')));
+  return true;
+end;
+$function$;
+
+-- Admin-gated reader for the activity log.
+CREATE OR REPLACE FUNCTION public.admin_list_audit_log(p_actor_username text, p_actor_pin text, p_limit integer DEFAULT 200)
+ RETURNS TABLE(id bigint, actor text, action text, entity_type text, entity_id text, detail text, created_at timestamptz)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then
+    raise exception 'not authorized';
+  end if;
+  return query
+    select a.id, a.actor, a.action, a.entity_type, a.entity_id, a.detail, a.created_at
+    from audit_log a
+    order by a.created_at desc
+    limit least(coalesce(p_limit, 200), 1000);
+end;
+$function$;
+
+
+-- =====================================================================
 -- ROW LEVEL SECURITY
 -- =====================================================================
 -- RLS is enabled on every table. Tables with NO policy (users, assets,
--- app_settings) are therefore unreadable/unwritable directly — they are
--- reached only through the SECURITY DEFINER functions and views above.
+-- app_settings, audit_log) are therefore unreadable/unwritable directly — they
+-- are reached only through the SECURITY DEFINER functions and views above.
 -- The four "public read" policies expose SELECT to everyone (see F-1).
 
 alter table public.sites             enable row level security;
@@ -742,6 +852,7 @@ alter table public.telemetry_samples enable row level security;
 alter table public.alert_rules       enable row level security;
 alter table public.alert_events      enable row level security;
 alter table public.alert_recipients  enable row level security;  -- no policy: SECURITY DEFINER / service_role only
+alter table public.audit_log         enable row level security;  -- no policy: SECURITY DEFINER only (written by _record_audit, read by admin_list_audit_log)
 
 -- Open read policies (candidates for tightening under F-1).
 create policy "public read sites"        on public.sites             for select to public using (true);

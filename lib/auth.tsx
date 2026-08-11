@@ -11,8 +11,8 @@ const SESSION_KEY = "nm_session";
 type AuthContextValue = {
   session: Session | null;
   loading: boolean;
-  login: (username: string, pin: string) => Promise<string | null>; // returns error message or null
-  register: (inviteCode: string, username: string, pin: string) => Promise<string | null>;
+  login: (username: string, pin: string, remember?: boolean) => Promise<string | null>; // returns error message or null
+  register: (inviteCode: string, username: string, pin: string, remember?: boolean) => Promise<string | null>;
   logout: () => void;
   changePin: (oldPin: string, newPin: string) => Promise<string | null>;
   changeUsername: (newUsername: string) => Promise<string | null>;
@@ -20,46 +20,83 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// Session storage helpers.
+//   remember = true  -> localStorage, survives closing the tab/browser
+//   remember = false -> sessionStorage, cleared when the tab closes
+// Reads check both so an existing session is found regardless of how it was
+// stored, and every write clears the other store to avoid a stale duplicate.
+function readStoredSession(): Session | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(SESSION_KEY) ?? window.sessionStorage.getItem(SESSION_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Session;
+  } catch {
+    clearStoredSession();
+    return null;
+  }
+}
+
+function writeStoredSession(session: Session, remember: boolean) {
+  if (typeof window === "undefined") return;
+  const target = remember ? window.localStorage : window.sessionStorage;
+  const other = remember ? window.sessionStorage : window.localStorage;
+  target.setItem(SESSION_KEY, JSON.stringify(session));
+  other.removeItem(SESSION_KEY);
+}
+
+// Update the stored session in place, keeping it in whichever store already
+// holds it (used after a PIN/username change, where "remember" isn't re-asked).
+function updateStoredSession(session: Session) {
+  writeStoredSession(session, typeof window !== "undefined" && window.localStorage.getItem(SESSION_KEY) != null);
+}
+
+function clearStoredSession() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SESSION_KEY);
+  window.sessionStorage.removeItem(SESSION_KEY);
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const raw = typeof window !== "undefined" ? sessionStorage.getItem(SESSION_KEY) : null;
-    if (raw) {
-      try {
-        const parsed: Session = JSON.parse(raw);
-        // re-verify the stored credentials are still valid
-        supabase
-          .rpc("verify_user_login", { p_username: parsed.username, p_pin: parsed.pin })
-          .then(({ data, error }) => {
-            if (!error && data && data[0]) {
-              setSession(parsed);
-            } else {
-              sessionStorage.removeItem(SESSION_KEY);
-            }
-            setLoading(false);
-          });
-        return;
-      } catch {
-        sessionStorage.removeItem(SESSION_KEY);
-      }
+    const parsed = readStoredSession();
+    if (parsed) {
+      // re-verify the stored credentials are still valid (silent — this does
+      // NOT log a session event, only an explicit sign-in does)
+      supabase
+        .rpc("verify_user_login", { p_username: parsed.username, p_pin: parsed.pin })
+        .then(({ data, error }) => {
+          if (!error && data && data[0]) {
+            setSession(parsed);
+          } else {
+            clearStoredSession();
+          }
+          setLoading(false);
+        });
+      return;
     }
     setLoading(false);
   }, []);
 
-  const login = useCallback(async (username: string, pin: string) => {
+  const login = useCallback(async (username: string, pin: string, remember = true) => {
     const { data, error } = await supabase.rpc("verify_user_login", { p_username: username, p_pin: pin });
     if (error || !data || !data[0]) {
+      // Record the failed attempt (best-effort; its own transaction so it
+      // isn't rolled back with verify_user_login's raise).
+      supabase.rpc("record_login_failure", { p_username: username }).then(() => {});
       return error?.message ?? "Invalid username or PIN";
     }
     const newSession: Session = { username, pin, role: data[0].role };
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
+    writeStoredSession(newSession, remember);
     setSession(newSession);
+    supabase.rpc("log_session_event", { p_username: username, p_pin: pin, p_event: "login" }).then(() => {});
     return null;
   }, []);
 
-  const register = useCallback(async (inviteCode: string, username: string, pin: string) => {
+  const register = useCallback(async (inviteCode: string, username: string, pin: string, remember = true) => {
     const { data, error } = await supabase.rpc("register_user", {
       p_invite_code: inviteCode,
       p_username: username,
@@ -69,15 +106,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return error?.message ?? "Could not create account";
     }
     const newSession: Session = { username, pin, role: data[0].role };
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
+    writeStoredSession(newSession, remember);
     setSession(newSession);
+    supabase.rpc("log_session_event", { p_username: username, p_pin: pin, p_event: "login" }).then(() => {});
     return null;
   }, []);
 
   const logout = useCallback(() => {
-    sessionStorage.removeItem(SESSION_KEY);
+    if (session) {
+      // Log the sign-out while we still hold valid credentials, then clear.
+      supabase
+        .rpc("log_session_event", { p_username: session.username, p_pin: session.pin, p_event: "logout" })
+        .then(() => {});
+    }
+    clearStoredSession();
     setSession(null);
-  }, []);
+  }, [session]);
 
   const changePin = useCallback(
     async (oldPin: string, newPin: string) => {
@@ -89,7 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (error) return error.message;
       const updated: Session = { ...session, pin: newPin };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(updated));
+      updateStoredSession(updated);
       setSession(updated);
       return null;
     },
@@ -106,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (error) return error.message;
       const updated: Session = { ...session, username: newUsername };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(updated));
+      updateStoredSession(updated);
       setSession(updated);
       return null;
     },
