@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import { supabase } from "./supabase";
 
 export type Role = "admin" | "viewer";
-export type Session = { username: string; pin: string; role: Role };
+export type Session = { username: string; pin: string; role: Role; tvAccess: boolean };
 
 const SESSION_KEY = "nm_session";
 
@@ -89,6 +89,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!cancelled && !error && (!data || !data[0])) {
           clearStoredSession();
           setSession(null);
+        } else if (!cancelled && !error && data && data[0]) {
+          // Refresh role + TV access from the server so a grant/revoke (or an
+          // older stored session missing tvAccess) takes effect on reload.
+          const fresh: Session = {
+            ...parsed,
+            role: data[0].role as Role,
+            tvAccess: !!data[0].tv_access,
+          };
+          updateStoredSession(fresh);
+          setSession(fresh);
         }
       } catch {
         // Network/transport failure — keep the optimistic session.
@@ -108,7 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       supabase.rpc("record_login_failure", { p_username: username }).then(() => {});
       return error?.message ?? "Invalid username or PIN";
     }
-    const newSession: Session = { username, pin, role: data[0].role };
+    const newSession: Session = { username, pin, role: data[0].role, tvAccess: !!data[0].tv_access };
     writeStoredSession(newSession, remember);
     setSession(newSession);
     supabase.rpc("log_session_event", { p_username: username, p_pin: pin, p_event: "login" }).then(() => {});
@@ -124,7 +134,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error || !data || !data[0]) {
       return error?.message ?? "Could not create account";
     }
-    const newSession: Session = { username, pin, role: data[0].role };
+    // New accounts have no TV access until an admin grants it.
+    const newSession: Session = { username, pin, role: data[0].role, tvAccess: false };
     writeStoredSession(newSession, remember);
     setSession(newSession);
     supabase.rpc("log_session_event", { p_username: username, p_pin: pin, p_event: "login" }).then(() => {});

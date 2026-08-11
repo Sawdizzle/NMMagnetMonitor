@@ -53,6 +53,9 @@ create table if not exists public.users (
   pin_hash         text        not null,
   role             text        not null default 'viewer'
                      check (role = any (array['admin','viewer'])),
+  -- Grants access to TV/Display mode (/tv). Admin-toggled; admins always have
+  -- access regardless. Returned by verify_user_login into the client session.
+  tv_access        boolean     not null default false,
   failed_attempts  integer     not null default 0,
   locked_until     timestamptz,
   created_at       timestamptz not null default now(),
@@ -195,7 +198,7 @@ end;
 $function$;
 
 CREATE OR REPLACE FUNCTION public.verify_user_login(p_username text, p_pin text)
- RETURNS TABLE(username text, role text)
+ RETURNS TABLE(username text, role text, tv_access boolean)
  LANGUAGE plpgsql
  SECURITY DEFINER
  SET search_path TO 'public', 'extensions'
@@ -212,7 +215,7 @@ begin
   end if;
   if v_user.pin_hash = extensions.crypt(p_pin, v_user.pin_hash) then
     update users set failed_attempts = 0, locked_until = null where id = v_user.id;
-    return query select v_user.username, v_user.role;
+    return query select v_user.username, v_user.role, v_user.tv_access;
   else
     -- Wrong PIN. Persist the attempt/lockout, then return no rows (do NOT raise:
     -- a raise here rolls this update back in the same transaction, which is why
@@ -435,7 +438,7 @@ end;
 $function$;
 
 CREATE OR REPLACE FUNCTION public.admin_list_users(p_actor_username text, p_actor_pin text)
- RETURNS TABLE(username text, role text, created_at timestamp with time zone)
+ RETURNS TABLE(username text, role text, tv_access boolean, created_at timestamp with time zone)
  LANGUAGE plpgsql
  SECURITY DEFINER
  SET search_path TO 'public', 'extensions'
@@ -444,7 +447,27 @@ begin
   if not is_admin(p_actor_username, p_actor_pin) then
     raise exception 'not authorized';
   end if;
-  return query select u.username, u.role, u.created_at from users u order by u.created_at;
+  return query select u.username, u.role, u.tv_access, u.created_at from users u order by u.created_at;
+end;
+$function$;
+
+-- Admin-only toggle for a user's TV/Display access, audited.
+CREATE OR REPLACE FUNCTION public.admin_set_tv_access(p_actor_username text, p_actor_pin text, p_target_username text, p_tv_access boolean)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then
+    raise exception 'not authorized';
+  end if;
+  update users set tv_access = p_tv_access where username = p_target_username;
+  perform _record_audit(
+    p_actor_username, 'set_tv_access', 'user', p_target_username,
+    format('%s TV access for "%s"', case when p_tv_access then 'Granted' else 'Revoked' end, p_target_username)
+  );
+  return true;
 end;
 $function$;
 

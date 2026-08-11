@@ -26,6 +26,15 @@ function liveNavItems(session: Session): NavItem[] {
       isActive: (p) => p === "/" || p.startsWith("/asset"),
     },
   ];
+  // TV/Display mode — only for users granted access (admins always qualify).
+  if (session.role === "admin" || session.tvAccess) {
+    items.push({
+      href: "/tv",
+      label: "TV",
+      icon: <TvIcon />,
+      isActive: (p) => p.startsWith("/tv"),
+    });
+  }
   if (session.role === "admin") {
     items.push({
       href: "/admin",
@@ -156,6 +165,15 @@ function GridIcon() {
       <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
       <rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
       <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function TvIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+      <rect x="3" y="4" width="18" height="13" rx="1.8" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8 20h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }

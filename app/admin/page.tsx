@@ -29,7 +29,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "activity", label: "Activity" },
 ];
 
-type AppUser = { username: string; role: "viewer" | "admin"; created_at: string };
+type AppUser = { username: string; role: "viewer" | "admin"; tv_access: boolean; created_at: string };
 type AuditEntry = {
   id: number;
   actor: string | null;
@@ -242,6 +242,18 @@ function AdminPanel({ me }: { me: Session }) {
     });
     if (error) return fail(actionError("Could not reset PIN", error));
     notify(`PIN reset for ${u.username}.`);
+  }
+
+  async function handleToggleTvAccess(u: AppUser) {
+    const { error } = await supabase.rpc("admin_set_tv_access", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_target_username: u.username,
+      p_tv_access: !u.tv_access,
+    });
+    if (error) return fail(actionError("Could not update TV access", error));
+    notify(u.tv_access ? `TV access revoked for ${u.username}.` : `TV access granted to ${u.username}.`);
+    load();
   }
 
   async function handleToggleRole(u: AppUser) {
@@ -748,6 +760,7 @@ function AdminPanel({ me }: { me: Session }) {
           setUserRole={setUserRole}
           handleAddUser={handleAddUser}
           handleToggleRole={handleToggleRole}
+          handleToggleTvAccess={handleToggleTvAccess}
           handleResetPin={handleResetPin}
         />
       )}
@@ -1179,6 +1192,7 @@ function UsersTab(props: {
   setUserRole: (v: "viewer" | "admin") => void;
   handleAddUser: (e: React.FormEvent) => void;
   handleToggleRole: (u: AppUser) => void;
+  handleToggleTvAccess: (u: AppUser) => void;
   handleResetPin: (u: AppUser) => void;
 }) {
   const { users } = props;
@@ -1205,7 +1219,25 @@ function UsersTab(props: {
               <p className="font-medium">{u.username}</p>
               <p className="text-xs text-[var(--text-dim)] capitalize">{u.role}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              {u.role === "admin" ? (
+                <label
+                  className="flex items-center gap-1.5 text-xs text-[var(--text-dim)]"
+                  title="Admins always have TV/Display access"
+                >
+                  <input type="checkbox" checked disabled readOnly />
+                  TV access
+                </label>
+              ) : (
+                <label className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={u.tv_access}
+                    onChange={() => props.handleToggleTvAccess(u)}
+                  />
+                  TV access
+                </label>
+              )}
               <button onClick={() => props.handleToggleRole(u)} className="btn-secondary">
                 Make {u.role === "admin" ? "viewer" : "admin"}
               </button>
@@ -1354,6 +1386,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   create_user: "User created",
   reset_pin: "PIN reset",
   set_role: "Role changed",
+  set_tv_access: "TV access changed",
   set_invite_code: "Invite code changed",
   create_alert_rule: "Alert rule added",
   update_alert_rule: "Alert rule edited",

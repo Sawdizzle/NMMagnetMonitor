@@ -7,9 +7,11 @@ import type { Session } from "@/lib/auth";
 
 export default function Protected({
   requireAdmin = false,
+  requireTv = false,
   children,
 }: {
   requireAdmin?: boolean;
+  requireTv?: boolean;
   children: (session: Session) => React.ReactNode;
 }) {
   const { session, loading } = useAuth();
@@ -25,7 +27,9 @@ export default function Protected({
     return <LoginScreen />;
   }
 
-  const denied = requireAdmin && session.role !== "admin";
+  // Admins always pass. TV access is a separate per-user grant for viewers.
+  const isAdmin = session.role === "admin";
+  const denied = (requireAdmin && !isAdmin) || (requireTv && !isAdmin && !session.tvAccess);
   return (
     <>
       <AppNav session={session} />
