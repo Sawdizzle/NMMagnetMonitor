@@ -727,24 +727,6 @@ button {
   overflow: hidden;
   font-feature-settings: "tnum" 1;
 }
-.tv-root[data-alert="true"] {
-  background:
-    radial-gradient(120% 90% at 50% -10%, #241016 0%, var(--tv-bg) 62%);
-}
-
-/* Pulsing red frame while any unit is critical. */
-.tv-edge {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 2;
-  box-shadow: inset 0 0 0 4px var(--status-offline);
-  animation: tv-edge-pulse 1.5s ease-in-out infinite;
-}
-@keyframes tv-edge-pulse {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 0.9; }
-}
 
 /* --- header --- */
 .tv-header {
@@ -829,6 +811,15 @@ button {
 .tv-time {
   font-size: clamp(1.2rem, 2.6vw, 2.2rem);
   font-weight: 600;
+  white-space: nowrap;
+}
+.tv-date {
+  margin-right: 0.6rem;
+  color: var(--tv-dim);
+  font-weight: 500;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 @keyframes tv-pulse {
   0%, 100% { opacity: 1; }
@@ -934,18 +925,6 @@ button {
   min-height: 0;
   display: grid;
   gap: clamp(0.7rem, 1.6vw, 1.5rem);
-}
-.tv-attn-more {
-  position: absolute;
-  right: 0.6rem;
-  bottom: 0.5rem;
-  padding: 0.2rem 0.65rem;
-  border-radius: 0.4rem;
-  background: color-mix(in srgb, var(--status-offline) 35%, #000);
-  color: #ffdcdd;
-  font-size: clamp(0.68rem, 1vw, 0.9rem);
-  font-weight: 650;
-  z-index: 2;
 }
 
 /* --- carousel (rotating zone) --- */
@@ -1136,7 +1115,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tv-edge, .tv-ticker, .tv-ticker-track, .tv-card[data-level="critical"],
+  .tv-ticker, .tv-ticker-track, .tv-card[data-level="critical"],
   .tv-live-dot, .tv-card[data-level="critical"] .tv-level-dot {
     animation: none;
   }

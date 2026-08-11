@@ -112,36 +112,33 @@ export default function TvWall() {
   // ---- ordering (recomputed as `now` ticks so status stays live) ---------
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
 
-  // Split the fleet into a pinned "needs attention" zone (critical + warning)
-  // that never rotates off screen, and a rotating zone for everything calm
-  // (nominal / unknown / maintenance). Flipping a unit to maintenance is what
-  // moves it out of the pinned zone and into the rotation — i.e. "accepting" it.
-  const { attention, rest } = useMemo(() => {
-    const attention: FleetAsset[] = [];
-    const rest: FleetAsset[] = [];
-    for (const a of ordered) {
-      const level = computeAssetAlarm(a).level;
-      if (level === "critical" || level === "warning") attention.push(a);
-      else rest.push(a);
-    }
-    return { attention, rest };
-  }, [ordered, now]);
+  // How many units currently need attention (critical + warning) — this drives
+  // how many rows we pin at the top so every alarm stays on screen.
+  const attnCount = useMemo(
+    () =>
+      ordered.filter((a) => {
+        const l = computeAssetAlarm(a).level;
+        return l === "critical" || l === "warning";
+      }).length,
+    [ordered, now]
+  );
 
-  // Vertical budget: the pinned zone gets as many rows as its cards need (up to
-  // a cap so the rotation keeps a row), and the rotation takes the remainder.
-  const MAX_ATTN_ROWS = 2;
+  // Vertical budget: pin enough rows to hold every attention unit (capped so the
+  // rotation keeps a row), and rotate the remainder. The pinned rows are filled
+  // from the top of the priority order — attention first, then topped up with
+  // calm units so the grid has no blank cells — and never rotate. Everything
+  // past the pinned rows cycles below. Accepting a unit into maintenance drops
+  // its priority, so it falls out of the pinned rows into the rotation.
+  const MAX_PINNED_ROWS = 2;
   const TOTAL_ROWS = 3;
-  const attnRows =
-    attention.length === 0
-      ? 0
-      : Math.min(Math.ceil(attention.length / cols), rest.length > 0 ? MAX_ATTN_ROWS : TOTAL_ROWS);
-  const rotRows = attention.length === 0 ? rowCount : Math.max(1, TOTAL_ROWS - attnRows);
-
-  const attnShown = attention.slice(0, attnRows * cols);
-  const attnOverflow = attention.length - attnShown.length;
+  const pinnedRows = attnCount === 0 ? 0 : Math.min(Math.ceil(attnCount / cols), MAX_PINNED_ROWS);
+  const pinnedCount = pinnedRows * cols;
+  const pinned = ordered.slice(0, pinnedCount);
+  const rotating = ordered.slice(pinnedCount);
+  const rotRows = pinnedRows === 0 ? rowCount : Math.max(1, TOTAL_ROWS - pinnedRows);
 
   const restPageSize = Math.max(1, rotRows * cols);
-  const restPages = useMemo(() => chunk(rest, restPageSize), [rest, restPageSize]);
+  const restPages = useMemo(() => chunk(rotating, restPageSize), [rotating, restPageSize]);
   const pageCount = Math.max(1, restPages.length);
 
   // Every open issue as its own "ASSET — error" line for the scrolling ticker:
@@ -165,12 +162,14 @@ export default function TvWall() {
     if (page >= pageCount) setPage(0);
   }, [page, pageCount]);
 
-  const clockStr = now ? new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const clockDate = now ? new Date(now) : null;
+  const dateStr = clockDate
+    ? clockDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+    : "";
+  const clockStr = clockDate ? clockDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
   return (
-    <div className="tv-root" data-alert={anyCritical ? "true" : "false"} role="main">
-      {anyCritical && <div className="tv-edge" aria-hidden="true" />}
-
+    <div className="tv-root" role="main">
       <header className="tv-header">
         <div className="tv-brand">
           <BrandMark size={30} />
@@ -193,7 +192,10 @@ export default function TvWall() {
             <span className="tv-live-dot" style={{ background: error ? ALARM_COLORS.warning : ALARM_COLORS.ok }} />
             {error ? "reconnecting" : "live"}
           </span>
-          <span className="tv-time font-mono-data">{clockStr}</span>
+          <span className="tv-time font-mono-data">
+            <span className="tv-date">{dateStr}</span>
+            {clockStr}
+          </span>
         </div>
       </header>
 
@@ -230,29 +232,24 @@ export default function TvWall() {
 
       {ordered.length > 0 && (
         <div className="tv-content">
-          {/* Pinned zone: units needing attention, always on screen. */}
-          {attnShown.length > 0 && (
+          {/* Pinned zone: highest-priority units (all alarms), always on screen. */}
+          {pinned.length > 0 && (
             <div
               className="tv-attention"
               style={{
-                flexGrow: attnRows,
+                flexGrow: pinnedRows,
                 gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-                gridTemplateRows: `repeat(${attnRows}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${pinnedRows}, minmax(0, 1fr))`,
               }}
             >
-              {attnShown.map((a) => (
+              {pinned.map((a) => (
                 <TvCard key={a.id} asset={a} />
               ))}
-              {attnOverflow > 0 && (
-                <div className="tv-attn-more" aria-hidden="true">
-                  +{attnOverflow} more · see ticker
-                </div>
-              )}
             </div>
           )}
 
-          {/* Rotating zone: everything calm, cycled a page at a time. */}
-          {rest.length > 0 && (
+          {/* Rotating zone: the remainder, cycled a page at a time. */}
+          {rotating.length > 0 && (
             <div className="tv-viewport" style={{ flexGrow: rotRows }}>
               <div
                 className="tv-track"
@@ -284,7 +281,7 @@ export default function TvWall() {
         </div>
       )}
 
-      {rest.length > 0 && pageCount > 1 && (
+      {rotating.length > 0 && pageCount > 1 && (
         <div className="tv-dots" aria-hidden="true">
           {Array.from({ length: pageCount }).map((_, i) => (
             <span key={i} className={`tv-dot${i === page ? " on" : ""}`} />
