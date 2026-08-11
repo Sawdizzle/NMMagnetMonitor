@@ -30,7 +30,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
-  const [statusFilter, setStatusFilter] = useState<"all" | "online" | "offline" | "unknown">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "online" | "stale" | "offline" | "unknown">("all");
 
   const load = useCallback(async () => {
     const historyCutoff = new Date(Date.now() - HISTORY_HOURS * 60 * 60 * 1000).toISOString();
@@ -85,6 +85,7 @@ export default function Dashboard() {
     statusFilter === "all" ? assets : assets.filter((a) => computeAssetHealth(a) === statusFilter);
 
   const onlineCount = assets.filter((a) => computeAssetHealth(a) === "online").length;
+  const staleCount = assets.filter((a) => computeAssetHealth(a) === "stale").length;
   const offlineCount = assets.filter((a) => computeAssetHealth(a) === "offline").length;
   const unknownCount = assets.filter((a) => computeAssetHealth(a) === "unknown").length;
 
@@ -132,7 +133,7 @@ export default function Dashboard() {
       </header>
 
       <div
-        className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-7"
+        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 mb-7"
         role="group"
         aria-label="Filter assets by status"
       >
@@ -158,6 +159,19 @@ export default function Dashboard() {
           active={statusFilter === "online"}
           onClick={() => setStatusFilter(statusFilter === "online" ? "all" : "online")}
           icon={<path d="M5 12.5l4 4 10-10" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />}
+        />
+        <StatusTile
+          color={STATUS_COLORS.stale}
+          count={staleCount}
+          label="Stale"
+          active={statusFilter === "stale"}
+          onClick={() => setStatusFilter(statusFilter === "stale" ? "all" : "stale")}
+          icon={
+            <>
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 7.5V12l3 2" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </>
+          }
         />
         <StatusTile
           color={STATUS_COLORS.offline}

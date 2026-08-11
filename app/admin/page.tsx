@@ -731,9 +731,12 @@ function AssetsTab(props: {
           <Field label="Address (optional)">
             <input value={props.assetSiteAddress} onChange={(e) => props.setAssetSiteAddress(e.target.value)} placeholder="e.g. 11113 Research Blvd, Austin TX" className="input" />
           </Field>
-          <Field label="Offline alert threshold (minutes)">
+          <Field label="Stale threshold (minutes)">
             <input type="number" min={1} value={props.offlineThreshold} onChange={(e) => props.setOfflineThreshold(Number(e.target.value))} className="input" />
           </Field>
+          <p className="text-xs text-[var(--text-dim)] -mt-1">
+            Card turns amber after this many minutes with no report, and red after 60.
+          </p>
           <Field label="MagMon local IP">
             <input required value={props.monitorHost} onChange={(e) => props.setMonitorHost(e.target.value)} placeholder="e.g. 192.168.1.50" className="input font-mono-data" />
           </Field>
@@ -862,9 +865,12 @@ function AssetEditRow(props: {
       <Field label="Address (optional)">
         <input value={props.editSiteAddress} onChange={(e) => props.setEditSiteAddress(e.target.value)} placeholder="e.g. 11113 Research Blvd, Austin TX" className="input" />
       </Field>
-      <Field label="Offline alert threshold (minutes)">
+      <Field label="Stale threshold (minutes)">
         <input type="number" min={1} value={props.editThreshold} onChange={(e) => props.setEditThreshold(Number(e.target.value))} className="input" />
       </Field>
+      <p className="text-xs text-[var(--text-dim)] -mt-1">
+        Card turns amber after this many minutes with no report, and red after 60.
+      </p>
       <Field label="MagMon local IP">
         <input required value={props.editHost} onChange={(e) => props.setEditHost(e.target.value)} className="input font-mono-data" />
       </Field>
