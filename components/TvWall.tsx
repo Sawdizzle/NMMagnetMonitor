@@ -273,6 +273,22 @@ function TvCard({ asset }: { asset: FleetAsset }) {
         <div className="tv-faults">
           <span className="tv-fault maint">In service — alarms muted</span>
         </div>
+      ) : alarm.connectivity === "offline" ? (
+        <div className="tv-faults">
+          <span className="tv-fault critical">
+            Offline — no report {mins !== null && <b>{mins} min</b>}
+          </span>
+        </div>
+      ) : alarm.connectivity === "stale" ? (
+        <div className="tv-faults">
+          <span className="tv-fault warning">
+            Awaiting data {mins !== null && <b>{mins} min</b>}
+          </span>
+        </div>
+      ) : alarm.connectivity === "unknown" ? (
+        <div className="tv-faults">
+          <span className="tv-fault maint">No data reported yet</span>
+        </div>
       ) : (
         <div className="tv-faults tv-faults-clear">All readings nominal</div>
       )}
