@@ -251,7 +251,6 @@ function Docs() {
             <CheatGroup title="Collector services">
               <Cmd c="nm-magmon-gateway-CA1012" d="Reports telemetry for CA1012" />
               <Cmd c="nm-magmon-gateway-NM1001" d="Reports telemetry for NM1001" />
-              <Cmd c="nm-magmon-gateway-NM1003" d="Site down since 2026-08-07 — collector staged, not installed" />
               <Cmd c="nm-magmon-gateway-NM1019" d="Reports telemetry for NM1019" />
               <Cmd c="nm-magmon-gateway-NM1027" d="Reports telemetry for NM1027" />
               <Cmd c="nm-magmon-gateway-NM1034" d="Reports telemetry for NM1034" />
@@ -271,12 +270,6 @@ function Docs() {
               process does not (its script is <code className="doc-code">/opt/magmon-gateway-&lt;ASSET&gt;.py</code>),
               so match on <code className="doc-code">magmon-gateway</code> when grepping.
             </P>
-            <Callout variant="warn" title="NM1003 is down (since 2026-08-07)">
-              NM1003 is a live site, but its gateway has been down since 2026-08-07 (suspected MagMon
-              IP conflict), so nothing reports for it. Its collector is staged on nas123 but never
-              installed. When the site is back online it&rsquo;ll be onboarded — SSH in, deploy the
-              current gateway script, clear the old cron jobs, then bring its collector online.
-            </Callout>
           </Section>
 
           {/* ---------------- Everyday commands ---------------- */}
