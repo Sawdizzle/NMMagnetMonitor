@@ -141,6 +141,14 @@ button {
   padding: 0.4rem 0.9rem;
   font-size: 0.8rem;
 }
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-secondary:disabled:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
 .btn-secondary:hover {
   border-color: var(--accent);
   color: var(--accent);

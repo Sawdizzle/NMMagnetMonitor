@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { supabase, type Asset } from "@/lib/supabase";
 import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
+import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
 import Protected from "@/components/Protected";
 import type { Session } from "@/lib/auth";
@@ -123,6 +124,7 @@ function AdminPanel({ me }: { me: Session }) {
   // standalone Raspberry Pi; set to the login user (e.g. "Numed") on a shared
   // server that runs several assets. Flows into install ownership + the unit's User=.
   const [serviceUser, setServiceUser] = useState("pi");
+  const [downloadingAll, setDownloadingAll] = useState(false);
 
   // alert rules
   const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
@@ -459,6 +461,76 @@ function AdminPanel({ me }: { me: Session }) {
     );
   }
 
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Bundle every asset's install script + systemd unit into one zip, each under
+  // its own folder — one download instead of clicking through each asset when
+  // re-imaging a fleet. Uses the current poll interval and service user.
+  async function downloadAllScripts() {
+    if (assets.length === 0 || downloadingAll) return;
+    setDownloadingAll(true);
+    try {
+      const built = await Promise.all(
+        assets.map(async (a) => {
+          const { data, error } = await supabase.rpc("admin_get_asset_config", {
+            p_actor_username: me.username,
+            p_actor_pin: me.pin,
+            p_asset_id: a.id,
+          });
+          const cfg = data && data[0];
+          if (error || !cfg) return { name: a.name, ok: false as const };
+          const script = generatePiScript({
+            assetName: a.name,
+            gatewayToken: cfg.gateway_token,
+            monitorHost: cfg.monitor_host,
+            monitorPort: cfg.monitor_port,
+            monitorUsername: cfg.monitor_username,
+            monitorPassword: cfg.monitor_password,
+            supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+            intervalMinutes: pollMinutes,
+            serviceUser,
+          });
+          const unit = generateSystemdUnit({ assetName: a.name, serviceUser });
+          return { name: a.name, ok: true as const, script, unit };
+        })
+      );
+
+      const files: { name: string; content: string }[] = [];
+      const failed: string[] = [];
+      for (const r of built) {
+        if (!r.ok) {
+          failed.push(r.name);
+          continue;
+        }
+        files.push({ name: `${r.name}/nm-magmon-gateway-${r.name}.py`, content: r.script });
+        files.push({ name: `${r.name}/nm-magmon-gateway-${r.name}.service`, content: r.unit });
+      }
+
+      if (files.length === 0) {
+        return fail("Could not build any scripts — no asset configs came back.");
+      }
+
+      downloadBlob(zipStore(files), "magmon-gateway-scripts.zip");
+      const okCount = files.length / 2;
+      notify(
+        failed.length
+          ? `Bundled ${okCount} asset${okCount === 1 ? "" : "s"}; skipped ${failed.length} (${failed.join(", ")}).`
+          : `Bundled scripts for all ${okCount} asset${okCount === 1 ? "" : "s"}.`,
+        failed.length ? "error" : "success"
+      );
+    } finally {
+      setDownloadingAll(false);
+    }
+  }
+
   // Assets filtered by search, grouped by their (optional) location. Assets
   // with no site_name fall into a "No location set" bucket sorted last.
   const assetGroups = useMemo(() => {
@@ -603,6 +675,8 @@ function AdminPanel({ me }: { me: Session }) {
           downloadScript={downloadScript}
           downloadUnitFile={downloadUnitFile}
           handleRotateToken={handleRotateToken}
+          downloadAllScripts={downloadAllScripts}
+          downloadingAll={downloadingAll}
         />
       )}
 
@@ -726,6 +800,8 @@ function AssetsTab(props: {
   downloadScript: () => void;
   downloadUnitFile: () => void;
   handleRotateToken: () => void;
+  downloadAllScripts: () => void;
+  downloadingAll: boolean;
 }) {
   const { assets, assetGroups, assetSearch, setAssetSearch, showAddAsset, setShowAddAsset, editingAssetId } = props;
 
@@ -739,9 +815,19 @@ function AssetsTab(props: {
           className="input flex-1 min-w-[12rem] max-w-sm"
           aria-label="Search assets"
         />
-        <button onClick={() => setShowAddAsset(!showAddAsset)} className="btn-primary">
-          {showAddAsset ? "Cancel" : "+ Add asset"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={props.downloadAllScripts}
+            disabled={props.downloadingAll || assets.length === 0}
+            className="btn-secondary"
+            title="Download every asset's install script + systemd unit as one zip"
+          >
+            {props.downloadingAll ? "Preparing…" : `Download all (${assets.length})`}
+          </button>
+          <button onClick={() => setShowAddAsset(!showAddAsset)} className="btn-primary">
+            {showAddAsset ? "Cancel" : "+ Add asset"}
+          </button>
+        </div>
       </div>
 
       {showAddAsset && (
