@@ -236,7 +236,7 @@ function Docs() {
             <CheatGroup title="Collector services">
               <Cmd c="nm-magmon-gateway-CA1012" d="Reports telemetry for CA1012" />
               <Cmd c="nm-magmon-gateway-NM1001" d="Reports telemetry for NM1001" />
-              <Cmd c="nm-magmon-gateway-NM1003" d="Disabled 2026-08-11 — suspected MagMon IP conflict" />
+              <Cmd c="nm-magmon-gateway-NM1003" d="Staged only — not installed or running (IP conflict)" />
               <Cmd c="nm-magmon-gateway-NM1019" d="Reports telemetry for NM1019" />
               <Cmd c="nm-magmon-gateway-NM1027" d="Reports telemetry for NM1027" />
               <Cmd c="nm-magmon-gateway-NM1034" d="Reports telemetry for NM1034" />
@@ -245,18 +245,22 @@ function Docs() {
             <P>SSH in and manage a collector by its service name:</P>
             <CodeBlock code={`ssh numed@100.120.75.117              # or 10.1.100.100 on the LAN\nls -la                                # the .py + .service pairs\nsystemctl status nm-magmon-gateway-NM1001\njournalctl -u nm-magmon-gateway-NM1001 -f     # live logs\nsudo systemctl restart nm-magmon-gateway-NM1001`} />
             <P>
-              Take a collector out of service — stop it now and keep it from starting on boot (
-              <code className="doc-code">--now</code> does both):
+              Take an installed collector out of service — stop it now and keep it from starting on
+              boot (<code className="doc-code">--now</code> does both):
             </P>
-            <CodeBlock code={`sudo systemctl disable --now nm-magmon-gateway-NM1003\nsystemctl status nm-magmon-gateway-NM1003     # confirm: inactive (dead), disabled\npgrep -f nm-magmon-gateway-NM1003             # no output = nothing left running`} />
+            <CodeBlock code={`sudo systemctl disable --now nm-magmon-gateway-<ASSET>\nsystemctl status nm-magmon-gateway-<ASSET>     # confirm: inactive (dead), disabled\npgrep -af magmon-gateway-<ASSET>               # no output = nothing left running`} />
             <P>
               Re-enable it later with{" "}
-              <code className="doc-code">sudo systemctl enable --now nm-magmon-gateway-NM1003</code>.
+              <code className="doc-code">sudo systemctl enable --now nm-magmon-gateway-&lt;ASSET&gt;</code>. The
+              service name carries the <code className="doc-code">nm-</code> prefix; the running
+              process does not (its script is <code className="doc-code">/opt/magmon-gateway-&lt;ASSET&gt;.py</code>),
+              so match on <code className="doc-code">magmon-gateway</code> when grepping.
             </P>
-            <Callout variant="warn" title="NM1003 is disabled">
-              Stopped and disabled on 2026-08-11 — the MagMon&rsquo;s IP is suspected to conflict with
-              another device on the network, so it wasn&rsquo;t reporting. Re-enable it once the
-              address is resolved.
+            <Callout variant="warn" title="NM1003 is not deployed">
+              NM1003 exists only as staged files in numed&rsquo;s home folder — its unit was never
+              installed into systemd, so it isn&rsquo;t running (confirmed 2026-08-11). It was left
+              out over a suspected MagMon IP conflict. To bring it online once the address is
+              resolved, install and enable its unit; until then it won&rsquo;t report.
             </Callout>
           </Section>
 
