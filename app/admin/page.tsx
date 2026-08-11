@@ -478,6 +478,31 @@ function AdminPanel({ me }: { me: Session }) {
     });
   }, [assets, assetSearch]);
 
+  // Dismiss the loaded install-script panel when the user searches somewhere
+  // that no longer includes the asset it was generated for. Otherwise the panel
+  // (and its "Download script" button) keeps pointing at the previous asset, so
+  // it's easy to grab the wrong files after searching for a new one. Driven off
+  // the keystroke rather than an effect so it never fires while an asset is
+  // being added — that path generates a script for a not-yet-listed asset.
+  function handleAssetSearchChange(value: string) {
+    setAssetSearch(value);
+    if (!scriptForAsset) return;
+    const q = value.trim().toLowerCase();
+    const loaded = assets.find((a) => a.id === scriptForAsset);
+    if (loaded && q && !loaded.name.toLowerCase().includes(q)) {
+      setScriptText(null);
+      setScriptForAsset(null);
+    }
+  }
+
+  // When a script loads (or switches asset), bring the panel into view so it's
+  // obvious which asset the download buttons now belong to.
+  useEffect(() => {
+    if (scriptForAsset && scriptText) {
+      document.getElementById("install-script-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [scriptForAsset, scriptText]);
+
   const tabCounts: Record<TabId, number | null> = {
     assets: assets.length,
     alerts: alertRules.length,
@@ -527,7 +552,7 @@ function AdminPanel({ me }: { me: Session }) {
           assets={assets}
           assetGroups={assetGroups}
           assetSearch={assetSearch}
-          setAssetSearch={setAssetSearch}
+          setAssetSearch={handleAssetSearchChange}
           showAddAsset={showAddAsset}
           setShowAddAsset={setShowAddAsset}
           handleAddAsset={handleAddAsset}
@@ -789,7 +814,7 @@ function AssetsTab(props: {
       )}
 
       {props.scriptText && (
-        <div className="mt-8">
+        <div id="install-script-panel" className="mt-8 scroll-mt-24">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
             Pi install script {props.scriptForAsset ? `— ${assets.find((a) => a.id === props.scriptForAsset)?.name ?? ""}` : ""}
           </h2>
