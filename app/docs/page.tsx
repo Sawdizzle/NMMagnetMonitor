@@ -234,21 +234,16 @@ function Docs() {
               <code className="doc-code">nm-magmon-gateway-&lt;ASSET&gt;</code>.
             </P>
             <CheatGroup title="Collector services">
-              <Cmd c="nm-magmon-gateway-CA1012" d="CA1012 · Aug 10 build (~20 KB)" />
-              <Cmd c="nm-magmon-gateway-NM1001" d="NM1001 · Aug 11 build (~27 KB)" />
-              <Cmd c="nm-magmon-gateway-NM1003" d="NM1003 · Aug 10 build (~20 KB)" />
-              <Cmd c="nm-magmon-gateway-NM1019" d="NM1019 · Aug 10 build (~20 KB)" />
-              <Cmd c="nm-magmon-gateway-NM1027" d="NM1027 · Aug 10 build (~20 KB)" />
-              <Cmd c="nm-magmon-gateway-NM1034" d="NM1034 · Aug 11 build (~27 KB)" />
-              <Cmd c="nm-magmon-gateway-NM1037" d="NM1037 · Aug 11 build (~27 KB)" />
+              <Cmd c="nm-magmon-gateway-CA1012" d="Reports telemetry for CA1012" />
+              <Cmd c="nm-magmon-gateway-NM1001" d="Reports telemetry for NM1001" />
+              <Cmd c="nm-magmon-gateway-NM1003" d="Reports telemetry for NM1003" />
+              <Cmd c="nm-magmon-gateway-NM1019" d="Reports telemetry for NM1019" />
+              <Cmd c="nm-magmon-gateway-NM1027" d="Reports telemetry for NM1027" />
+              <Cmd c="nm-magmon-gateway-NM1034" d="Reports telemetry for NM1034" />
+              <Cmd c="nm-magmon-gateway-NM1037" d="Reports telemetry for NM1037" />
             </CheatGroup>
             <P>SSH in and manage a collector by its service name:</P>
             <CodeBlock code={`ssh numed@100.120.75.117              # or 10.1.100.100 on the LAN\nls -la                                # the .py + .service pairs\nsystemctl status nm-magmon-gateway-NM1001\njournalctl -u nm-magmon-gateway-NM1001 -f     # live logs\nsudo systemctl restart nm-magmon-gateway-NM1001`} />
-            <Callout variant="warn" title="Two script builds are live">
-              The Aug 11 collectors (NM1001, NM1034, NM1037) are the larger ~27 KB build; CA1012,
-              NM1003, NM1019, and NM1027 are still on the older ~20 KB Aug 10 build. Worth confirming
-              the four older ones are on the current script.
-            </Callout>
           </Section>
 
           {/* ---------------- Everyday commands ---------------- */}
