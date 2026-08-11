@@ -99,5 +99,9 @@ export function zipStore(files: { name: string; content: string }[]): Blob {
     u16(0), // comment length
   ]);
 
-  return new Blob([...parts, centralBytes, end], { type: "application/zip" });
+  // Flatten to a single ArrayBuffer-backed view and hand the Blob its `.buffer`
+  // (a plain ArrayBuffer). Passing the Uint8Arrays directly trips TS 5.7+, which
+  // types them as Uint8Array<ArrayBufferLike> — not a valid BlobPart.
+  const body = concat([...parts, centralBytes, end]);
+  return new Blob([body.buffer as ArrayBuffer], { type: "application/zip" });
 }
