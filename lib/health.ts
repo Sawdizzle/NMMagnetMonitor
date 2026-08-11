@@ -2,7 +2,7 @@ import type { Asset } from "./supabase";
 
 export type HealthStatus = "online" | "stale" | "offline" | "unknown";
 
-const DEFAULT_STALE_THRESHOLD_MINUTES = 15;
+const DEFAULT_STALE_THRESHOLD_MINUTES = 30;
 // A quiet unit turns amber ("stale") once it passes its per-asset late
 // threshold, and only escalates to red ("offline") after this many minutes.
 // This gives an intermittent cellular link (e.g. CA1012 on the IR305 over

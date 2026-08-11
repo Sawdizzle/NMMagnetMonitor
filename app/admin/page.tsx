@@ -105,7 +105,7 @@ function AdminPanel({ me }: { me: Session }) {
   const [assetName, setAssetName] = useState("");
   const [assetSiteName, setAssetSiteName] = useState("");
   const [assetSiteAddress, setAssetSiteAddress] = useState("");
-  const [offlineThreshold, setOfflineThreshold] = useState(15);
+  const [offlineThreshold, setOfflineThreshold] = useState(30);
   const [monitorHost, setMonitorHost] = useState("");
   const [monitorPort, setMonitorPort] = useState(80);
   const [monitorUsername, setMonitorUsername] = useState("MMService");
@@ -138,7 +138,7 @@ function AdminPanel({ me }: { me: Session }) {
   const [editName, setEditName] = useState("");
   const [editSiteName, setEditSiteName] = useState("");
   const [editSiteAddress, setEditSiteAddress] = useState("");
-  const [editThreshold, setEditThreshold] = useState(15);
+  const [editThreshold, setEditThreshold] = useState(30);
   const [editHost, setEditHost] = useState("");
   const [editPort, setEditPort] = useState(80);
   const [editUsername, setEditUsername] = useState("MMService");
@@ -262,7 +262,7 @@ function AdminPanel({ me }: { me: Session }) {
     setEditName(asset.name);
     setEditSiteName(asset.site_name ?? "");
     setEditSiteAddress(asset.site_address ?? "");
-    setEditThreshold(asset.offline_threshold_minutes ?? 15);
+    setEditThreshold(asset.offline_threshold_minutes ?? 30);
     setEditHost(config.monitor_host ?? "");
     setEditPort(config.monitor_port ?? 80);
     setEditUsername(config.monitor_username ?? "MMService");

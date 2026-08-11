@@ -75,7 +75,7 @@ create table if not exists public.assets (
   site_name                  text,
   site_address               text,
   gateway_token              text        not null default encode(extensions.gen_random_bytes(24), 'hex'),
-  offline_threshold_minutes  integer     not null default 15,
+  offline_threshold_minutes  integer     not null default 30,
   status                     text        not null default 'unknown',
   last_seen_at               timestamptz,
   created_at                 timestamptz not null default now(),
@@ -297,7 +297,7 @@ $function$;
 -- were dropped when `sites` was folded into `assets`. Location is now set on
 -- the asset via admin_create_asset / admin_update_asset below.
 
-CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 15, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
+CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 30, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
