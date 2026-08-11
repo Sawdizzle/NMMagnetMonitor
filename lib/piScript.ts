@@ -121,6 +121,16 @@ BASE_URL        = f"http://{MAGMON_HOST}:{MAGMON_PORT}"
 POLL_INTERVAL_SECONDS = ${intervalMinutes * 60}
 REPORT_ENDPOINT = f"{SUPABASE_URL}/rest/v1/rpc/report_telemetry"
 
+# These MagMon controllers run a tiny single-connection GoAhead webserver that
+# intermittently refuses connections (Errno 111) when it is briefly busy -- and
+# under sustained hammering the HTTP task can wedge entirely until the unit is
+# power-cycled. So a single failed connect is NOT a reason to write off the whole
+# poll interval: retry a few times with a short backoff within the cycle before
+# giving up until the next one. Kept small so a genuinely dead webserver is not
+# pounded on.
+POLL_RETRIES          = 3
+RETRY_BACKOFF_SECONDS = 10
+
 SESSION = requests.Session()
 SESSION.auth = (MAGMON_USER, MAGMON_PASS)
 SESSION.headers.update({
@@ -485,15 +495,21 @@ def main():
 
     while _RUNNING:
         cycle_started = time.monotonic()
-        try:
-            if not probe_tcp_connect(MAGMON_HOST, MAGMON_PORT):
-                raise RuntimeError(f"Cannot reach MagMon at {MAGMON_HOST}:{MAGMON_PORT}")
-            body = fetch_minutes(num_hours=1, start_day=0, start_hour=1)
-            rows = parse_minutes(body)
-            report(rows[-1])  # most recent row
-        except Exception as e:
-            print(f"[nm-magmon-gateway] error: {e}")
-            traceback.print_exc()
+        for attempt in range(1, POLL_RETRIES + 1):
+            try:
+                if not probe_tcp_connect(MAGMON_HOST, MAGMON_PORT):
+                    raise RuntimeError(f"Cannot reach MagMon at {MAGMON_HOST}:{MAGMON_PORT}")
+                body = fetch_minutes(num_hours=1, start_day=0, start_hour=1)
+                rows = parse_minutes(body)
+                report(rows[-1])  # most recent row
+                break  # success -- done with this cycle
+            except Exception as e:
+                print(f"[nm-magmon-gateway] attempt {attempt}/{POLL_RETRIES} failed: {e}")
+                traceback.print_exc()
+                # Back off and retry within this cycle unless that was the last
+                # attempt or we have been asked to shut down.
+                if attempt < POLL_RETRIES and _RUNNING:
+                    sleep_interruptible(RETRY_BACKOFF_SECONDS)
 
         # Subtract however long the cycle took so the poll rate does not
         # drift later and later over weeks of uptime.
@@ -522,6 +538,11 @@ if __name__ == "__main__":
 # KillSignal=SIGTERM
 # TimeoutStopSec=45
 # User=${serviceUser}
+# # Unbuffered so "reported OK"/errors reach journald as they happen. Without
+# # this, Python block-buffers stdout to the journal pipe and log lines only
+# # appear when the buffer fills or the process exits -- which makes a healthy
+# # collector look silent and a restart dump a stale backlog.
+# Environment=PYTHONUNBUFFERED=1
 # StandardOutput=journal
 # StandardError=journal
 # SyslogIdentifier=magmon-${assetName}
@@ -573,6 +594,13 @@ TimeoutStopSec=45
 # Runs as an unprivileged user, never root. Group is intentionally omitted so
 # systemd uses this user's primary group; set Group= only if you need another.
 User=${serviceUser}
+
+# Unbuffered so "reported OK"/errors reach journald as they happen. Without this,
+# Python block-buffers stdout to the journal pipe and log lines only surface when
+# the buffer fills or the process exits -- making a healthy collector look silent
+# and a restart dump a stale backlog of old messages.
+Environment=PYTHONUNBUFFERED=1
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=magmon-${assetName}
