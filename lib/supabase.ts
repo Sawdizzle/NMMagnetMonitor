@@ -18,6 +18,10 @@ export type Asset = {
   last_seen_at: string | null;
   created_at: string;
   service_user: string;
+  // When true, TV/Display mode suppresses value-based alarms for this unit
+  // (known-warm / in-service assets), showing a calm "Maintenance" state
+  // instead of flashing red. Connectivity status is unaffected.
+  maintenance: boolean;
 };
 
 export type TelemetrySample = {

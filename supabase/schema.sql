@@ -84,6 +84,11 @@ create table if not exists public.assets (
   monitor_username           text        not null default 'MMService',
   monitor_password           text        not null default 'MagnetMonitor',
   service_user               text        not null default 'pi',
+  -- When true, TV/Display mode suppresses value-based alarms for this unit
+  -- (known-warm / in-service assets like a decommissioned service-center unit),
+  -- so the wall display doesn't flash red forever. Connectivity status is
+  -- unaffected. Toggled from the admin panel via admin_set_asset_maintenance.
+  maintenance                boolean     not null default false,
   constraint assets_name_unique unique (name)
 );
 
@@ -151,7 +156,8 @@ create table if not exists public.alert_recipients (
 -- dashboard reads.
 create or replace view public.public_assets as
   select id, name, site_name, site_address,
-         offline_threshold_minutes, status, last_seen_at, created_at, service_user
+         offline_threshold_minutes, status, last_seen_at, created_at, service_user,
+         maintenance
   from public.assets;
 
 -- latest_telemetry: newest reading per asset.
@@ -381,6 +387,34 @@ begin
   return query
     select a.gateway_token, a.monitor_host, a.monitor_port, a.monitor_username, a.monitor_password
     from assets a where a.id = p_asset_id;
+end;
+$function$;
+
+-- Toggle a unit's maintenance flag (TV/Display mode alarm suppression).
+CREATE OR REPLACE FUNCTION public.admin_set_asset_maintenance(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_maintenance boolean)
+ RETURNS assets
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  result assets;
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then
+    raise exception 'not authorized';
+  end if;
+  update assets set maintenance = p_maintenance
+   where id = p_asset_id
+  returning * into result;
+  perform _record_audit(
+    p_actor_username,
+    'set_maintenance',
+    'asset',
+    p_asset_id::text,
+    format('%s maintenance mode for "%s"',
+           case when p_maintenance then 'Enabled' else 'Cleared' end, result.name)
+  );
+  return result;
 end;
 $function$;
 

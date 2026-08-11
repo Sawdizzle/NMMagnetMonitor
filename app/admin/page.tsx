@@ -313,6 +313,22 @@ function AdminPanel({ me }: { me: Session }) {
     load();
   }
 
+  async function handleToggleMaintenance(a: Asset) {
+    const { error } = await supabase.rpc("admin_set_asset_maintenance", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_asset_id: a.id,
+      p_maintenance: !a.maintenance,
+    });
+    if (error) return fail(actionError("Could not update maintenance mode", error));
+    notify(
+      a.maintenance
+        ? `Maintenance cleared for "${a.name}".`
+        : `"${a.name}" set to maintenance — TV/Display alarms muted for this unit.`
+    );
+    load();
+  }
+
   function buildScript(
     name: string,
     token: string,
@@ -682,6 +698,7 @@ function AdminPanel({ me }: { me: Session }) {
           handleStartEditAsset={handleStartEditAsset}
           handleSaveAssetEdit={handleSaveAssetEdit}
           handleDeleteAsset={handleDeleteAsset}
+          handleToggleMaintenance={handleToggleMaintenance}
           handleGetScriptForExisting={handleGetScriptForExisting}
           scriptText={scriptText}
           scriptForAsset={scriptForAsset}
@@ -811,6 +828,7 @@ function AssetsTab(props: {
   handleStartEditAsset: (a: Asset) => void;
   handleSaveAssetEdit: (e: React.FormEvent) => void;
   handleDeleteAsset: (a: Asset) => void;
+  handleToggleMaintenance: (a: Asset) => void;
   handleGetScriptForExisting: (a: Asset) => void;
   scriptText: string | null;
   scriptForAsset: string | null;
@@ -907,12 +925,30 @@ function AssetsTab(props: {
                   ) : (
                     <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
                       <div>
-                        <p className="font-medium">{a.name}</p>
+                        <p className="font-medium">
+                          {a.name}
+                          {a.maintenance && (
+                            <span
+                              className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide align-middle"
+                              style={{ background: "color-mix(in srgb, #5b93f7 18%, transparent)", color: "#8fb4ff" }}
+                              title="TV/Display alarms are muted for this unit"
+                            >
+                              Maintenance
+                            </span>
+                          )}
+                        </p>
                         {a.site_address?.trim() && (
                           <p className="text-xs text-[var(--text-dim)]">{a.site_address}</p>
                         )}
                       </div>
                       <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => props.handleToggleMaintenance(a)}
+                          className="btn-secondary"
+                          title="When on, TV/Display mode mutes value-based alarms for this unit"
+                        >
+                          {a.maintenance ? "End maintenance" : "Maintenance"}
+                        </button>
                         <button onClick={() => props.handleGetScriptForExisting(a)} className="btn-secondary">Get install script</button>
                         <button onClick={() => props.handleStartEditAsset(a)} className="btn-secondary">Edit</button>
                         <button onClick={() => props.handleDeleteAsset(a)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
@@ -1313,6 +1349,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   create_asset: "Asset added",
   update_asset: "Asset edited",
   delete_asset: "Asset deleted",
+  set_maintenance: "Maintenance toggled",
   rotate_token: "Token rotated",
   create_user: "User created",
   reset_pin: "PIN reset",

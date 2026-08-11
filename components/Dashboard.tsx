@@ -66,11 +66,27 @@ export default function Dashboard() {
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
       <header className="mb-6">
         <p className="eyebrow mb-1.5">{brand.eyebrow}</p>
-        <div className="flex items-center gap-3">
-          <span className="dash-mark" aria-hidden="true">
-            <BrandMark size={20} />
-          </span>
-          <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
+        <div className="flex items-center gap-3 justify-between">
+          <div className="flex items-center gap-3">
+            <span className="dash-mark" aria-hidden="true">
+              <BrandMark size={20} />
+            </span>
+            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
+          </div>
+          <Link
+            href={`${basePath}/tv`}
+            target="_blank"
+            rel="noopener"
+            className="btn-secondary inline-flex items-center gap-1.5 shrink-0"
+            aria-label="Open TV / Display mode in a new tab"
+            title="Full-screen wall display that auto-rotates through the fleet"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="12" rx="1.6" stroke="currentColor" strokeWidth="2" />
+              <path d="M8 20h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            TV mode
+          </Link>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-[var(--text-dim)]">
           <span className="flex items-center gap-1.5 text-[var(--text-muted)]">

@@ -81,6 +81,19 @@ function sampleAt(spec: AssetSpec, tMs: number): TelemetrySample {
   const metrics = Object.fromEntries(
     METRIC_CFGS.map((cfg) => [cfg.key, metricValue(spec.seed, cfg, tMs, spec.skew?.[cfg.key] ?? 1)])
   ) as Record<MetricKey, number>;
+
+  // CS1 = 0 means the compressor is running (matches real fleet data, where a
+  // healthy unit reports CS1 0.0). The synthetic metric model wanders above 0,
+  // which TV mode would read as "compressor OFF", so pin it unless a fault is
+  // injected for this unit.
+  metrics.cs1 = spec.inject?.cs1 ?? 0;
+  if (spec.inject?.he_lvl !== undefined) metrics.he_lvl = spec.inject.he_lvl;
+  if (spec.inject?.shield !== undefined) metrics.shield = spec.inject.shield;
+
+  // Coldhead temperature isn't a typed column — TV mode reads it from `data`.
+  // Healthy ~4.2 K; injected units run warm.
+  const coldheadK = spec.inject?.coldheadK ?? 4.2;
+
   const iso = new Date(tMs).toISOString();
   return {
     id: Math.floor(tMs / 1000),
@@ -88,7 +101,7 @@ function sampleAt(spec: AssetSpec, tMs: number): TelemetrySample {
     recorded_at: iso,
     created_at: iso,
     ...metrics,
-    data: null,
+    data: { source: "demo", ColdheadRuO: coldheadK },
   };
 }
 
@@ -106,17 +119,22 @@ type AssetSpec = {
   // Optional per-metric multiplier to give a couple of units distinctive
   // (but still plausible) readings, e.g. a lower helium level.
   skew?: Partial<Record<MetricKey, number>>;
+  // Injected fault values so /demo/tv can demonstrate value-based alarms:
+  // a compressor-off unit, a warm coldhead, etc. Absent = healthy.
+  inject?: Partial<{ cs1: number; coldheadK: number; he_lvl: number; shield: number }>;
+  // Suppress value alarms on the TV (known-warm / in-service unit).
+  maintenance?: boolean;
   seed: number;
 };
 
 const ROSTER: AssetSpec[] = [
   { id: "MM-1001", name: "MM-1001", site_name: "Riverbend Imaging Center", site_address: "1200 Riverbend Dr, Springfield", lastSeenMinAgo: 2, seed: hashSeed("MM-1001") },
-  { id: "MM-1002", name: "MM-1002", site_name: "Summit Diagnostic Center", site_address: "455 Summit Ave, Fairview", lastSeenMinAgo: 4, seed: hashSeed("MM-1002") },
+  { id: "MM-1002", name: "MM-1002", site_name: "Summit Diagnostic Center", site_address: "455 Summit Ave, Fairview", lastSeenMinAgo: 4, inject: { cs1: 33, coldheadK: 58 }, seed: hashSeed("MM-1002") },
   { id: "MM-1003", name: "MM-1003", site_name: "Lakeside Medical Center", site_address: "88 Lakeshore Blvd, Elmwood", lastSeenMinAgo: 1, seed: hashSeed("MM-1003") },
   { id: "MM-1004", name: "MM-1004", site_name: "Harbor Radiology", site_address: "310 Harbor St, Bayport", lastSeenMinAgo: 47, seed: hashSeed("MM-1004") },
   { id: "MM-1005", name: "MM-1005", site_name: "Grandview Regional Hospital", site_address: "2 Grandview Pkwy, Northfield", lastSeenMinAgo: 6, skew: { he_lvl: 0.42 }, seed: hashSeed("MM-1005") },
   { id: "MM-1006", name: "MM-1006", site_name: "Cedar Valley Clinic", site_address: "77 Cedar Valley Rd, Ashton", lastSeenMinAgo: 214, seed: hashSeed("MM-1006") },
-  { id: "MM-1007", name: "MM-1007", site_name: "Northgate Imaging", site_address: "1450 Northgate Blvd, Westbrook", lastSeenMinAgo: 3, seed: hashSeed("MM-1007") },
+  { id: "MM-1007", name: "MM-1007", site_name: "Northgate Imaging", site_address: "1450 Northgate Blvd, Westbrook", lastSeenMinAgo: 3, inject: { coldheadK: 128, he_lvl: 0, shield: 240 }, maintenance: true, seed: hashSeed("MM-1007") },
   { id: "MM-1008", name: "MM-1008", site_name: "Pinehurst Health", site_address: "9 Pinehurst Way, Millbrook", lastSeenMinAgo: 9, seed: hashSeed("MM-1008") },
   { id: "MM-1009", name: "MM-1009", site_name: "Fairmont Mobile MRI", site_address: "Mobile unit · region 4", lastSeenMinAgo: null, seed: hashSeed("MM-1009") },
   { id: "MM-1010", name: "MM-1010", site_name: "Westland Imaging", site_address: "620 Westland Ave, Crestline", lastSeenMinAgo: 5, seed: hashSeed("MM-1010") },
@@ -138,6 +156,7 @@ function specToAsset(spec: AssetSpec, now: number): Asset {
     last_seen_at: lastSeen,
     created_at: new Date(now - 400 * 24 * 60 * 60 * 1000).toISOString(),
     service_user: "gateway",
+    maintenance: spec.maintenance ?? false,
   };
 }
 
