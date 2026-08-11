@@ -40,28 +40,24 @@ export default function BrandMark({
       aria-hidden="true"
       style={style}
     >
-      {/* MRI gantry face with the bore cut out (evenodd → transparent bore).
-          bleed: full-tile square instead of the rounded gantry — the OS icon
-          mask rounds the corners. */}
+      {/* MRI gantry face — the teal runs edge-to-edge, with the bore cut out
+          (evenodd → transparent bore). Non-bleed keeps rounded corners for the
+          in-DOM header/tiles; bleed is a full square so the OS icon mask
+          supplies the corner rounding. Both share the same centered bore. */}
       <path
         fill={body}
         fillRule="evenodd"
         d={
-          bleed
-            ? "M0 0 H24 V24 H0 Z M18.21 11.5 A6.21 6.21 0 1 0 5.79 11.5 A6.21 6.21 0 1 0 18.21 11.5 Z"
-            : "M7.5 2 H16.5 A5 5 0 0 1 21.5 7 V16 A5 5 0 0 1 16.5 21 H7.5 A5 5 0 0 1 2.5 16 V7 A5 5 0 0 1 7.5 2 Z M17.4 11.5 A5.4 5.4 0 1 0 6.6 11.5 A5.4 5.4 0 1 0 17.4 11.5 Z"
+          (bleed
+            ? "M0 0 H24 V24 H0 Z"
+            : "M5 0 H19 A5 5 0 0 1 24 5 V19 A5 5 0 0 1 19 24 H5 A5 5 0 0 1 0 19 V5 A5 5 0 0 1 5 0 Z") +
+          " M18.5 12 A6.5 6.5 0 1 0 5.5 12 A6.5 6.5 0 1 0 18.5 12 Z"
         }
       />
-      {/* live monitoring pulse across the bore. bleed scales the bore + pulse
-          up ~15% (about their shared center 12,11.5) so the inner mark isn't
-          dwarfed once the teal runs edge-to-edge. */}
+      {/* live monitoring pulse — a tidy EKG trace centered in the bore. */}
       <path
         fill={pulse}
-        d={
-          bleed
-            ? "M6.25 10.81 L9.01 10.81 L10.16 8.63 L11.54 13.46 L12.69 10.81 L17.75 10.81 L17.75 12.19 L12.69 12.19 L11.54 14.84 L10.16 10.01 L9.01 12.19 L6.25 12.19 Z"
-            : "M7 10.9 L9.4 10.9 L10.4 9 L11.6 13.2 L12.6 10.9 L17 10.9 L17 12.1 L12.6 12.1 L11.6 14.4 L10.4 10.2 L9.4 12.1 L7 12.1 Z"
-        }
+        d="M7.6 11.45 L9.8 11.45 L10.6 9.85 L11.5 13.25 L12.3 11.45 L16.4 11.45 L16.4 12.55 L12.3 12.55 L11.5 14.35 L10.6 10.95 L9.8 12.55 L7.6 12.55 Z"
       />
     </svg>
   );
