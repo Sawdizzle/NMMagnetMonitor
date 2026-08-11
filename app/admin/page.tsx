@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { supabase, type Site, type Asset } from "@/lib/supabase";
 import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
@@ -19,6 +19,15 @@ const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "cs1", label: "CS1 / compressor", unit: "" },
 ];
 const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
+
+type TabId = "assets" | "sites" | "alerts" | "users" | "activity";
+const TABS: { id: TabId; label: string }[] = [
+  { id: "assets", label: "Assets" },
+  { id: "sites", label: "Sites" },
+  { id: "alerts", label: "Alerts" },
+  { id: "users", label: "Users" },
+  { id: "activity", label: "Activity" },
+];
 
 type AppUser = { username: string; role: "viewer" | "admin"; created_at: string };
 type AuditEntry = {
@@ -41,16 +50,60 @@ type AlertRule = {
   created_at: string;
 };
 
+type Toast = { msg: string; kind: "success" | "error" };
+type ConfirmReq = { message: string; danger?: boolean; resolve: (ok: boolean) => void };
+type PromptReq = {
+  title: string;
+  label: string;
+  minLength?: number;
+  resolve: (value: string | null) => void;
+};
+
 export default function AdminPage() {
   return <Protected requireAdmin>{(session) => <AdminPanel me={session} />}</Protected>;
 }
 
 function AdminPanel({ me }: { me: Session }) {
+  const [activeTab, setActiveTab] = useState<TabId>("assets");
+
   const [sites, setSites] = useState<Site[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
+
+  // Toast + dialog state (replaces the old top-of-page status string and the
+  // native prompt()/confirm() dialogs).
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null);
+  const [promptReq, setPromptReq] = useState<PromptReq | null>(null);
+
+  const notify = useCallback((msg: string, kind: Toast["kind"] = "success") => {
+    setToast({ msg, kind });
+  }, []);
+  const fail = useCallback((msg: string) => setToast({ msg, kind: "error" }), []);
+
+  const askConfirm = useCallback(
+    (message: string, danger = false) =>
+      new Promise<boolean>((resolve) => setConfirmReq({ message, danger, resolve })),
+    []
+  );
+  const askPrompt = useCallback(
+    (opts: { title: string; label: string; minLength?: number }) =>
+      new Promise<string | null>((resolve) => setPromptReq({ ...opts, resolve })),
+    []
+  );
+
+  // Auto-dismiss the toast.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // add-site / add-asset collapsibles
+  const [showAddSite, setShowAddSite] = useState(false);
+  const [showAddAsset, setShowAddAsset] = useState(false);
+  const [assetSearch, setAssetSearch] = useState("");
 
   const [siteName, setSiteName] = useState("");
   const [siteAddress, setSiteAddress] = useState("");
@@ -86,7 +139,7 @@ function AdminPanel({ me }: { me: Session }) {
   const [ruleThreshold, setRuleThreshold] = useState<number>(3);
   const [ruleEnabled, setRuleEnabled] = useState<boolean>(true);
 
-  // editing
+  // inline editing
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editSiteId, setEditSiteId] = useState("");
@@ -131,23 +184,23 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleAddSite(e: React.FormEvent) {
     e.preventDefault();
-    setStatus(null);
     const { error } = await supabase.rpc("admin_create_site", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_name: siteName,
       p_address: siteAddress || null,
     });
-    if (error) return setStatus(actionError("Could not add site", error));
+    if (error) return fail(actionError("Could not add site", error));
+    const added = siteName;
     setSiteName("");
     setSiteAddress("");
-    setStatus(`Site "${siteName}" added.`);
+    setShowAddSite(false);
+    notify(`Site "${added}" added.`);
     load();
   }
 
   async function handleAddAsset(e: React.FormEvent) {
     e.preventDefault();
-    setStatus(null);
     const { data, error } = await supabase.rpc("admin_create_asset", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
@@ -160,9 +213,10 @@ function AdminPanel({ me }: { me: Session }) {
       p_monitor_username: monitorUsername,
       p_monitor_password: monitorPassword,
     });
-    if (error) return setStatus(actionError("Could not add asset", error));
-    setStatus(`Asset "${assetName}" added. Generate its install script below.`);
+    if (error) return fail(actionError("Could not add asset", error));
+    notify(`Asset "${assetName}" added. Install script generated below.`);
     setAssetName("");
+    setShowAddAsset(false);
     load();
     const created = data as {
       id: string;
@@ -179,7 +233,6 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleAddUser(e: React.FormEvent) {
     e.preventDefault();
-    setStatus(null);
     const { error } = await supabase.rpc("admin_create_user", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
@@ -187,8 +240,8 @@ function AdminPanel({ me }: { me: Session }) {
       p_new_pin: userPin,
       p_role: userRole,
     });
-    if (error) return setStatus(actionError("Could not add user", error));
-    setStatus(`User "${userName}" created.`);
+    if (error) return fail(actionError("Could not add user", error));
+    notify(`User "${userName}" created.`);
     setUserName("");
     setUserPin("");
     setUserRole("viewer");
@@ -196,7 +249,11 @@ function AdminPanel({ me }: { me: Session }) {
   }
 
   async function handleResetPin(u: AppUser) {
-    const newPin = prompt(`New PIN for ${u.username} (min 4 characters):`);
+    const newPin = await askPrompt({
+      title: `Reset PIN for ${u.username}`,
+      label: "New PIN (min 4 characters)",
+      minLength: 4,
+    });
     if (!newPin) return;
     const { error } = await supabase.rpc("admin_reset_pin", {
       p_actor_username: me.username,
@@ -204,7 +261,8 @@ function AdminPanel({ me }: { me: Session }) {
       p_target_username: u.username,
       p_new_pin: newPin,
     });
-    setStatus(error ? actionError("Could not reset PIN", error) : `PIN reset for ${u.username}.`);
+    if (error) return fail(actionError("Could not reset PIN", error));
+    notify(`PIN reset for ${u.username}.`);
   }
 
   async function handleToggleRole(u: AppUser) {
@@ -215,20 +273,19 @@ function AdminPanel({ me }: { me: Session }) {
       p_target_username: u.username,
       p_new_role: newRole,
     });
-    if (error) return setStatus(actionError("Could not change role", error));
-    setStatus(`${u.username} is now ${newRole}.`);
+    if (error) return fail(actionError("Could not change role", error));
+    notify(`${u.username} is now ${newRole}.`);
     load();
   }
 
   async function handleStartEditAsset(asset: Asset) {
-    setStatus(null);
     const { data, error } = await supabase.rpc("admin_get_asset_config", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_asset_id: asset.id,
     });
     const config = data && data[0];
-    if (error || !config) return setStatus(error ? actionError("Could not load asset", error) : "Could not load asset: not found.");
+    if (error || !config) return fail(error ? actionError("Could not load asset", error) : "Could not load asset: not found.");
     setEditingAssetId(asset.id);
     setEditName(asset.name);
     setEditSiteId(asset.site_id);
@@ -243,7 +300,6 @@ function AdminPanel({ me }: { me: Session }) {
   async function handleSaveAssetEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editingAssetId) return;
-    setStatus(null);
     const { error } = await supabase.rpc("admin_update_asset", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
@@ -257,22 +313,21 @@ function AdminPanel({ me }: { me: Session }) {
       p_monitor_username: editUsername,
       p_monitor_password: editPassword,
     });
-    if (error) return setStatus(actionError("Could not save asset", error));
-    setStatus(`Asset "${editName}" updated.`);
+    if (error) return fail(actionError("Could not save asset", error));
+    notify(`Asset "${editName}" updated.`);
     setEditingAssetId(null);
     load();
   }
 
   async function handleDeleteAsset(a: Asset) {
-    if (!confirm(`Delete asset "${a.name}"? This also deletes all its telemetry history. This cannot be undone.`)) return;
-    setStatus(null);
+    if (!(await askConfirm(`Delete asset "${a.name}"? This also deletes all its telemetry history. This cannot be undone.`, true))) return;
     const { error } = await supabase.rpc("admin_delete_asset", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_asset_id: a.id,
     });
-    if (error) return setStatus(actionError("Could not delete asset", error));
-    setStatus(`Asset "${a.name}" deleted.`);
+    if (error) return fail(actionError("Could not delete asset", error));
+    notify(`Asset "${a.name}" deleted.`);
     if (editingAssetId === a.id) setEditingAssetId(null);
     load();
   }
@@ -286,7 +341,6 @@ function AdminPanel({ me }: { me: Session }) {
   async function handleSaveSiteEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editingSiteId) return;
-    setStatus(null);
     const { error } = await supabase.rpc("admin_update_site", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
@@ -294,8 +348,8 @@ function AdminPanel({ me }: { me: Session }) {
       p_name: editSiteName,
       p_address: editSiteAddress || null,
     });
-    if (error) return setStatus(actionError("Could not save site", error));
-    setStatus(`Site "${editSiteName}" updated.`);
+    if (error) return fail(actionError("Could not save site", error));
+    notify(`Site "${editSiteName}" updated.`);
     setEditingSiteId(null);
     load();
   }
@@ -309,21 +363,20 @@ function AdminPanel({ me }: { me: Session }) {
     // still the real enforcement.
     const attached = assets.filter((a) => a.site_id === s.id);
     if (attached.length > 0) {
-      return setStatus(
+      return fail(
         `Cannot delete site "${s.name}": ${attached.length} asset(s) still attached (${attached
           .map((a) => a.name)
           .join(", ")}). Delete or move them first.`
       );
     }
-    if (!confirm(`Delete site "${s.name}"? This cannot be undone.`)) return;
-    setStatus(null);
+    if (!(await askConfirm(`Delete site "${s.name}"? This cannot be undone.`, true))) return;
     const { error } = await supabase.rpc("admin_delete_site", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_site_id: s.id,
     });
-    if (error) return setStatus(actionError("Could not delete site", error));
-    setStatus(`Site "${s.name}" deleted.`);
+    if (error) return fail(actionError("Could not delete site", error));
+    notify(`Site "${s.name}" deleted.`);
     load();
   }
 
@@ -351,14 +404,13 @@ function AdminPanel({ me }: { me: Session }) {
   }
 
   async function handleGetScriptForExisting(asset: Asset) {
-    setStatus(null);
     const { data, error } = await supabase.rpc("admin_get_asset_config", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_asset_id: asset.id,
     });
     const config = data && data[0];
-    if (error || !config) return setStatus(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
+    if (error || !config) return fail(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
     buildScript(asset.name, config.gateway_token, config.monitor_host, config.monitor_port, config.monitor_username, config.monitor_password);
     setScriptForAsset(asset.id);
   }
@@ -367,19 +419,19 @@ function AdminPanel({ me }: { me: Session }) {
     const asset = assets.find((a) => a.id === scriptForAsset);
     if (!asset) return;
     if (
-      !confirm(
-        `Rotate the gateway token for "${asset.name}"?\n\nThe Pi will stop reporting until you download the new script and deploy it. Telemetry already collected is NOT affected.`
-      )
+      !(await askConfirm(
+        `Rotate the gateway token for "${asset.name}"? The Pi will stop reporting until you download the new script and deploy it. Telemetry already collected is NOT affected.`,
+        true
+      ))
     )
       return;
-    setStatus(null);
     const { error } = await supabase.rpc("admin_rotate_gateway_token", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_asset_id: asset.id,
     });
-    if (error) return setStatus(actionError("Could not rotate token", error));
-    setStatus(
+    if (error) return fail(actionError("Could not rotate token", error));
+    notify(
       `Token rotated for "${asset.name}". Download the script again and deploy it — the Pi is offline until you do.`
     );
     // Clear the stale script so the old token can't be downloaded by mistake.
@@ -406,7 +458,6 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleSaveRule(e: React.FormEvent) {
     e.preventDefault();
-    setStatus(null);
     const { error } = await supabase.rpc("admin_upsert_alert_rule", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
@@ -417,8 +468,8 @@ function AdminPanel({ me }: { me: Session }) {
       p_threshold: ruleThreshold,
       p_enabled: ruleEnabled,
     });
-    if (error) return setStatus(actionError("Could not save alert rule", error));
-    setStatus(editingRuleId ? "Alert rule updated." : "Alert rule added.");
+    if (error) return fail(actionError("Could not save alert rule", error));
+    notify(editingRuleId ? "Alert rule updated." : "Alert rule added.");
     resetRuleForm();
     load();
   }
@@ -434,21 +485,20 @@ function AdminPanel({ me }: { me: Session }) {
       p_threshold: Number(r.threshold),
       p_enabled: !r.enabled,
     });
-    if (error) return setStatus(actionError("Could not update alert rule", error));
+    if (error) return fail(actionError("Could not update alert rule", error));
     load();
   }
 
   async function handleDeleteRule(r: AlertRule) {
     const metric = ALERT_METRICS.find((m) => m.key === r.field)?.label ?? r.field;
-    if (!confirm(`Delete this alert rule (${metric} ${r.comparator} ${Number(r.threshold)})?`)) return;
-    setStatus(null);
+    if (!(await askConfirm(`Delete this alert rule (${metric} ${r.comparator} ${Number(r.threshold)})?`, true))) return;
     const { error } = await supabase.rpc("admin_delete_alert_rule", {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_rule_id: r.id,
     });
-    if (error) return setStatus(actionError("Could not delete alert rule", error));
-    setStatus("Alert rule deleted.");
+    if (error) return fail(actionError("Could not delete alert rule", error));
+    notify("Alert rule deleted.");
     if (editingRuleId === r.id) resetRuleForm();
     load();
   }
@@ -485,6 +535,29 @@ function AdminPanel({ me }: { me: Session }) {
     );
   }
 
+  // Assets filtered by search, grouped under their site.
+  const assetGroups = useMemo(() => {
+    const q = assetSearch.trim().toLowerCase();
+    const filtered = q ? assets.filter((a) => a.name.toLowerCase().includes(q)) : assets;
+    const siteName = (id: string) => sites.find((s) => s.id === id)?.name ?? "Unassigned";
+    const groups = new Map<string, Asset[]>();
+    for (const a of filtered) {
+      const key = siteName(a.site_id);
+      const list = groups.get(key) ?? [];
+      list.push(a);
+      groups.set(key, list);
+    }
+    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [assets, sites, assetSearch]);
+
+  const tabCounts: Record<TabId, number | null> = {
+    assets: assets.length,
+    sites: sites.length,
+    alerts: alertRules.length,
+    users: users.length,
+    activity: null,
+  };
+
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10 max-w-5xl mx-auto" role="main">
       <Link href="/" className="back-link">
@@ -494,209 +567,364 @@ function AdminPanel({ me }: { me: Session }) {
         Back to fleet
       </Link>
       <p className="eyebrow mt-4 mb-1.5">Fleet management</p>
-      <h1 className="text-2xl md:text-3xl font-semibold tracking-tight mb-8">Admin</h1>
+      <h1 className="text-2xl md:text-3xl font-semibold tracking-tight mb-6">Admin</h1>
 
-      {status && (
-        <p className="mb-6 text-sm font-mono-data rounded-md border border-[var(--border-soft)] bg-[var(--card)] px-3 py-2" role="status" aria-live="polite">
-          {status}
-        </p>
+      {/* Tab bar */}
+      <div role="tablist" aria-label="Admin sections" className="flex flex-wrap gap-1 border-b border-[var(--border)] mb-8">
+        {TABS.map((t) => {
+          const active = activeTab === t.id;
+          const count = tabCounts[t.id];
+          return (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setActiveTab(t.id)}
+              className="relative px-4 py-2.5 text-sm font-medium -mb-px border-b-2 transition-colors"
+              style={{
+                borderColor: active ? "var(--accent)" : "transparent",
+                color: active ? "var(--text)" : "var(--text-muted)",
+              }}
+            >
+              {t.label}
+              {count !== null && count > 0 && (
+                <span className="ml-1.5 text-xs font-mono-data text-[var(--text-dim)]">{count}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "assets" && (
+        <AssetsTab
+          assets={assets}
+          sites={sites}
+          assetGroups={assetGroups}
+          assetSearch={assetSearch}
+          setAssetSearch={setAssetSearch}
+          showAddAsset={showAddAsset}
+          setShowAddAsset={setShowAddAsset}
+          handleAddAsset={handleAddAsset}
+          assetSiteId={assetSiteId}
+          setAssetSiteId={setAssetSiteId}
+          assetName={assetName}
+          setAssetName={setAssetName}
+          assetVersion={assetVersion}
+          setAssetVersion={setAssetVersion}
+          offlineThreshold={offlineThreshold}
+          setOfflineThreshold={setOfflineThreshold}
+          monitorHost={monitorHost}
+          setMonitorHost={setMonitorHost}
+          monitorPort={monitorPort}
+          setMonitorPort={setMonitorPort}
+          monitorUsername={monitorUsername}
+          setMonitorUsername={setMonitorUsername}
+          monitorPassword={monitorPassword}
+          setMonitorPassword={setMonitorPassword}
+          editingAssetId={editingAssetId}
+          setEditingAssetId={setEditingAssetId}
+          editName={editName}
+          setEditName={setEditName}
+          editSiteId={editSiteId}
+          setEditSiteId={setEditSiteId}
+          editVersion={editVersion}
+          setEditVersion={setEditVersion}
+          editThreshold={editThreshold}
+          setEditThreshold={setEditThreshold}
+          editHost={editHost}
+          setEditHost={setEditHost}
+          editPort={editPort}
+          setEditPort={setEditPort}
+          editUsername={editUsername}
+          setEditUsername={setEditUsername}
+          editPassword={editPassword}
+          setEditPassword={setEditPassword}
+          handleStartEditAsset={handleStartEditAsset}
+          handleSaveAssetEdit={handleSaveAssetEdit}
+          handleDeleteAsset={handleDeleteAsset}
+          handleGetScriptForExisting={handleGetScriptForExisting}
+          scriptText={scriptText}
+          scriptForAsset={scriptForAsset}
+          pollMinutes={pollMinutes}
+          setPollMinutes={setPollMinutes}
+          serviceUser={serviceUser}
+          setServiceUser={setServiceUser}
+          downloadScript={downloadScript}
+          downloadUnitFile={downloadUnitFile}
+          handleRotateToken={handleRotateToken}
+        />
       )}
 
-      <div className="grid md:grid-cols-2 gap-6 mb-10">
-        <form onSubmit={handleAddSite} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3">
-          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add site</h2>
-          <Field label="Site name">
-            <input required value={siteName} onChange={(e) => setSiteName(e.target.value)} className="input" />
-          </Field>
-          <Field label="Address (optional)">
-            <input value={siteAddress} onChange={(e) => setSiteAddress(e.target.value)} className="input" />
-          </Field>
-          <button type="submit" className="btn-primary">Add site</button>
-        </form>
+      {activeTab === "sites" && (
+        <SitesTab
+          sites={sites}
+          assets={assets}
+          showAddSite={showAddSite}
+          setShowAddSite={setShowAddSite}
+          handleAddSite={handleAddSite}
+          siteName={siteName}
+          setSiteName={setSiteName}
+          siteAddress={siteAddress}
+          setSiteAddress={setSiteAddress}
+          editingSiteId={editingSiteId}
+          setEditingSiteId={setEditingSiteId}
+          editSiteName={editSiteName}
+          setEditSiteName={setEditSiteName}
+          editSiteAddress={editSiteAddress}
+          setEditSiteAddress={setEditSiteAddress}
+          handleStartEditSite={handleStartEditSite}
+          handleSaveSiteEdit={handleSaveSiteEdit}
+          handleDeleteSite={handleDeleteSite}
+        />
+      )}
 
-        <form onSubmit={handleAddAsset} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3">
+      {activeTab === "alerts" && (
+        <AlertsTab
+          assets={assets}
+          alertRules={alertRules}
+          editingRuleId={editingRuleId}
+          ruleScope={ruleScope}
+          setRuleScope={setRuleScope}
+          ruleField={ruleField}
+          setRuleField={setRuleField}
+          ruleComparator={ruleComparator}
+          setRuleComparator={setRuleComparator}
+          ruleThreshold={ruleThreshold}
+          setRuleThreshold={setRuleThreshold}
+          ruleEnabled={ruleEnabled}
+          setRuleEnabled={setRuleEnabled}
+          handleSaveRule={handleSaveRule}
+          resetRuleForm={resetRuleForm}
+          handleToggleRule={handleToggleRule}
+          handleEditRule={handleEditRule}
+          handleDeleteRule={handleDeleteRule}
+        />
+      )}
+
+      {activeTab === "users" && (
+        <UsersTab
+          users={users}
+          userName={userName}
+          setUserName={setUserName}
+          userPin={userPin}
+          setUserPin={setUserPin}
+          userRole={userRole}
+          setUserRole={setUserRole}
+          handleAddUser={handleAddUser}
+          handleToggleRole={handleToggleRole}
+          handleResetPin={handleResetPin}
+        />
+      )}
+
+      {activeTab === "activity" && <ActivityTab auditLog={auditLog} loadAuditLog={loadAuditLog} />}
+
+      {toast && <ToastView toast={toast} onDismiss={() => setToast(null)} />}
+      {confirmReq && (
+        <ConfirmModal
+          req={confirmReq}
+          onDone={(ok) => {
+            confirmReq.resolve(ok);
+            setConfirmReq(null);
+          }}
+        />
+      )}
+      {promptReq && (
+        <PromptModal
+          req={promptReq}
+          onDone={(value) => {
+            promptReq.resolve(value);
+            setPromptReq(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- Assets tab */
+
+function AssetsTab(props: {
+  assets: Asset[];
+  sites: Site[];
+  assetGroups: [string, Asset[]][];
+  assetSearch: string;
+  setAssetSearch: (v: string) => void;
+  showAddAsset: boolean;
+  setShowAddAsset: (v: boolean) => void;
+  handleAddAsset: (e: React.FormEvent) => void;
+  assetSiteId: string;
+  setAssetSiteId: (v: string) => void;
+  assetName: string;
+  setAssetName: (v: string) => void;
+  assetVersion: string;
+  setAssetVersion: (v: string) => void;
+  offlineThreshold: number;
+  setOfflineThreshold: (v: number) => void;
+  monitorHost: string;
+  setMonitorHost: (v: string) => void;
+  monitorPort: number;
+  setMonitorPort: (v: number) => void;
+  monitorUsername: string;
+  setMonitorUsername: (v: string) => void;
+  monitorPassword: string;
+  setMonitorPassword: (v: string) => void;
+  editingAssetId: string | null;
+  setEditingAssetId: (v: string | null) => void;
+  editName: string;
+  setEditName: (v: string) => void;
+  editSiteId: string;
+  setEditSiteId: (v: string) => void;
+  editVersion: string;
+  setEditVersion: (v: string) => void;
+  editThreshold: number;
+  setEditThreshold: (v: number) => void;
+  editHost: string;
+  setEditHost: (v: string) => void;
+  editPort: number;
+  setEditPort: (v: number) => void;
+  editUsername: string;
+  setEditUsername: (v: string) => void;
+  editPassword: string;
+  setEditPassword: (v: string) => void;
+  handleStartEditAsset: (a: Asset) => void;
+  handleSaveAssetEdit: (e: React.FormEvent) => void;
+  handleDeleteAsset: (a: Asset) => void;
+  handleGetScriptForExisting: (a: Asset) => void;
+  scriptText: string | null;
+  scriptForAsset: string | null;
+  pollMinutes: number;
+  setPollMinutes: (v: number) => void;
+  serviceUser: string;
+  setServiceUser: (v: string) => void;
+  downloadScript: () => void;
+  downloadUnitFile: () => void;
+  handleRotateToken: () => void;
+}) {
+  const {
+    assets,
+    sites,
+    assetGroups,
+    assetSearch,
+    setAssetSearch,
+    showAddAsset,
+    setShowAddAsset,
+    editingAssetId,
+  } = props;
+
+  return (
+    <section className="mb-10">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <input
+          value={assetSearch}
+          onChange={(e) => setAssetSearch(e.target.value)}
+          placeholder="Search assets…"
+          className="input flex-1 min-w-[12rem] max-w-sm"
+          aria-label="Search assets"
+        />
+        <button onClick={() => setShowAddAsset(!showAddAsset)} className="btn-primary" disabled={sites.length === 0}>
+          {showAddAsset ? "Cancel" : "+ Add asset"}
+        </button>
+      </div>
+      {sites.length === 0 && (
+        <p className="text-xs text-[var(--text-dim)] mb-4">Add a site first (Sites tab) before adding assets.</p>
+      )}
+
+      {showAddAsset && (
+        <form onSubmit={props.handleAddAsset} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add MagMon asset</h2>
           <Field label="Site">
-            <select required value={assetSiteId} onChange={(e) => setAssetSiteId(e.target.value)} className="input">
+            <select required value={props.assetSiteId} onChange={(e) => props.setAssetSiteId(e.target.value)} className="input">
               {sites.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
           </Field>
           <Field label="Asset name">
-            <input required value={assetName} onChange={(e) => setAssetName(e.target.value)} placeholder="e.g. CA1012-SETONSW" className="input" />
+            <input required value={props.assetName} onChange={(e) => props.setAssetName(e.target.value)} placeholder="e.g. CA1012-SETONSW" className="input" />
           </Field>
           <Field label="MagMon version">
-            <select value={assetVersion} onChange={(e) => setAssetVersion(e.target.value)} className="input">
+            <select value={props.assetVersion} onChange={(e) => props.setAssetVersion(e.target.value)} className="input">
               {MAGMON_VERSIONS.map((v) => (
                 <option key={v} value={v}>{v.toUpperCase()}</option>
               ))}
             </select>
           </Field>
           <Field label="Offline alert threshold (minutes)">
-            <input type="number" min={1} value={offlineThreshold} onChange={(e) => setOfflineThreshold(Number(e.target.value))} className="input" />
+            <input type="number" min={1} value={props.offlineThreshold} onChange={(e) => props.setOfflineThreshold(Number(e.target.value))} className="input" />
           </Field>
           <Field label="MagMon local IP">
-            <input required value={monitorHost} onChange={(e) => setMonitorHost(e.target.value)} placeholder="e.g. 192.168.1.50" className="input font-mono-data" />
+            <input required value={props.monitorHost} onChange={(e) => props.setMonitorHost(e.target.value)} placeholder="e.g. 192.168.1.50" className="input font-mono-data" />
           </Field>
           <div className="flex flex-wrap gap-3">
             <Field label="Port">
-              <input type="number" value={monitorPort} onChange={(e) => setMonitorPort(Number(e.target.value))} className="input w-20" />
+              <input type="number" value={props.monitorPort} onChange={(e) => props.setMonitorPort(Number(e.target.value))} className="input w-20" />
             </Field>
             <Field label="Username">
-              <input value={monitorUsername} onChange={(e) => setMonitorUsername(e.target.value)} className="input" />
+              <input value={props.monitorUsername} onChange={(e) => props.setMonitorUsername(e.target.value)} className="input" />
             </Field>
-            <Field label="Password">
-              <input value={monitorPassword} onChange={(e) => setMonitorPassword(e.target.value)} className="input" />
-            </Field>
+            <PasswordField label="Password" value={props.monitorPassword} onChange={props.setMonitorPassword} />
           </div>
           <button type="submit" className="btn-primary" disabled={sites.length === 0}>Add asset</button>
-          {sites.length === 0 && <p className="text-xs text-[var(--text-dim)]">Add a site first.</p>}
         </form>
-      </div>
+      )}
 
-      <section className="mb-10">
-        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Existing sites</h2>
-        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
-          {sites.map((s) => (
-            <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
-              <div>
-                <p className="font-medium">{s.name}</p>
-                {s.address && <p className="text-xs text-[var(--text-dim)]">{s.address}</p>}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => handleStartEditSite(s)} className="btn-secondary">Edit</button>
-                <button onClick={() => handleDeleteSite(s)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
+      {assets.length === 0 ? (
+        <p className="rounded-xl border border-[var(--border-soft)] px-4 py-6 text-center text-[var(--text-dim)]">No assets yet.</p>
+      ) : assetGroups.length === 0 ? (
+        <p className="rounded-xl border border-[var(--border-soft)] px-4 py-6 text-center text-[var(--text-dim)]">No assets match &ldquo;{assetSearch}&rdquo;.</p>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {assetGroups.map(([groupName, groupAssets]) => (
+            <div key={groupName}>
+              <h3 className="text-xs uppercase tracking-wide text-[var(--text-dim)] mb-2 px-1">{groupName}</h3>
+              <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+                {groupAssets.map((a) =>
+                  editingAssetId === a.id ? (
+                    <AssetEditRow key={a.id} {...props} asset={a} />
+                  ) : (
+                    <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+                      <div>
+                        <p className="font-medium">{a.name}</p>
+                        <p className="text-xs text-[var(--text-dim)]">{a.magmon_version.toUpperCase()}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={() => props.handleGetScriptForExisting(a)} className="btn-secondary">Get install script</button>
+                        <button onClick={() => props.handleStartEditAsset(a)} className="btn-secondary">Edit</button>
+                        <button onClick={() => props.handleDeleteAsset(a)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
             </div>
           ))}
-          {sites.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No sites yet.</p>}
         </div>
-      </section>
-
-      {editingSiteId && (
-        <section className="mb-10">
-          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-            Edit site &mdash; {sites.find((s) => s.id === editingSiteId)?.name}
-          </h2>
-          <form onSubmit={handleSaveSiteEdit} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 max-w-md">
-            <Field label="Site name">
-              <input required value={editSiteName} onChange={(e) => setEditSiteName(e.target.value)} className="input" />
-            </Field>
-            <Field label="Address (optional)">
-              <input value={editSiteAddress} onChange={(e) => setEditSiteAddress(e.target.value)} className="input" />
-            </Field>
-            <div className="flex flex-wrap gap-2">
-              <button type="submit" className="btn-primary">Save changes</button>
-              <button type="button" onClick={() => setEditingSiteId(null)} className="btn-secondary">Cancel</button>
-            </div>
-          </form>
-        </section>
       )}
 
-      <section className="mb-10">
-        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Existing assets</h2>
-        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
-          {assets.map((a) => (
-            <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
-              <div>
-                <p className="font-medium">{a.name}</p>
-                <p className="text-xs text-[var(--text-dim)]">{a.magmon_version.toUpperCase()}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => handleGetScriptForExisting(a)} className="btn-secondary">Get install script</button>
-                <button onClick={() => handleStartEditAsset(a)} className="btn-secondary">Edit</button>
-                <button onClick={() => handleDeleteAsset(a)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
-              </div>
-            </div>
-          ))}
-          {assets.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No assets yet.</p>}
-        </div>
-      </section>
-
-      {editingAssetId && (
-        <section className="mb-10">
+      {props.scriptText && (
+        <div className="mt-8">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-            Edit asset &mdash; {assets.find((a) => a.id === editingAssetId)?.name}
-          </h2>
-          <form onSubmit={handleSaveAssetEdit} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 max-w-xl">
-            <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-              Site
-              <select required value={editSiteId} onChange={(e) => setEditSiteId(e.target.value)} className="input">
-                {sites.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-              Asset name
-              <input required value={editName} onChange={(e) => setEditName(e.target.value)} className="input" />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-              MagMon version
-              <select value={editVersion} onChange={(e) => setEditVersion(e.target.value)} className="input">
-                {MAGMON_VERSIONS.map((v) => (
-                  <option key={v} value={v}>{v.toUpperCase()}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-              Offline alert threshold (minutes)
-              <input type="number" min={1} value={editThreshold} onChange={(e) => setEditThreshold(Number(e.target.value))} className="input" />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-              MagMon local IP
-              <input required value={editHost} onChange={(e) => setEditHost(e.target.value)} className="input font-mono-data" />
-            </label>
-            <div className="flex flex-wrap gap-3">
-              <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-                Port
-                <input type="number" value={editPort} onChange={(e) => setEditPort(Number(e.target.value))} className="input w-20" />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-                Username
-                <input value={editUsername} onChange={(e) => setEditUsername(e.target.value)} className="input" />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
-                Password
-                <input value={editPassword} onChange={(e) => setEditPassword(e.target.value)} className="input" />
-              </label>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button type="submit" className="btn-primary">Save changes</button>
-              <button type="button" onClick={() => setEditingAssetId(null)} className="btn-secondary">Cancel</button>
-            </div>
-            <p className="text-xs text-[var(--text-dim)]">
-              Note: if you change the local IP, port, username, or password here, re-download the install script for this asset so the Pi&apos;s copy matches.
-            </p>
-          </form>
-        </section>
-      )}
-
-      {scriptText && (
-        <section className="mb-10">
-          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-            Pi install script {scriptForAsset ? `— ${assets.find((a) => a.id === scriptForAsset)?.name ?? ""}` : ""}
+            Pi install script {props.scriptForAsset ? `— ${assets.find((a) => a.id === props.scriptForAsset)?.name ?? ""}` : ""}
           </h2>
           <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-4 mb-3 flex flex-wrap items-end gap-4">
             <Field label="Poll interval (min)">
-              <input type="number" min={1} value={pollMinutes} onChange={(e) => setPollMinutes(Number(e.target.value))} className="input w-24" />
+              <input type="number" min={1} value={props.pollMinutes} onChange={(e) => props.setPollMinutes(Number(e.target.value))} className="input w-24" />
             </Field>
             <Field label="Service user">
-              <input value={serviceUser} onChange={(e) => setServiceUser(e.target.value)} placeholder="pi" className="input w-28 font-mono-data" />
+              <input value={props.serviceUser} onChange={(e) => props.setServiceUser(e.target.value)} placeholder="pi" className="input w-28 font-mono-data" />
             </Field>
             <button
               onClick={() => {
-                const a = assets.find((x) => x.id === scriptForAsset);
-                if (a) handleGetScriptForExisting(a);
+                const a = assets.find((x) => x.id === props.scriptForAsset);
+                if (a) props.handleGetScriptForExisting(a);
               }}
               className="btn-secondary"
             >
               Regenerate
             </button>
-            <button onClick={downloadScript} className="btn-primary">Download script</button>
-            <button onClick={downloadUnitFile} className="btn-secondary">Download systemd unit</button>
-            <button onClick={handleRotateToken} className="btn-secondary">Rotate token</button>
+            <button onClick={props.downloadScript} className="btn-primary">Download script</button>
+            <button onClick={props.downloadUnitFile} className="btn-secondary">Download systemd unit</button>
+            <button onClick={props.handleRotateToken} className="btn-secondary">Rotate token</button>
           </div>
           <p className="mb-3 text-xs rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-muted)]">
             <strong className="text-[var(--text)]">Run this under systemd, not cron.</strong>{" "}
@@ -709,153 +937,429 @@ function AdminPanel({ me }: { me: Session }) {
             (must print 1).
           </p>
           <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4 overflow-x-auto text-xs font-mono-data max-h-96 whitespace-pre">
-            {scriptText}
+            {props.scriptText}
           </pre>
-        </section>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AssetEditRow(props: {
+  asset: Asset;
+  sites: Site[];
+  editName: string;
+  setEditName: (v: string) => void;
+  editSiteId: string;
+  setEditSiteId: (v: string) => void;
+  editVersion: string;
+  setEditVersion: (v: string) => void;
+  editThreshold: number;
+  setEditThreshold: (v: number) => void;
+  editHost: string;
+  setEditHost: (v: string) => void;
+  editPort: number;
+  setEditPort: (v: number) => void;
+  editUsername: string;
+  setEditUsername: (v: string) => void;
+  editPassword: string;
+  setEditPassword: (v: string) => void;
+  setEditingAssetId: (v: string | null) => void;
+  handleSaveAssetEdit: (e: React.FormEvent) => void;
+}) {
+  const { sites } = props;
+  return (
+    <form onSubmit={props.handleSaveAssetEdit} className="flex flex-col gap-3 px-4 py-4 border-b border-[var(--border)] last:border-0 bg-[var(--bg-elevated)]">
+      <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">Editing {props.asset.name}</p>
+      <Field label="Site">
+        <select required value={props.editSiteId} onChange={(e) => props.setEditSiteId(e.target.value)} className="input">
+          {sites.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Asset name">
+        <input required value={props.editName} onChange={(e) => props.setEditName(e.target.value)} className="input" />
+      </Field>
+      <Field label="MagMon version">
+        <select value={props.editVersion} onChange={(e) => props.setEditVersion(e.target.value)} className="input">
+          {MAGMON_VERSIONS.map((v) => (
+            <option key={v} value={v}>{v.toUpperCase()}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Offline alert threshold (minutes)">
+        <input type="number" min={1} value={props.editThreshold} onChange={(e) => props.setEditThreshold(Number(e.target.value))} className="input" />
+      </Field>
+      <Field label="MagMon local IP">
+        <input required value={props.editHost} onChange={(e) => props.setEditHost(e.target.value)} className="input font-mono-data" />
+      </Field>
+      <div className="flex flex-wrap gap-3">
+        <Field label="Port">
+          <input type="number" value={props.editPort} onChange={(e) => props.setEditPort(Number(e.target.value))} className="input w-20" />
+        </Field>
+        <Field label="Username">
+          <input value={props.editUsername} onChange={(e) => props.setEditUsername(e.target.value)} className="input" />
+        </Field>
+        <PasswordField label="Password" value={props.editPassword} onChange={props.setEditPassword} />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" className="btn-primary">Save changes</button>
+        <button type="button" onClick={() => props.setEditingAssetId(null)} className="btn-secondary">Cancel</button>
+      </div>
+      <p className="text-xs text-[var(--text-dim)]">
+        Note: if you change the local IP, port, username, or password here, re-download the install script for this asset so the Pi&apos;s copy matches.
+      </p>
+    </form>
+  );
+}
+
+/* ----------------------------------------------------------------- Sites tab */
+
+function SitesTab(props: {
+  sites: Site[];
+  assets: Asset[];
+  showAddSite: boolean;
+  setShowAddSite: (v: boolean) => void;
+  handleAddSite: (e: React.FormEvent) => void;
+  siteName: string;
+  setSiteName: (v: string) => void;
+  siteAddress: string;
+  setSiteAddress: (v: string) => void;
+  editingSiteId: string | null;
+  setEditingSiteId: (v: string | null) => void;
+  editSiteName: string;
+  setEditSiteName: (v: string) => void;
+  editSiteAddress: string;
+  setEditSiteAddress: (v: string) => void;
+  handleStartEditSite: (s: Site) => void;
+  handleSaveSiteEdit: (e: React.FormEvent) => void;
+  handleDeleteSite: (s: Site) => void;
+}) {
+  const { sites, assets, showAddSite, setShowAddSite, editingSiteId } = props;
+  const assetCount = (siteId: string) => assets.filter((a) => a.site_id === siteId).length;
+
+  return (
+    <section className="mb-10">
+      <div className="flex items-center justify-end mb-4">
+        <button onClick={() => setShowAddSite(!showAddSite)} className="btn-primary">
+          {showAddSite ? "Cancel" : "+ Add site"}
+        </button>
+      </div>
+
+      {showAddSite && (
+        <form onSubmit={props.handleAddSite} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6 max-w-md">
+          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add site</h2>
+          <Field label="Site name">
+            <input required value={props.siteName} onChange={(e) => props.setSiteName(e.target.value)} className="input" />
+          </Field>
+          <Field label="Address (optional)">
+            <input value={props.siteAddress} onChange={(e) => props.setSiteAddress(e.target.value)} className="input" />
+          </Field>
+          <button type="submit" className="btn-primary">Add site</button>
+        </form>
       )}
 
-      <section className="mb-10">
-        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Alerts</h2>
-        <p className="text-xs text-[var(--text-dim)] mb-3">
-          A rule scoped to <strong>All assets</strong> is the fleet default. Scope a rule to a single asset to
-          override the fleet default for just that unit.
-        </p>
-        <form onSubmit={handleSaveRule} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
-          <Field label="Scope">
-            <select value={ruleScope} onChange={(e) => setRuleScope(e.target.value)} className="input">
-              <option value="">All assets</option>
-              {assets.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Metric">
-            <select value={ruleField} onChange={(e) => setRuleField(e.target.value)} className="input">
-              {ALERT_METRICS.map((m) => (
-                <option key={m.key} value={m.key}>{m.label}{m.unit ? ` (${m.unit})` : ""}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Condition">
-            <select value={ruleComparator} onChange={(e) => setRuleComparator(e.target.value)} className="input w-20 font-mono-data">
-              {ALERT_COMPARATORS.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Threshold">
-            <input type="number" step="any" value={ruleThreshold} onChange={(e) => setRuleThreshold(Number(e.target.value))} className="input w-28 font-mono-data" />
-          </Field>
-          <label className="flex items-center gap-2 text-xs text-[var(--text-dim)]">
-            <input type="checkbox" checked={ruleEnabled} onChange={(e) => setRuleEnabled(e.target.checked)} />
-            Enabled
-          </label>
-          <button type="submit" className="btn-primary">{editingRuleId ? "Save rule" : "Add rule"}</button>
-          {editingRuleId && (
-            <button type="button" onClick={resetRuleForm} className="btn-secondary">Cancel</button>
-          )}
-        </form>
-
-        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden mb-10">
-          {alertRules.map((r) => {
-            const metric = ALERT_METRICS.find((m) => m.key === r.field);
-            return (
-              <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
-                <div>
-                  <p className="font-medium">
-                    {metric?.label ?? r.field}{" "}
-                    <span className="font-mono-data text-sm text-[var(--text-muted)]">{r.comparator} {Number(r.threshold)}</span>
-                    {!r.enabled && <span className="ml-2 text-xs text-[var(--text-dim)]">(disabled)</span>}
-                  </p>
-                  <p className="text-xs text-[var(--text-dim)]">
-                    {r.asset_name ? `Override — ${r.asset_name}` : "All assets"}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button onClick={() => handleToggleRule(r)} className="btn-secondary">{r.enabled ? "Disable" : "Enable"}</button>
-                  <button onClick={() => handleEditRule(r)} className="btn-secondary">Edit</button>
-                  <button onClick={() => handleDeleteRule(r)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
-                </div>
+      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+        {sites.map((s) =>
+          editingSiteId === s.id ? (
+            <form key={s.id} onSubmit={props.handleSaveSiteEdit} className="flex flex-col gap-3 px-4 py-4 border-b border-[var(--border)] last:border-0 bg-[var(--bg-elevated)]">
+              <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">Editing {s.name}</p>
+              <Field label="Site name">
+                <input required value={props.editSiteName} onChange={(e) => props.setEditSiteName(e.target.value)} className="input" />
+              </Field>
+              <Field label="Address (optional)">
+                <input value={props.editSiteAddress} onChange={(e) => props.setEditSiteAddress(e.target.value)} className="input" />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <button type="submit" className="btn-primary">Save changes</button>
+                <button type="button" onClick={() => props.setEditingSiteId(null)} className="btn-secondary">Cancel</button>
               </div>
-            );
-          })}
-          {alertRules.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No alert rules yet.</p>}
-        </div>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">Users</h2>
-        <form onSubmit={handleAddUser} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
-          <Field label="Username">
-            <input required value={userName} onChange={(e) => setUserName(e.target.value)} className="input" />
-          </Field>
-          <Field label="PIN (min 4 characters)">
-            <input required minLength={4} value={userPin} onChange={(e) => setUserPin(e.target.value)} className="input font-mono-data" />
-          </Field>
-          <Field label="Role">
-            <select value={userRole} onChange={(e) => setUserRole(e.target.value as "viewer" | "admin")} className="input">
-              <option value="viewer">Viewer</option>
-              <option value="admin">Admin</option>
-            </select>
-          </Field>
-          <button type="submit" className="btn-primary">Add user</button>
-        </form>
-
-        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
-          {users.map((u) => (
-            <div key={u.username} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+            </form>
+          ) : (
+            <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
               <div>
-                <p className="font-medium">{u.username}</p>
-                <p className="text-xs text-[var(--text-dim)] capitalize">{u.role}</p>
+                <p className="font-medium">{s.name}</p>
+                {s.address && <p className="text-xs text-[var(--text-dim)]">{s.address}</p>}
+                <p className="text-xs text-[var(--text-dim)]">{assetCount(s.id)} asset(s)</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button onClick={() => handleToggleRole(u)} className="btn-secondary">
-                  Make {u.role === "admin" ? "viewer" : "admin"}
-                </button>
-                <button onClick={() => handleResetPin(u)} className="btn-secondary">Reset PIN</button>
+                <button onClick={() => props.handleStartEditSite(s)} className="btn-secondary">Edit</button>
+                <button onClick={() => props.handleDeleteSite(s)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
               </div>
             </div>
-          ))}
-          {users.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No users yet.</p>}
-        </div>
-      </section>
+          )
+        )}
+        {sites.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No sites yet.</p>}
+      </div>
+    </section>
+  );
+}
 
-      <section className="mb-10">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Activity log</h2>
-          <button onClick={loadAuditLog} className="btn-secondary">Refresh</button>
-        </div>
-        <p className="text-xs text-[var(--text-dim)] mb-3">
+/* ---------------------------------------------------------------- Alerts tab */
+
+function AlertsTab(props: {
+  assets: Asset[];
+  alertRules: AlertRule[];
+  editingRuleId: string | null;
+  ruleScope: string;
+  setRuleScope: (v: string) => void;
+  ruleField: string;
+  setRuleField: (v: string) => void;
+  ruleComparator: string;
+  setRuleComparator: (v: string) => void;
+  ruleThreshold: number;
+  setRuleThreshold: (v: number) => void;
+  ruleEnabled: boolean;
+  setRuleEnabled: (v: boolean) => void;
+  handleSaveRule: (e: React.FormEvent) => void;
+  resetRuleForm: () => void;
+  handleToggleRule: (r: AlertRule) => void;
+  handleEditRule: (r: AlertRule) => void;
+  handleDeleteRule: (r: AlertRule) => void;
+}) {
+  const { assets, alertRules, editingRuleId } = props;
+  return (
+    <section className="mb-10">
+      <p className="text-xs text-[var(--text-dim)] mb-3">
+        A rule scoped to <strong>All assets</strong> is the fleet default. Scope a rule to a single asset to
+        override the fleet default for just that unit.
+      </p>
+      <form onSubmit={props.handleSaveRule} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
+        <Field label="Scope">
+          <select value={props.ruleScope} onChange={(e) => props.setRuleScope(e.target.value)} className="input">
+            <option value="">All assets</option>
+            {assets.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Metric">
+          <select value={props.ruleField} onChange={(e) => props.setRuleField(e.target.value)} className="input">
+            {ALERT_METRICS.map((m) => (
+              <option key={m.key} value={m.key}>{m.label}{m.unit ? ` (${m.unit})` : ""}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Condition">
+          <select value={props.ruleComparator} onChange={(e) => props.setRuleComparator(e.target.value)} className="input w-20 font-mono-data">
+            {ALERT_COMPARATORS.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Threshold">
+          <input type="number" step="any" value={props.ruleThreshold} onChange={(e) => props.setRuleThreshold(Number(e.target.value))} className="input w-28 font-mono-data" />
+        </Field>
+        <label className="flex items-center gap-2 text-xs text-[var(--text-dim)]">
+          <input type="checkbox" checked={props.ruleEnabled} onChange={(e) => props.setRuleEnabled(e.target.checked)} />
+          Enabled
+        </label>
+        <button type="submit" className="btn-primary">{editingRuleId ? "Save rule" : "Add rule"}</button>
+        {editingRuleId && (
+          <button type="button" onClick={props.resetRuleForm} className="btn-secondary">Cancel</button>
+        )}
+      </form>
+
+      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+        {alertRules.map((r) => {
+          const metric = ALERT_METRICS.find((m) => m.key === r.field);
+          return (
+            <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+              <div>
+                <p className="font-medium">
+                  {metric?.label ?? r.field}{" "}
+                  <span className="font-mono-data text-sm text-[var(--text-muted)]">{r.comparator} {Number(r.threshold)}</span>
+                  {!r.enabled && <span className="ml-2 text-xs text-[var(--text-dim)]">(disabled)</span>}
+                </p>
+                <p className="text-xs text-[var(--text-dim)]">
+                  {r.asset_name ? `Override — ${r.asset_name}` : "All assets"}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => props.handleToggleRule(r)} className="btn-secondary">{r.enabled ? "Disable" : "Enable"}</button>
+                <button onClick={() => props.handleEditRule(r)} className="btn-secondary">Edit</button>
+                <button onClick={() => props.handleDeleteRule(r)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Delete</button>
+              </div>
+            </div>
+          );
+        })}
+        {alertRules.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No alert rules yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+/* ----------------------------------------------------------------- Users tab */
+
+function UsersTab(props: {
+  users: AppUser[];
+  userName: string;
+  setUserName: (v: string) => void;
+  userPin: string;
+  setUserPin: (v: string) => void;
+  userRole: "viewer" | "admin";
+  setUserRole: (v: "viewer" | "admin") => void;
+  handleAddUser: (e: React.FormEvent) => void;
+  handleToggleRole: (u: AppUser) => void;
+  handleResetPin: (u: AppUser) => void;
+}) {
+  const { users } = props;
+  return (
+    <section className="mb-10">
+      <form onSubmit={props.handleAddUser} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
+        <Field label="Username">
+          <input required value={props.userName} onChange={(e) => props.setUserName(e.target.value)} className="input" />
+        </Field>
+        <PasswordField label="PIN (min 4 characters)" value={props.userPin} onChange={props.setUserPin} minLength={4} mono />
+        <Field label="Role">
+          <select value={props.userRole} onChange={(e) => props.setUserRole(e.target.value as "viewer" | "admin")} className="input">
+            <option value="viewer">Viewer</option>
+            <option value="admin">Admin</option>
+          </select>
+        </Field>
+        <button type="submit" className="btn-primary">Add user</button>
+      </form>
+
+      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+        {users.map((u) => (
+          <div key={u.username} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+            <div>
+              <p className="font-medium">{u.username}</p>
+              <p className="text-xs text-[var(--text-dim)] capitalize">{u.role}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => props.handleToggleRole(u)} className="btn-secondary">
+                Make {u.role === "admin" ? "viewer" : "admin"}
+              </button>
+              <button onClick={() => props.handleResetPin(u)} className="btn-secondary">Reset PIN</button>
+            </div>
+          </div>
+        ))}
+        {users.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No users yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------- Activity tab */
+
+function ActivityTab({ auditLog, loadAuditLog }: { auditLog: AuditEntry[]; loadAuditLog: () => void }) {
+  return (
+    <section className="mb-10">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-[var(--text-dim)]">
           Sign-ins, sign-outs, failed attempts, and every change made to sites, assets, users, and alert rules.
           Showing the most recent {auditLog.length}.
         </p>
-        <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
-          {auditLog.map((e) => (
-            <div key={e.id} className="flex flex-wrap items-start justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
-              <div className="min-w-0">
-                <p className="text-sm">
-                  <span className="font-medium">{e.actor ?? "system"}</span>
-                  <span className="mx-2 text-[var(--text-dim)]">&middot;</span>
-                  <span
-                    className="text-xs font-mono-data uppercase tracking-wide"
-                    style={{ color: auditActionColor(e.action) }}
-                  >
-                    {auditActionLabel(e.action)}
-                  </span>
-                </p>
-                {e.detail && <p className="text-xs text-[var(--text-dim)] mt-0.5">{e.detail}</p>}
-              </div>
-              <p className="text-xs font-mono-data text-[var(--text-dim)] whitespace-nowrap" title={new Date(e.created_at).toLocaleString()}>
-                {formatAuditTime(e.created_at)}
+        <button onClick={loadAuditLog} className="btn-secondary">Refresh</button>
+      </div>
+      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+        {auditLog.map((e) => (
+          <div key={e.id} className="flex flex-wrap items-start justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+            <div className="min-w-0">
+              <p className="text-sm">
+                <span className="font-medium">{e.actor ?? "system"}</span>
+                <span className="mx-2 text-[var(--text-dim)]">&middot;</span>
+                <span
+                  className="text-xs font-mono-data uppercase tracking-wide"
+                  style={{ color: auditActionColor(e.action) }}
+                >
+                  {auditActionLabel(e.action)}
+                </span>
               </p>
+              {e.detail && <p className="text-xs text-[var(--text-dim)] mt-0.5">{e.detail}</p>}
             </div>
-          ))}
-          {auditLog.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No activity recorded yet.</p>}
-        </div>
-      </section>
+            <p className="text-xs font-mono-data text-[var(--text-dim)] whitespace-nowrap" title={new Date(e.created_at).toLocaleString()}>
+              {formatAuditTime(e.created_at)}
+            </p>
+          </div>
+        ))}
+        {auditLog.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No activity recorded yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------- Toast + dialogs UI */
+
+function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
+  const border = toast.kind === "error" ? "var(--status-offline)" : "var(--accent)";
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      onClick={onDismiss}
+      className="fixed bottom-6 right-6 z-50 max-w-sm rounded-lg border bg-[var(--card)] px-4 py-3 text-sm shadow-lg cursor-pointer"
+      style={{ borderColor: border }}
+    >
+      <span style={{ color: border }} className="font-medium">{toast.kind === "error" ? "Error" : "Done"}</span>
+      <span className="mx-2 text-[var(--text-dim)]">·</span>
+      <span className="text-[var(--text)]">{toast.msg}</span>
     </div>
   );
 }
+
+function ModalShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "color-mix(in srgb, black 55%, transparent)" }}>
+      <div className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-xl">{children}</div>
+    </div>
+  );
+}
+
+function ConfirmModal({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean) => void }) {
+  return (
+    <ModalShell>
+      <p className="text-sm text-[var(--text)] mb-5">{req.message}</p>
+      <div className="flex justify-end gap-2">
+        <button onClick={() => onDone(false)} className="btn-secondary">Cancel</button>
+        <button
+          onClick={() => onDone(true)}
+          className="btn-primary"
+          style={req.danger ? { background: "var(--status-offline)", color: "#fff" } : undefined}
+          autoFocus
+        >
+          Confirm
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function PromptModal({ req, onDone }: { req: PromptReq; onDone: (value: string | null) => void }) {
+  const [value, setValue] = useState("");
+  const tooShort = req.minLength != null && value.length > 0 && value.length < req.minLength;
+  const canSubmit = value.length > 0 && !tooShort;
+  return (
+    <ModalShell>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSubmit) onDone(value);
+        }}
+      >
+        <h2 className="text-sm font-medium text-[var(--text)] mb-4">{req.title}</h2>
+        <Field label={req.label}>
+          <input
+            autoFocus
+            value={value}
+            minLength={req.minLength}
+            onChange={(e) => setValue(e.target.value)}
+            className="input font-mono-data"
+          />
+        </Field>
+        {tooShort && <p className="text-xs mt-1" style={{ color: "var(--status-offline)" }}>Must be at least {req.minLength} characters.</p>}
+        <div className="flex justify-end gap-2 mt-5">
+          <button type="button" onClick={() => onDone(null)} className="btn-secondary">Cancel</button>
+          <button type="submit" className="btn-primary" disabled={!canSubmit}>Save</button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
+/* ------------------------------------------------------------------- helpers */
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
   login: "Signed in",
@@ -903,6 +1407,45 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
       {label}
       {children}
+    </label>
+  );
+}
+
+function PasswordField({
+  label,
+  value,
+  onChange,
+  minLength,
+  mono,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  minLength?: number;
+  mono?: boolean;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)]">
+      {label}
+      <span className="relative flex items-center">
+        <input
+          type={show ? "text" : "password"}
+          required
+          minLength={minLength}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={`input pr-14 ${mono ? "font-mono-data" : ""}`}
+        />
+        <button
+          type="button"
+          onClick={() => setShow(!show)}
+          className="absolute right-2 text-xs text-[var(--text-dim)] hover:text-[var(--accent)]"
+          aria-label={show ? "Hide" : "Show"}
+        >
+          {show ? "Hide" : "Show"}
+        </button>
+      </span>
     </label>
   );
 }
