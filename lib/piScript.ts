@@ -383,14 +383,20 @@ def parse_minutes(raw_html):
 # The daily .dat file is a fixed, whitespace-separated 34-column layout. These
 # 0-indexed positions are ground truth, taken from Numed's own NM1035mindata.py
 # and reconciled field-by-field against the HTTP values during a 2026-08 pilot
-# (He, He-pressure, Shield, ReconRuO, Coldhead and compressor match on every
-# model tested; on full-model magnets .dat flow/temp can differ from the HTML,
-# which is acceptable for a fallback and is why every row carries source="ftp").
+# He, He-pressure, Shield, ReconRuO, Coldhead and compressor match the HTTP
+# values directly. Water flow and temp match too but in DIFFERENT UNITS: the
+# .dat reports flow in L/min and temp in degrees C, whereas HTTP (and the rest
+# of our data) uses gal/min and degrees F. parse_dat() converts them so an
+# FTP-sourced reading is indistinguishable from its HTTP counterpart -- emitting
+# the raw .dat numbers would make a healthy unit read like an alarm. Verified on
+# live NM1035 data 2026-08-11: .dat 19.017 L / 38.042 C == HTTP 5.024 gal /
+# 100.476 F, exactly.
 DAT_COL = {
     "Date": 0, "Time": 1, "HeLvl": 3, "H20_Flow": 4, "H2O_Temp": 6, "Shield": 8,
     "ReconRuO": 9, "ReconSi410": 10, "ColdheadRuO": 13, "HePress": 14, "CS1": 21,
 }
-DAT_MIN_COLS = 22  # a complete data row has at least this many columns
+DAT_MIN_COLS      = 22          # a complete data row has at least this many columns
+LITERS_PER_GALLON = 3.785411784 # .dat flow (L/min) -> HTTP flow (gal/min)
 
 def parse_dat(text):
     lines = [ln for ln in text.replace("\\r", "").split("\\n") if ln.strip()]
@@ -403,8 +409,16 @@ def parse_dat(text):
         rec = {}
         for key, idx in DAT_COL.items():
             rec[key] = parts[idx] if key in ("Date", "Time") else _to_float(parts[idx])
-        if rec.get("Date") and rec.get("Time") and rec.get("HeLvl") is not None:
-            return rec
+        if not (rec.get("Date") and rec.get("Time") and rec.get("HeLvl") is not None):
+            continue
+        # Align flow/temp with the HTTP unit convention (see note above).
+        if rec.get("H20_Flow") is not None:
+            rec["H20_Flow"] = rec["H20_Flow"] / LITERS_PER_GALLON
+        if rec.get("H2O_Temp") is not None:
+            rec["H2O_Temp"] = rec["H2O_Temp"] * 9.0 / 5.0 + 32.0
+        # Preserve the raw columns so an FTP-sourced reading stays auditable.
+        rec["dat_columns"] = parts
+        return rec
     raise RuntimeError("No complete row found in .dat file.")
 
 def _ftp_latest_dat_name(ftp):
