@@ -6,6 +6,7 @@ import { supabase, type Site, type Asset, type TelemetrySample } from "@/lib/sup
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
+import BrandMark from "./BrandMark";
 
 type AssetWithTelemetry = Asset & {
   site: Site | null;
@@ -101,14 +102,8 @@ export default function Dashboard() {
       <header className="mb-6">
         <p className="eyebrow mb-1.5">Numed &middot; Remote Monitoring</p>
         <div className="flex items-center gap-3">
-          {/* The desktop top bar already carries the brand mark, so hide it here
-              at md+ to avoid a duplicate; keep it on mobile where there's no top bar. */}
-          <span className="dash-mark md:hidden" aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M5 4v7a7 7 0 0 0 14 0V4" stroke="#3fb9e0" strokeWidth="2.2" strokeLinecap="round" />
-              <path d="M3.5 4h4M16.5 4h4" stroke="#3fb9e0" strokeWidth="2.2" strokeLinecap="round" />
-              <circle cx="12" cy="19.5" r="1.6" fill="var(--status-online)" />
-            </svg>
+          <span className="dash-mark" aria-hidden="true">
+            <BrandMark size={20} />
           </span>
           <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
         </div>
