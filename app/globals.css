@@ -835,32 +835,88 @@ button {
   50% { opacity: 0.35; }
 }
 
-/* --- critical banner --- */
-.tv-banner {
+/* --- alert ticker (scrolling "ASSET — error" crawl) --- */
+.tv-ticker {
   display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: clamp(0.5rem, 1.4vh, 1rem) clamp(0.9rem, 1.8vw, 1.6rem);
+  align-items: stretch;
   border-radius: 0.7rem;
-  background: color-mix(in srgb, var(--status-offline) 20%, var(--tv-panel));
-  border: 1px solid color-mix(in srgb, var(--status-offline) 55%, transparent);
-  color: #ffe3e4;
+  overflow: hidden;
   z-index: 3;
-  animation: tv-banner-flash 1.4s ease-in-out infinite;
+  border: 1px solid var(--tv-border);
+  background: var(--tv-panel);
 }
-@keyframes tv-banner-flash {
-  0%, 100% { border-color: color-mix(in srgb, var(--status-offline) 40%, transparent); }
+.tv-ticker[data-critical="true"] {
+  border-color: color-mix(in srgb, var(--status-offline) 55%, transparent);
+  background: color-mix(in srgb, var(--status-offline) 13%, var(--tv-panel));
+  animation: tv-ticker-flash 1.5s ease-in-out infinite;
+}
+.tv-ticker[data-critical="false"] {
+  border-color: color-mix(in srgb, var(--status-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 10%, var(--tv-panel));
+}
+@keyframes tv-ticker-flash {
+  0%, 100% { border-color: color-mix(in srgb, var(--status-offline) 35%, transparent); }
   50% { border-color: var(--status-offline); }
 }
-.tv-banner-icon {
-  font-size: clamp(1.1rem, 2vw, 1.7rem);
-  color: var(--status-offline);
+.tv-ticker-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+  padding: clamp(0.5rem, 1.3vh, 0.95rem) clamp(0.8rem, 1.5vw, 1.4rem);
+  font-size: clamp(0.72rem, 1.1vw, 1rem);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--tv-text);
 }
-.tv-banner-text {
-  font-size: clamp(0.9rem, 1.7vw, 1.5rem);
-  font-weight: 600;
-  letter-spacing: 0.01em;
+.tv-ticker[data-critical="true"] .tv-ticker-tag { color: #ffd7d8; }
+.tv-ticker[data-critical="false"] .tv-ticker-tag { color: #ffe6b0; }
+.tv-ticker-tag-icon { font-size: 1.2em; }
+.tv-ticker-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
 }
+.tv-ticker-track {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  will-change: transform;
+  animation-name: tv-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+@keyframes tv-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.tv-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: clamp(0.45rem, 1.2vh, 0.85rem) clamp(1rem, 2vw, 2rem);
+  font-size: clamp(0.85rem, 1.5vw, 1.35rem);
+  font-weight: 500;
+}
+.tv-ticker-item b { font-weight: 750; }
+.tv-ticker-sep { opacity: 0.5; }
+.tv-ticker-detail { opacity: 0.85; }
+.tv-ticker-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.tv-ticker-item.critical { color: #ffdcdd; }
+.tv-ticker-item.critical .tv-ticker-dot { background: var(--status-offline); }
+.tv-ticker-item.warning { color: #ffedbf; }
+.tv-ticker-item.warning .tv-ticker-dot { background: var(--status-warning); }
 
 /* --- carousel --- */
 .tv-viewport {
@@ -886,9 +942,9 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  gap: clamp(0.6rem, 1.4vh, 1.1rem);
-  padding: clamp(0.9rem, 1.8vw, 1.7rem);
-  border-radius: 1rem;
+  gap: clamp(0.4rem, 1vh, 0.8rem);
+  padding: clamp(0.75rem, 1.4vw, 1.3rem);
+  border-radius: 0.9rem;
   background: var(--tv-panel);
   border: 1px solid var(--tv-border);
   border-left: 6px solid var(--lc);
@@ -916,7 +972,7 @@ button {
   gap: 0.6rem;
 }
 .tv-card-name {
-  font-size: clamp(1.4rem, 3.2vw, 3rem);
+  font-size: clamp(1.3rem, 2.6vw, 2.4rem);
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.01em;
@@ -1000,7 +1056,7 @@ button {
 }
 .tv-metric-value {
   margin-top: 0.25rem;
-  font-size: clamp(1.15rem, 2.4vw, 2.1rem);
+  font-size: clamp(1.05rem, 2vw, 1.8rem);
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
@@ -1049,7 +1105,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tv-edge, .tv-banner, .tv-card[data-level="critical"],
+  .tv-edge, .tv-ticker, .tv-ticker-track, .tv-card[data-level="critical"],
   .tv-live-dot, .tv-card[data-level="critical"] .tv-level-dot {
     animation: none;
   }

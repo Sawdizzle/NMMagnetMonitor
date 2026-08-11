@@ -12,7 +12,8 @@
 // Public + unattended: no login, keeps the screen awake, recovers on its own
 // from network blips via the same 30s poll the dashboard uses. Tunable by URL:
 //   ?dwell=20    seconds each page is shown (default 15)
-//   ?perView=2   cards per page (default: auto-fit to screen width)
+//   ?perView=2   columns per page (default: auto-fit to screen width)
+//   ?rows=2      rows per page (default 2)
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -104,18 +105,22 @@ export default function TvWall() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
   const autoPerView = vw < 900 ? 1 : vw < 1400 ? 2 : 3;
-  const perView = Math.max(1, Math.min(perViewOverride ?? autoPerView, Math.max(1, assets.length)));
+  const cols = Math.max(1, Math.min(perViewOverride ?? autoPerView, Math.max(1, assets.length)));
+  // Cards are wide and short, so stack them in rows to use the vertical space
+  // and fit more units per page. Default 2 rows; overridable via ?rows=.
+  const rowCount = clampInt(params.get("rows"), 1, 3, 2);
+  const pageSize = cols * rowCount;
 
   // ---- ordering + paging (recomputed as `now` ticks so status stays live) -
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
-  const pages = useMemo(() => chunk(ordered, perView), [ordered, perView]);
+  const pages = useMemo(() => chunk(ordered, pageSize), [ordered, pageSize]);
   const pageCount = Math.max(1, pages.length);
 
-  const criticalUnits = useMemo(
-    () => ordered.filter((a) => computeAssetAlarm(a).level === "critical"),
-    [ordered, now]
-  );
-  const anyCritical = criticalUnits.length > 0;
+  // Every open issue as its own "ASSET — error" line for the scrolling ticker:
+  // criticals and warnings both, so a warning stays visible until it's cleared
+  // or accepted (maintenance). Maintenance units are excluded by design.
+  const alertItems = useMemo(() => buildAlertItems(ordered), [ordered, now]);
+  const anyCritical = alertItems.some((it) => it.severity === "critical");
 
   // ---- rotation ----------------------------------------------------------
   const [page, setPage] = useState(0);
@@ -164,13 +169,31 @@ export default function TvWall() {
         </div>
       </header>
 
-      {anyCritical && (
-        <div className="tv-banner" role="alert">
-          <span className="tv-banner-icon" aria-hidden="true">⚠</span>
-          <span className="tv-banner-text">
-            {criticalUnits.length === 1 ? "Alarm" : `${criticalUnits.length} alarms`} ·{" "}
-            {criticalUnits.map((a) => a.name).join(" · ")}
+      {alertItems.length > 0 && (
+        <div className="tv-ticker" data-critical={anyCritical ? "true" : "false"} role="alert">
+          <span className="tv-ticker-tag" aria-hidden="true">
+            <span className="tv-ticker-tag-icon">⚠</span>
+            {anyCritical ? "ALERTS" : "WARNINGS"}
           </span>
+          <div className="tv-ticker-viewport">
+            {/* Two copies of the list back-to-back; translating the track by
+                exactly one copy width (-50%) yields a seamless infinite crawl.
+                Duration scales with item count so scroll speed stays constant. */}
+            <div
+              className="tv-ticker-track"
+              style={{ animationDuration: `${Math.max(18, alertItems.length * 7)}s` }}
+            >
+              {[...alertItems, ...alertItems].map((it, i) => (
+                <span key={i} className={`tv-ticker-item ${it.severity}`}>
+                  <span className="tv-ticker-dot" aria-hidden="true" />
+                  <b>{it.asset}</b>
+                  <span className="tv-ticker-sep">—</span>
+                  {it.label}
+                  {it.detail && <span className="tv-ticker-detail font-mono-data">{it.detail}</span>}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -192,7 +215,11 @@ export default function TvWall() {
               <div
                 key={i}
                 className="tv-page"
-                style={{ width: `${100 / pageCount}%`, gridTemplateColumns: `repeat(${perView}, minmax(0, 1fr))` }}
+                style={{
+                  width: `${100 / pageCount}%`,
+                  gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${rowCount}, minmax(0, 1fr))`,
+                }}
               >
                 {pageAssets.map((a) => (
                   <TvCard key={a.id} asset={a} />
@@ -327,6 +354,31 @@ function readColdheadK(asset: FleetAsset): number | null {
 
 function countLevel(assets: FleetAsset[], level: AlarmLevel): number {
   return assets.filter((a) => computeAssetAlarm(a).level === level).length;
+}
+
+type AlertItem = { key: string; asset: string; label: string; detail: string; severity: "critical" | "warning" };
+
+// Flatten every open issue across the fleet into one "ASSET — error" line per
+// fault (plus a connectivity line for offline/stale), for the scrolling ticker.
+// Only critical/warning units contribute; maintenance/ok/unknown are excluded.
+function buildAlertItems(assets: FleetAsset[]): AlertItem[] {
+  const items: AlertItem[] = [];
+  for (const a of assets) {
+    const alarm = computeAssetAlarm(a);
+    if (alarm.level !== "critical" && alarm.level !== "warning") continue;
+
+    if (alarm.connectivity === "offline") {
+      const m = minutesSince(a.last_seen_at);
+      items.push({ key: `${a.id}-offline`, asset: a.name, label: "Offline", detail: m === null ? "" : `${m} min`, severity: "critical" });
+    } else if (alarm.connectivity === "stale") {
+      const m = minutesSince(a.last_seen_at);
+      items.push({ key: `${a.id}-stale`, asset: a.name, label: "No recent data", detail: m === null ? "" : `${m} min`, severity: "warning" });
+    }
+    for (const f of alarm.faults) {
+      items.push({ key: `${a.id}-${f.key}`, asset: a.name, label: f.label, detail: f.detail, severity: f.severity });
+    }
+  }
+  return items;
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {

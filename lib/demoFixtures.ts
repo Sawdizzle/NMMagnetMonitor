@@ -51,7 +51,7 @@ type MetricCfg = {
 
 const METRIC_CFGS: MetricCfg[] = [
   { key: "he_lvl", baseline: 66, amp: 3.5, periodMin: 190, noiseAmp: 0.6, decimals: 1, min: 0, max: 100 },
-  { key: "he_press", baseline: 4.1, amp: 0.35, periodMin: 95, noiseAmp: 0.08, decimals: 1, min: 0, max: 10 },
+  { key: "he_press", baseline: 1.0, amp: 0.06, periodMin: 95, noiseAmp: 0.03, decimals: 2, min: 0, max: 10 },
   { key: "h2o_flow", baseline: 3.0, amp: 0.5, periodMin: 65, noiseAmp: 0.12, decimals: 1, min: 0, max: 8 },
   { key: "h2o_temp", baseline: 52, amp: 3.2, periodMin: 240, noiseAmp: 0.7, decimals: 0, min: 32, max: 90 },
   { key: "shield", baseline: 35, amp: 2.4, periodMin: 300, noiseAmp: 0.5, decimals: 0, min: 0, max: 80 },
