@@ -113,30 +113,26 @@ export default function TvWall() {
   // ---- ordering (recomputed as `now` ticks so status stays live) ---------
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
 
-  // Only critical (red) units are pinned to stay on screen. Everything else —
-  // warning (amber), nominal (green), unknown (grey), maintenance (blue) —
-  // rides the rotation together. Warnings still stay surfaced via the ticker.
+  // One uniform, edge-to-edge grid of equal cards. Critical (red) units hold the
+  // first cells and stay put (never rotate); every remaining cell cycles through
+  // everyone else — warning (amber), nominal (green), unknown (grey), maintenance
+  // (blue) — a page at a time. Warnings still stay surfaced via the ticker.
   const criticalUnits = useMemo(
     () => ordered.filter((a) => computeAssetAlarm(a).level === "critical"),
     [ordered, now]
   );
 
-  // Vertical budget: pin enough rows to hold every alarm (capped so the rotation
-  // keeps a row). Pinned cards are normal-width and centered — a lone alarm is a
-  // normal box centered at the top, not a stretched full-width banner.
-  // Everything else cycles below.
-  const MAX_PINNED_ROWS = 2;
-  const TOTAL_ROWS = 3;
-  const attnCount = criticalUnits.length;
-  const pinnedRows = attnCount === 0 ? 0 : Math.min(Math.ceil(attnCount / cols), MAX_PINNED_ROWS);
-  const pinned = criticalUnits.slice(0, pinnedRows * cols);
+  const totalCells = cols * rowCount;
+  const pinned = criticalUnits.slice(0, totalCells); // static, capped to the grid
   const pinnedIds = new Set(pinned.map((a) => a.id));
   const rotating = ordered.filter((a) => !pinnedIds.has(a.id));
-  const rotRows = pinnedRows === 0 ? rowCount : Math.max(1, TOTAL_ROWS - pinnedRows);
+  const rotCells = Math.max(0, totalCells - pinned.length); // cells left to rotate
 
-  const restPageSize = Math.max(1, rotRows * cols);
-  const restPages = useMemo(() => chunk(rotating, restPageSize), [rotating, restPageSize]);
-  const pageCount = Math.max(1, restPages.length);
+  const rotPages = useMemo(
+    () => (rotCells > 0 ? chunk(rotating, rotCells) : []),
+    [rotating, rotCells]
+  );
+  const pageCount = Math.max(1, rotPages.length);
 
   // Every open issue as its own "ASSET — error" line for the scrolling ticker:
   // criticals and warnings both, so a warning stays visible until it's cleared
@@ -164,6 +160,8 @@ export default function TvWall() {
     ? clockDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
     : "";
   const clockStr = clockDate ? clockDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
+  const rotWindow = rotPages.length > 0 ? rotPages[Math.min(page, pageCount - 1)] ?? [] : [];
 
   return (
     <div className="tv-root" role="main">
@@ -228,53 +226,26 @@ export default function TvWall() {
       {loaded && ordered.length === 0 && <CenterMsg>No assets to display.</CenterMsg>}
 
       {ordered.length > 0 && (
-        <div className="tv-content">
-          {/* Pinned zone: critical (red) units only, always on screen. */}
-          {pinned.length > 0 && (
-            <div
-              className="tv-attention"
-              style={{ flexGrow: pinnedRows, ["--tv-cols" as string]: cols }}
-            >
-              {pinned.map((a) => (
-                <TvCard key={a.id} asset={a} />
-              ))}
-            </div>
-          )}
-
-          {/* Rotating zone: the remainder, cycled a page at a time. */}
-          {rotating.length > 0 && (
-            <div className="tv-viewport" style={{ flexGrow: rotRows }}>
-              <div
-                className="tv-track"
-                style={{
-                  width: `${pageCount * 100}%`,
-                  // translateX % is relative to the track's own width (pageCount
-                  // × viewport), so divide by pageCount to advance one page.
-                  transform: `translateX(-${(page * 100) / pageCount}%)`,
-                }}
-              >
-                {restPages.map((pageAssets, i) => (
-                  <div
-                    key={i}
-                    className="tv-page"
-                    style={{
-                      width: `${100 / pageCount}%`,
-                      gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-                      gridTemplateRows: `repeat(${rotRows}, minmax(0, 1fr))`,
-                    }}
-                  >
-                    {pageAssets.map((a) => (
-                      <TvCard key={a.id} asset={a} />
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+        <div
+          className="tv-grid"
+          style={{
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${rowCount}, minmax(0, 1fr))`,
+          }}
+        >
+          {/* Critical units: first cells, static (stable keys → never re-mount). */}
+          {pinned.map((a) => (
+            <TvCard key={a.id} asset={a} />
+          ))}
+          {/* Remaining cells: the current rotation page (keyed by page so they
+              cross-fade in when the page turns). */}
+          {rotWindow.map((a) => (
+            <TvCard key={`rot-${page}-${a.id}`} asset={a} enter />
+          ))}
         </div>
       )}
 
-      {rotating.length > 0 && pageCount > 1 && (
+      {pageCount > 1 && (
         <div className="tv-dots" aria-hidden="true">
           {Array.from({ length: pageCount }).map((_, i) => (
             <span key={i} className={`tv-dot${i === page ? " on" : ""}`} />
@@ -285,7 +256,7 @@ export default function TvWall() {
   );
 }
 
-function TvCard({ asset }: { asset: FleetAsset }) {
+function TvCard({ asset, enter }: { asset: FleetAsset; enter?: boolean }) {
   const alarm = computeAssetAlarm(asset);
   const color = ALARM_COLORS[alarm.level];
   const mins = minutesSince(asset.last_seen_at);
@@ -293,7 +264,11 @@ function TvCard({ asset }: { asset: FleetAsset }) {
   const cold = readColdheadK(asset);
 
   return (
-    <div className="tv-card" data-level={alarm.level} style={{ ["--lc" as string]: color }}>
+    <div
+      className={`tv-card${enter ? " tv-enter" : ""}`}
+      data-level={alarm.level}
+      style={{ ["--lc" as string]: color }}
+    >
       <div className="tv-card-top">
         <div className="tv-card-id">
           <p className="tv-card-name">{asset.name}</p>
