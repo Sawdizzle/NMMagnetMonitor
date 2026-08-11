@@ -44,7 +44,13 @@ WHAT THIS DOES
        ones.
    This parsing logic is ported directly from Numed's existing production
    collector scripts (magmon_collect_*.py), not reverse-engineered blind.
-3. Takes the most recent row and reports it to Supabase via the
+3. If the HTTP path fails (after a few quick retries), falls back to pulling
+   the same minute data from the daily .dat file over anonymous FTP. The FTP
+   daemon is a separate service from the web interface and usually survives a
+   webserver crash, so this keeps reporting through the failure that most often
+   takes these units offline. FTP readings are stamped source="ftp" in the raw
+   payload; HTTP readings are stamped source="http".
+4. Takes the most recent row and reports it to Supabase via the
    report_telemetry function, authenticated with this asset's gateway
    token (scoped to only this asset).
 
@@ -103,6 +109,7 @@ import fcntl
 import signal
 import base64
 import socket
+import ftplib
 import datetime
 import traceback
 import requests
@@ -130,6 +137,18 @@ REPORT_ENDPOINT = f"{SUPABASE_URL}/rest/v1/rpc/report_telemetry"
 # pounded on.
 POLL_RETRIES          = 3
 RETRY_BACKOFF_SECONDS = 10
+
+# FTP fallback. The MagMon's CF disk also serves the same minute data as daily
+# .dat files over anonymous FTP. This is used ONLY when the HTTP path fails: the
+# FTP daemon is a SEPARATE service from the GoAhead webserver, so it commonly
+# stays up even when the webserver has wedged (the exact failure that takes these
+# units offline). These are the MagMon's fixed anonymous-FTP creds/paths --
+# fleet-wide device constants, not per-asset secrets. Readings pulled this way
+# are stamped source="ftp" in the reported raw payload so they stay auditable.
+FTP_PORT = 21
+FTP_USER = "anonymous"
+FTP_PASS = "MagnetMonitor"
+FTP_DIR  = "CFDISK/mindata"
 
 SESSION = requests.Session()
 SESSION.auth = (MAGMON_USER, MAGMON_PASS)
@@ -360,6 +379,73 @@ def parse_minutes(raw_html):
         raise RuntimeError("Parsed 0 rows.")
     return rows
 
+# ========= FTP fallback (raw .dat file) =========
+# The daily .dat file is a fixed, whitespace-separated 34-column layout. These
+# 0-indexed positions are ground truth, taken from Numed's own NM1035mindata.py
+# and reconciled field-by-field against the HTTP values during a 2026-08 pilot
+# (He, He-pressure, Shield, ReconRuO, Coldhead and compressor match on every
+# model tested; on full-model magnets .dat flow/temp can differ from the HTML,
+# which is acceptable for a fallback and is why every row carries source="ftp").
+DAT_COL = {
+    "Date": 0, "Time": 1, "HeLvl": 3, "H20_Flow": 4, "H2O_Temp": 6, "Shield": 8,
+    "ReconRuO": 9, "ReconSi410": 10, "ColdheadRuO": 13, "HePress": 14, "CS1": 21,
+}
+DAT_MIN_COLS = 22  # a complete data row has at least this many columns
+
+def parse_dat(text):
+    lines = [ln for ln in text.replace("\\r", "").split("\\n") if ln.strip()]
+    # Walk from the end for the last COMPLETE row -- the device may be mid-write
+    # on the very last line, leaving it short.
+    for ln in reversed(lines):
+        parts = ln.split()
+        if len(parts) < DAT_MIN_COLS:
+            continue
+        rec = {}
+        for key, idx in DAT_COL.items():
+            rec[key] = parts[idx] if key in ("Date", "Time") else _to_float(parts[idx])
+        if rec.get("Date") and rec.get("Time") and rec.get("HeLvl") is not None:
+            return rec
+    raise RuntimeError("No complete row found in .dat file.")
+
+def _ftp_latest_dat_name(ftp):
+    names = [n.split("/")[-1] for n in ftp.nlst() if n.lower().endswith(".dat")]
+    if not names:
+        raise RuntimeError("No .dat files in FTP mindata dir.")
+    # Prefer whatever the server reports as most recently modified; fall back to
+    # the dayDDMMYY.dat name (sorted as YYMMDD) if MDTM is unsupported. Both keep
+    # us on the current day and survive the midnight file rollover.
+    def mdtm(n):
+        try:
+            return ftp.sendcmd("MDTM " + n)[4:].strip()
+        except Exception:
+            return ""
+    stamped = [(mdtm(n), n) for n in names]
+    if all(ts for ts, _ in stamped):
+        return max(stamped)[1]
+    def daykey(n):
+        m = re.search(r"(\\d{2})(\\d{2})(\\d{2})", n)
+        return (m.group(3) + m.group(2) + m.group(1)) if m else ""
+    return max(names, key=daykey)
+
+def fetch_latest_ftp_row():
+    ftp = ftplib.FTP()
+    ftp.connect(MAGMON_HOST, FTP_PORT, timeout=20)
+    try:
+        ftp.login(FTP_USER, FTP_PASS)
+        ftp.cwd(FTP_DIR)
+        name = _ftp_latest_dat_name(ftp)
+        buf = bytearray()
+        ftp.retrbinary("RETR " + name, buf.extend)
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            try:
+                ftp.close()
+            except Exception:
+                pass
+    return parse_dat(buf.decode("latin-1", errors="ignore"))
+
 # ========= Report to Supabase =========
 def report(row):
     # Timestamp using THIS machine's clock (the Pi), not the MagMon's.
@@ -495,21 +581,44 @@ def main():
 
     while _RUNNING:
         cycle_started = time.monotonic()
+        row = None
+
+        # Primary path: scrape the HTTP minute table, with a few quick retries to
+        # ride through the webserver's transient connection refusals.
         for attempt in range(1, POLL_RETRIES + 1):
             try:
                 if not probe_tcp_connect(MAGMON_HOST, MAGMON_PORT):
                     raise RuntimeError(f"Cannot reach MagMon at {MAGMON_HOST}:{MAGMON_PORT}")
                 body = fetch_minutes(num_hours=1, start_day=0, start_hour=1)
-                rows = parse_minutes(body)
-                report(rows[-1])  # most recent row
-                break  # success -- done with this cycle
+                row = parse_minutes(body)[-1]  # most recent row
+                row["source"] = "http"
+                break
             except Exception as e:
-                print(f"[nm-magmon-gateway] attempt {attempt}/{POLL_RETRIES} failed: {e}")
+                print(f"[nm-magmon-gateway] HTTP attempt {attempt}/{POLL_RETRIES} failed: {e}")
                 traceback.print_exc()
                 # Back off and retry within this cycle unless that was the last
                 # attempt or we have been asked to shut down.
                 if attempt < POLL_RETRIES and _RUNNING:
                     sleep_interruptible(RETRY_BACKOFF_SECONDS)
+
+        # Fallback path: if HTTP produced nothing (e.g. the GoAhead webserver has
+        # wedged), pull the same minute data from the daily .dat over anonymous
+        # FTP -- a separate daemon that usually survives an HTTP-server crash.
+        if row is None and _RUNNING:
+            try:
+                row = fetch_latest_ftp_row()
+                row["source"] = "ftp"
+                print("[nm-magmon-gateway] HTTP unavailable -- got reading via FTP fallback")
+            except Exception as e:
+                print(f"[nm-magmon-gateway] FTP fallback failed: {e}")
+                traceback.print_exc()
+
+        if row is not None:
+            try:
+                report(row)
+            except Exception as e:
+                print(f"[nm-magmon-gateway] report failed: {e}")
+                traceback.print_exc()
 
         # Subtract however long the cycle took so the poll rate does not
         # drift later and later over weeks of uptime.
