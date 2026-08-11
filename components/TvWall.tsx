@@ -113,29 +113,26 @@ export default function TvWall() {
   // ---- ordering (recomputed as `now` ticks so status stays live) ---------
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
 
-  // How many units currently need attention (critical + warning) — this drives
-  // how many rows we pin at the top so every alarm stays on screen.
-  const attnCount = useMemo(
-    () =>
-      ordered.filter((a) => {
-        const l = computeAssetAlarm(a).level;
-        return l === "critical" || l === "warning";
-      }).length,
+  // Only critical (red) units are pinned to stay on screen. Everything else —
+  // warning (amber), nominal (green), unknown (grey), maintenance (blue) —
+  // rides the rotation together. Warnings still stay surfaced via the ticker.
+  const criticalUnits = useMemo(
+    () => ordered.filter((a) => computeAssetAlarm(a).level === "critical"),
     [ordered, now]
   );
 
-  // Vertical budget: pin enough rows to hold every attention unit (capped so the
-  // rotation keeps a row), and rotate the remainder. The pinned rows are filled
-  // from the top of the priority order — attention first, then topped up with
-  // calm units so the grid has no blank cells — and never rotate. Everything
-  // past the pinned rows cycles below. Accepting a unit into maintenance drops
-  // its priority, so it falls out of the pinned rows into the rotation.
+  // Vertical budget: pin enough rows to hold every alarm (capped so the rotation
+  // keeps a row). The pinned zone's columns shrink to the alarm count so a lone
+  // alarm fills its row instead of leaving blank cells (and stays balanced
+  // across rows when there are several). Everything else cycles below.
   const MAX_PINNED_ROWS = 2;
   const TOTAL_ROWS = 3;
+  const attnCount = criticalUnits.length;
   const pinnedRows = attnCount === 0 ? 0 : Math.min(Math.ceil(attnCount / cols), MAX_PINNED_ROWS);
-  const pinnedCount = pinnedRows * cols;
-  const pinned = ordered.slice(0, pinnedCount);
-  const rotating = ordered.slice(pinnedCount);
+  const attnCols = pinnedRows === 0 ? 0 : Math.ceil(attnCount / pinnedRows);
+  const pinned = criticalUnits.slice(0, pinnedRows * Math.max(1, attnCols));
+  const pinnedIds = new Set(pinned.map((a) => a.id));
+  const rotating = ordered.filter((a) => !pinnedIds.has(a.id));
   const rotRows = pinnedRows === 0 ? rowCount : Math.max(1, TOTAL_ROWS - pinnedRows);
 
   const restPageSize = Math.max(1, rotRows * cols);
@@ -233,13 +230,13 @@ export default function TvWall() {
 
       {ordered.length > 0 && (
         <div className="tv-content">
-          {/* Pinned zone: highest-priority units (all alarms), always on screen. */}
+          {/* Pinned zone: critical (red) units only, always on screen. */}
           {pinned.length > 0 && (
             <div
               className="tv-attention"
               style={{
                 flexGrow: pinnedRows,
-                gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                gridTemplateColumns: `repeat(${attnCols}, minmax(0, 1fr))`,
                 gridTemplateRows: `repeat(${pinnedRows}, minmax(0, 1fr))`,
               }}
             >
