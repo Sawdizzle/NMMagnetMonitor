@@ -63,22 +63,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const parsed = readStoredSession();
-    if (parsed) {
-      // re-verify the stored credentials are still valid (silent — this does
-      // NOT log a session event, only an explicit sign-in does)
-      supabase
-        .rpc("verify_user_login", { p_username: parsed.username, p_pin: parsed.pin })
-        .then(({ data, error }) => {
-          if (!error && data && data[0]) {
-            setSession(parsed);
-          } else {
-            clearStoredSession();
-          }
-          setLoading(false);
-        });
+    if (!parsed) {
+      setLoading(false);
       return;
     }
+
+    // Show the stored session immediately so the app is interactive on load
+    // instead of waiting on a network round-trip behind a full-screen spinner.
+    // Data access is governed by RLS on the server, so this client-side gate is
+    // UX only — re-verify the credentials in the background and drop the
+    // session if they're no longer valid.
+    setSession(parsed);
     setLoading(false);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc("verify_user_login", {
+          p_username: parsed.username,
+          p_pin: parsed.pin,
+        });
+        // Only sign out on a definitive rejection (valid response, no match).
+        // A transport error (offline, timeout) leaves the optimistic session in
+        // place so a flaky connection doesn't bounce the user to the login form.
+        if (!cancelled && !error && (!data || !data[0])) {
+          clearStoredSession();
+          setSession(null);
+        }
+      } catch {
+        // Network/transport failure — keep the optimistic session.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const login = useCallback(async (username: string, pin: string, remember = true) => {
