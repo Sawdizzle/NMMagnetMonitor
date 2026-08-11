@@ -23,8 +23,23 @@ function Docs() {
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
       <header className="mb-6">
-        <p className="eyebrow mb-1.5">Knowledge base</p>
-        <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Documentation</h1>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="eyebrow mb-1.5">Knowledge base</p>
+            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Documentation</h1>
+          </div>
+          <button
+            onClick={() => window.print()}
+            className="btn-secondary print-hide flex items-center gap-2 whitespace-nowrap"
+            title="Opens your browser's print dialog — choose “Save as PDF”"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3v11m0 0l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            Download PDF
+          </button>
+        </div>
         <p className="text-sm text-[var(--text-muted)] leading-relaxed mt-2 max-w-2xl">
           How the Numed MagMon fleet is set up and maintained — from imaging a fresh Raspberry Pi
           to reaching one over Tailscale, plus a command cheat sheet for day-to-day work on the Pis.
@@ -32,7 +47,7 @@ function Docs() {
       </header>
 
       {/* Mobile: horizontal jump-to chips */}
-      <nav className="lg:hidden flex gap-2 overflow-x-auto pb-1 mb-6" aria-label="On this page">
+      <nav className="lg:hidden flex gap-2 overflow-x-auto pb-1 mb-6 print-hide" aria-label="On this page">
         {SECTIONS.map((s) => (
           <a key={s.id} href={`#${s.id}`} className="doc-chip">
             {s.label}

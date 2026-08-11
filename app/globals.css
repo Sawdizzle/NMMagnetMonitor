@@ -581,3 +581,68 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---- Print / Save as PDF (used by the Docs "Download PDF" button) ----
+   Flip the dark theme to a light, ink-friendly palette, drop the app chrome
+   and interactive nav, and keep code/callouts/tables from splitting across
+   pages. */
+@media print {
+  :root {
+    --bg: #ffffff;
+    --bg-elevated: #f4f5f7;
+    --card: #ffffff;
+    --card-hover: #ffffff;
+    --border: #c3cad4;
+    --border-soft: #d8dde4;
+    --text: #10141d;
+    --text-muted: #33383f;
+    --text-dim: #5a626e;
+  }
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: var(--text) !important;
+    padding: 0 !important;
+  }
+  /* App chrome + anything explicitly marked no-print */
+  .app-topbar,
+  .app-bottomnav,
+  .skip-link,
+  .doc-toc,
+  .print-hide {
+    display: none !important;
+  }
+  #main-content {
+    padding: 0 !important;
+    min-height: 0 !important;
+  }
+  /* Keep these blocks intact across page breaks; don't orphan headings. */
+  .code-block,
+  .callout,
+  .group,
+  .metric-tile,
+  .cheat-table tr {
+    break-inside: avoid;
+  }
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+  /* Wrap long commands so they don't run off the page edge. */
+  .code-block pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .code-copy {
+    display: none !important;
+  }
+  a {
+    color: var(--text) !important;
+    text-decoration: none;
+  }
+}
