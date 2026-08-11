@@ -265,6 +265,17 @@ def _split(line):
         return [c.strip() for c in line.split(",")]
     return re.split(r"[ \\t]+", line.strip())
 
+def _norm_col(name):
+    # Fold a raw header/legend column name to its canonical short name.
+    # Devices are inconsistent: some emit the short names directly (HeLvl,
+    # Shield, HePress), others emit the long forms (He_Level, Shield_Si410,
+    # He_Pressure). LABEL_MAP_NORMALIZE covers both. In_XX legend columns
+    # collapse to a zero-padded In_%02d. Anything unknown passes through.
+    m = re.match(r"(?i)^in[_\\-\\s]?(\\d{1,2})$", name)
+    if m:
+        return f"In_{int(m.group(1)):02d}"
+    return LABEL_MAP_NORMALIZE.get(name, name)
+
 def parse_minutes(raw_html):
     text = _strip_html_keep_pre(raw_html).replace("\\r\\n", "\\n").replace("\\r", "\\n")
     lines = [ln.strip() for ln in text.split("\\n") if ln.strip()]
@@ -280,8 +291,9 @@ def parse_minutes(raw_html):
     for i, ln in enumerate(lines):
         parts = _split(ln)
         if parts and parts[0].lower().startswith("date") and len(parts) >= 3:
-            is_inxx = any(re.match(r"(?i)^in[_\\-\\s]?\\d{1,2}$", p) for p in parts)
-            labeled = any(p in parts for p in ("HePress", "HeLvl", "H20_Flow", "H2O_Temp", "Shield"))
+            norm = [_norm_col(p) for p in parts]
+            is_inxx = any(p.startswith("In_") for p in norm)
+            labeled = any(p in norm for p in ("HePress", "HeLvl", "H20_Flow", "H2O_Temp", "Shield"))
             if is_inxx or labeled:
                 header_idx, header = i, parts
                 break
@@ -290,12 +302,7 @@ def parse_minutes(raw_html):
 
     colpos = {}
     for idx, name in enumerate(header):
-        name_std = name
-        if name_std.lower().startswith("in"):
-            m = re.match(r"(?i)^in[_\\-\\s]?(\\d{1,2})$", name_std)
-            if m:
-                name_std = f"In_{int(m.group(1)):02d}"
-        colpos[name_std] = idx
+        colpos[_norm_col(name)] = idx
 
     start = header_idx + 1
     while start < len(lines) and re.fullmatch(r"[-=\\s]+", lines[start]):
