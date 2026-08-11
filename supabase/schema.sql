@@ -83,6 +83,7 @@ create table if not exists public.assets (
   monitor_port               integer     not null default 80,
   monitor_username           text        not null default 'MMService',
   monitor_password           text        not null default 'MagnetMonitor',
+  service_user               text        not null default 'pi',
   constraint assets_name_unique unique (name)
 );
 
@@ -150,7 +151,7 @@ create table if not exists public.alert_recipients (
 -- dashboard reads.
 create or replace view public.public_assets as
   select id, name, site_name, site_address,
-         offline_threshold_minutes, status, last_seen_at, created_at
+         offline_threshold_minutes, status, last_seen_at, created_at, service_user
   from public.assets;
 
 -- latest_telemetry: newest reading per asset.
@@ -297,7 +298,7 @@ $function$;
 -- were dropped when `sites` was folded into `assets`. Location is now set on
 -- the asset via admin_create_asset / admin_update_asset below.
 
-CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 30, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
+CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 30, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text, p_service_user text DEFAULT 'pi'::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -311,11 +312,11 @@ begin
   end if;
   insert into assets (
     name, site_name, site_address, gateway_token, offline_threshold_minutes,
-    status, monitor_host, monitor_port, monitor_username, monitor_password
+    status, monitor_host, monitor_port, monitor_username, monitor_password, service_user
   )
   values (
     p_name, p_site_name, p_site_address, encode(extensions.gen_random_bytes(24), 'hex'), p_offline_threshold_minutes,
-    'unknown', p_monitor_host, p_monitor_port, p_monitor_username, p_monitor_password
+    'unknown', p_monitor_host, p_monitor_port, p_monitor_username, p_monitor_password, coalesce(nullif(btrim(p_service_user), ''), 'pi')
   )
   returning * into result;
   perform _record_audit(p_actor_username, 'create_asset', 'asset', result.id::text, format('Added asset "%s"', p_name));
@@ -323,7 +324,7 @@ begin
 end;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.admin_update_asset(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_name text, p_offline_threshold_minutes integer, p_monitor_host text, p_monitor_port integer, p_monitor_username text, p_monitor_password text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text)
+CREATE OR REPLACE FUNCTION public.admin_update_asset(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_name text, p_offline_threshold_minutes integer, p_monitor_host text, p_monitor_port integer, p_monitor_username text, p_monitor_password text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_service_user text DEFAULT 'pi'::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -343,7 +344,8 @@ begin
     monitor_host = p_monitor_host,
     monitor_port = p_monitor_port,
     monitor_username = p_monitor_username,
-    monitor_password = p_monitor_password
+    monitor_password = p_monitor_password,
+    service_user = coalesce(nullif(btrim(p_service_user), ''), 'pi')
   where id = p_asset_id
   returning * into result;
   perform _record_audit(p_actor_username, 'update_asset', 'asset', p_asset_id::text, format('Updated asset "%s"', p_name));

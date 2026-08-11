@@ -111,6 +111,7 @@ function AdminPanel({ me }: { me: Session }) {
   const [monitorPort, setMonitorPort] = useState(80);
   const [monitorUsername, setMonitorUsername] = useState("MMService");
   const [monitorPassword, setMonitorPassword] = useState("MagnetMonitor");
+  const [assetServiceUser, setAssetServiceUser] = useState("pi");
 
   const [userName, setUserName] = useState("");
   const [userPin, setUserPin] = useState("");
@@ -145,6 +146,7 @@ function AdminPanel({ me }: { me: Session }) {
   const [editPort, setEditPort] = useState(80);
   const [editUsername, setEditUsername] = useState("MMService");
   const [editPassword, setEditPassword] = useState("MagnetMonitor");
+  const [editServiceUser, setEditServiceUser] = useState("pi");
 
   const loadAuditLog = useCallback(async () => {
     const { data } = await supabase.rpc("admin_list_audit_log", {
@@ -184,6 +186,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_monitor_port: monitorPort,
       p_monitor_username: monitorUsername,
       p_monitor_password: monitorPassword,
+      p_service_user: assetServiceUser,
     });
     if (error) return fail(actionError("Could not add asset", error));
     notify(`Asset "${assetName}" added. Install script generated below.`);
@@ -201,8 +204,10 @@ function AdminPanel({ me }: { me: Session }) {
       monitor_username: string;
       monitor_password: string;
     };
-    buildScript(created.name, created.gateway_token, created.monitor_host, created.monitor_port, created.monitor_username, created.monitor_password);
+    setServiceUser(assetServiceUser);
+    buildScript(created.name, created.gateway_token, created.monitor_host, created.monitor_port, created.monitor_username, created.monitor_password, assetServiceUser);
     setScriptForAsset(created.id);
+    setAssetServiceUser("pi");
   }
 
   async function handleAddUser(e: React.FormEvent) {
@@ -269,6 +274,7 @@ function AdminPanel({ me }: { me: Session }) {
     setEditPort(config.monitor_port ?? 80);
     setEditUsername(config.monitor_username ?? "MMService");
     setEditPassword(config.monitor_password ?? "MagnetMonitor");
+    setEditServiceUser(asset.service_user || "pi");
   }
 
   async function handleSaveAssetEdit(e: React.FormEvent) {
@@ -286,6 +292,7 @@ function AdminPanel({ me }: { me: Session }) {
       p_monitor_port: editPort,
       p_monitor_username: editUsername,
       p_monitor_password: editPassword,
+      p_service_user: editServiceUser,
     });
     if (error) return fail(actionError("Could not save asset", error));
     notify(`Asset "${editName}" updated.`);
@@ -312,7 +319,8 @@ function AdminPanel({ me }: { me: Session }) {
     host: string,
     port: number,
     username: string,
-    password: string
+    password: string,
+    svcUser: string = serviceUser
   ) {
     const script = generatePiScript({
       assetName: name,
@@ -324,7 +332,7 @@ function AdminPanel({ me }: { me: Session }) {
       supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
       supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       intervalMinutes: pollMinutes,
-      serviceUser,
+      serviceUser: svcUser,
     });
     setScriptText(script);
   }
@@ -337,7 +345,11 @@ function AdminPanel({ me }: { me: Session }) {
     });
     const config = data && data[0];
     if (error || !config) return fail(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
-    buildScript(asset.name, config.gateway_token, config.monitor_host, config.monitor_port, config.monitor_username, config.monitor_password);
+    // Default the panel's service-user field to this asset's stored value, and
+    // build with it so the .py + unit come out with the right User=.
+    const su = asset.service_user || "pi";
+    setServiceUser(su);
+    buildScript(asset.name, config.gateway_token, config.monitor_host, config.monitor_port, config.monitor_username, config.monitor_password, su);
     setScriptForAsset(asset.id);
   }
 
@@ -486,6 +498,7 @@ function AdminPanel({ me }: { me: Session }) {
           });
           const cfg = data && data[0];
           if (error || !cfg) return { name: a.name, ok: false as const };
+          const su = a.service_user || "pi";
           const script = generatePiScript({
             assetName: a.name,
             gatewayToken: cfg.gateway_token,
@@ -496,9 +509,9 @@ function AdminPanel({ me }: { me: Session }) {
             supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
             supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
             intervalMinutes: pollMinutes,
-            serviceUser,
+            serviceUser: su,
           });
-          const unit = generateSystemdUnit({ assetName: a.name, serviceUser });
+          const unit = generateSystemdUnit({ assetName: a.name, serviceUser: su });
           return { name: a.name, ok: true as const, script, unit };
         })
       );
@@ -644,6 +657,8 @@ function AdminPanel({ me }: { me: Session }) {
           setMonitorUsername={setMonitorUsername}
           monitorPassword={monitorPassword}
           setMonitorPassword={setMonitorPassword}
+          assetServiceUser={assetServiceUser}
+          setAssetServiceUser={setAssetServiceUser}
           editingAssetId={editingAssetId}
           setEditingAssetId={setEditingAssetId}
           editName={editName}
@@ -662,6 +677,8 @@ function AdminPanel({ me }: { me: Session }) {
           setEditUsername={setEditUsername}
           editPassword={editPassword}
           setEditPassword={setEditPassword}
+          editServiceUser={editServiceUser}
+          setEditServiceUser={setEditServiceUser}
           handleStartEditAsset={handleStartEditAsset}
           handleSaveAssetEdit={handleSaveAssetEdit}
           handleDeleteAsset={handleDeleteAsset}
@@ -769,6 +786,8 @@ function AssetsTab(props: {
   setMonitorUsername: (v: string) => void;
   monitorPassword: string;
   setMonitorPassword: (v: string) => void;
+  assetServiceUser: string;
+  setAssetServiceUser: (v: string) => void;
   editingAssetId: string | null;
   setEditingAssetId: (v: string | null) => void;
   editName: string;
@@ -787,6 +806,8 @@ function AssetsTab(props: {
   setEditUsername: (v: string) => void;
   editPassword: string;
   setEditPassword: (v: string) => void;
+  editServiceUser: string;
+  setEditServiceUser: (v: string) => void;
   handleStartEditAsset: (a: Asset) => void;
   handleSaveAssetEdit: (e: React.FormEvent) => void;
   handleDeleteAsset: (a: Asset) => void;
@@ -860,6 +881,12 @@ function AssetsTab(props: {
             </Field>
             <PasswordField label="Password" value={props.monitorPassword} onChange={props.setMonitorPassword} />
           </div>
+          <Field label="Service user (systemd User=)">
+            <input value={props.assetServiceUser} onChange={(e) => props.setAssetServiceUser(e.target.value)} placeholder="pi" className="input font-mono-data" />
+          </Field>
+          <p className="text-xs text-[var(--text-dim)] -mt-1">
+            OS user the collector runs as on its host. Site Pis use <code className="font-mono-data">pi</code>; assets on the nas123 pi server use <code className="font-mono-data">numed</code>.
+          </p>
           <button type="submit" className="btn-primary">Add asset</button>
         </form>
       )}
@@ -961,6 +988,8 @@ function AssetEditRow(props: {
   setEditUsername: (v: string) => void;
   editPassword: string;
   setEditPassword: (v: string) => void;
+  editServiceUser: string;
+  setEditServiceUser: (v: string) => void;
   setEditingAssetId: (v: string | null) => void;
   handleSaveAssetEdit: (e: React.FormEvent) => void;
 }) {
@@ -994,6 +1023,9 @@ function AssetEditRow(props: {
         </Field>
         <PasswordField label="Password" value={props.editPassword} onChange={props.setEditPassword} />
       </div>
+      <Field label="Service user (systemd User=)">
+        <input value={props.editServiceUser} onChange={(e) => props.setEditServiceUser(e.target.value)} placeholder="pi" className="input font-mono-data" />
+      </Field>
       <div className="flex flex-wrap gap-2">
         <button type="submit" className="btn-primary">Save changes</button>
         <button type="button" onClick={() => props.setEditingAssetId(null)} className="btn-secondary">Cancel</button>

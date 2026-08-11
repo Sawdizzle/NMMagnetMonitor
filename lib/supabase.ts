@@ -17,6 +17,7 @@ export type Asset = {
   status: string | null;
   last_seen_at: string | null;
   created_at: string;
+  service_user: string;
 };
 
 export type TelemetrySample = {
