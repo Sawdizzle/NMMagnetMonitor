@@ -122,15 +122,14 @@ export default function TvWall() {
   );
 
   // Vertical budget: pin enough rows to hold every alarm (capped so the rotation
-  // keeps a row). The pinned zone's columns shrink to the alarm count so a lone
-  // alarm fills its row instead of leaving blank cells (and stays balanced
-  // across rows when there are several). Everything else cycles below.
+  // keeps a row). Pinned cards are normal-width and centered — a lone alarm is a
+  // normal box centered at the top, not a stretched full-width banner.
+  // Everything else cycles below.
   const MAX_PINNED_ROWS = 2;
   const TOTAL_ROWS = 3;
   const attnCount = criticalUnits.length;
   const pinnedRows = attnCount === 0 ? 0 : Math.min(Math.ceil(attnCount / cols), MAX_PINNED_ROWS);
-  const attnCols = pinnedRows === 0 ? 0 : Math.ceil(attnCount / pinnedRows);
-  const pinned = criticalUnits.slice(0, pinnedRows * Math.max(1, attnCols));
+  const pinned = criticalUnits.slice(0, pinnedRows * cols);
   const pinnedIds = new Set(pinned.map((a) => a.id));
   const rotating = ordered.filter((a) => !pinnedIds.has(a.id));
   const rotRows = pinnedRows === 0 ? rowCount : Math.max(1, TOTAL_ROWS - pinnedRows);
@@ -234,11 +233,7 @@ export default function TvWall() {
           {pinned.length > 0 && (
             <div
               className="tv-attention"
-              style={{
-                flexGrow: pinnedRows,
-                gridTemplateColumns: `repeat(${attnCols}, minmax(0, 1fr))`,
-                gridTemplateRows: `repeat(${pinnedRows}, minmax(0, 1fr))`,
-              }}
+              style={{ flexGrow: pinnedRows, ["--tv-cols" as string]: cols }}
             >
               {pinned.map((a) => (
                 <TvCard key={a.id} asset={a} />
@@ -411,7 +406,7 @@ function Metric({
         <span className="tv-metric-unit">{unit}</span>
       </p>
       <div className="tv-metric-spark" style={{ color }}>
-        <MiniLineChart values={series} color={color} height={24} />
+        <MiniLineChart values={series} color={color} height={20} />
       </div>
     </div>
   );

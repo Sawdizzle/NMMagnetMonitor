@@ -911,6 +911,7 @@ button {
 
 /* --- content: pinned attention zone + rotating zone --- */
 .tv-content {
+  --tv-gap: clamp(0.7rem, 1.6vw, 1.5rem);
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -918,13 +919,22 @@ button {
   gap: clamp(0.7rem, 1.6vh, 1.4rem);
   z-index: 1;
 }
-/* The pinned zone (critical + warning) — always on screen, never rotates. */
+/* The pinned zone (critical only) — normal-width cards, centered, never rotates.
+   Cards match the rotating grid's column width so a lone alarm is a normal box
+   centered at the top rather than a stretched banner. */
 .tv-attention {
   position: relative;
   flex: 0 1 0;
   min-height: 0;
-  display: grid;
-  gap: clamp(0.7rem, 1.6vw, 1.5rem);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: stretch;
+  gap: var(--tv-gap);
+}
+.tv-attention > .tv-card {
+  flex: 0 1 calc((100% - (var(--tv-cols) - 1) * var(--tv-gap)) / var(--tv-cols));
+  min-width: 0;
 }
 
 /* --- carousel (rotating zone) --- */
@@ -942,7 +952,7 @@ button {
 .tv-page {
   flex: 0 0 auto;
   display: grid;
-  gap: clamp(0.7rem, 1.6vw, 1.5rem);
+  gap: var(--tv-gap);
   align-content: stretch;
   height: 100%;
 }
@@ -952,6 +962,7 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
   gap: clamp(0.4rem, 1vh, 0.8rem);
   padding: clamp(0.75rem, 1.4vw, 1.3rem);
   border-radius: 0.9rem;
@@ -1059,6 +1070,7 @@ button {
   border-radius: 0.6rem;
   background: var(--tv-panel-2);
   min-width: 0;
+  overflow: hidden;
 }
 .tv-metric.emph {
   background: color-mix(in srgb, var(--accent) 12%, var(--tv-panel-2));
@@ -1082,8 +1094,12 @@ button {
   color: var(--tv-dim);
 }
 .tv-metric-spark {
-  margin-top: 0.45rem;
+  margin-top: 0.35rem;
   opacity: 0.9;
+  line-height: 0;
+}
+.tv-metric-spark svg {
+  display: block;
 }
 .tv-card-foot {
   display: flex;
