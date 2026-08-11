@@ -28,6 +28,7 @@ import {
   type AlarmLevel,
 } from "@/lib/faults";
 import BrandMark from "./BrandMark";
+import MiniLineChart from "./MiniLineChart";
 
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 1;
@@ -345,10 +346,39 @@ function TvCard({ asset }: { asset: FleetAsset }) {
       )}
 
       <div className="tv-metrics">
-        <Metric label="Coldhead" value={cold} unit="K" digits={1} emphasize />
-        <Metric label="Helium" value={numVal(t?.he_lvl)} unit="%" digits={1} />
-        <Metric label="He Press" value={numVal(t?.he_press)} unit="psi" digits={2} />
-        <Metric label="Shield" value={numVal(t?.shield)} unit="K" digits={0} />
+        <Metric
+          label="Coldhead"
+          value={cold}
+          unit="K"
+          digits={1}
+          series={asset.history.map((h) => coldheadFromData(h.data))}
+          color="#38bdf8"
+          emphasize
+        />
+        <Metric
+          label="Helium"
+          value={numVal(t?.he_lvl)}
+          unit="%"
+          digits={1}
+          series={asset.history.map((h) => numVal(h.he_lvl))}
+          color="#5b93f7"
+        />
+        <Metric
+          label="He Press"
+          value={numVal(t?.he_press)}
+          unit="psi"
+          digits={2}
+          series={asset.history.map((h) => numVal(h.he_press))}
+          color="#4ade80"
+        />
+        <Metric
+          label="Shield"
+          value={numVal(t?.shield)}
+          unit="K"
+          digits={0}
+          series={asset.history.map((h) => numVal(h.shield))}
+          color="#fbbf24"
+        />
       </div>
 
       <div className="tv-card-foot">
@@ -364,12 +394,16 @@ function Metric({
   value,
   unit,
   digits,
+  series,
+  color,
   emphasize,
 }: {
   label: string;
   value: number | null;
   unit: string;
   digits: number;
+  series: (number | null)[];
+  color: string;
   emphasize?: boolean;
 }) {
   return (
@@ -379,6 +413,9 @@ function Metric({
         {value === null ? "—" : value.toFixed(digits)}
         <span className="tv-metric-unit">{unit}</span>
       </p>
+      <div className="tv-metric-spark" style={{ color }}>
+        <MiniLineChart values={series} color={color} height={24} />
+      </div>
     </div>
   );
 }
@@ -413,10 +450,17 @@ function numVal(v: unknown): number | null {
   return null;
 }
 
-function readColdheadK(asset: FleetAsset): number | null {
-  const d = asset.latest?.data as Record<string, unknown> | null | undefined;
+// Coldhead temperature isn't a typed column — it lives in the reading's data
+// blob under one of a few label variants. Used for both the latest value and
+// each history point's sparkline.
+function coldheadFromData(data: unknown): number | null {
+  const d = data as Record<string, unknown> | null | undefined;
   if (!d) return null;
   return numVal(d.ColdheadRuO) ?? numVal(d.Coldhead) ?? numVal(d.ColdHead);
+}
+
+function readColdheadK(asset: FleetAsset): number | null {
+  return coldheadFromData(asset.latest?.data);
 }
 
 function countLevel(assets: FleetAsset[], level: AlarmLevel): number {

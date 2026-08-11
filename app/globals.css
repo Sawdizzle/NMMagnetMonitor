@@ -1012,9 +1012,14 @@ button {
 }
 .tv-faults {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.4rem 0.5rem;
   min-height: 1.6rem;
+  overflow: hidden;
+}
+.tv-fault {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .tv-faults-clear {
   color: var(--status-online);
@@ -1075,6 +1080,10 @@ button {
   margin-left: 0.2rem;
   font-size: 0.55em;
   color: var(--tv-dim);
+}
+.tv-metric-spark {
+  margin-top: 0.45rem;
+  opacity: 0.9;
 }
 .tv-card-foot {
   display: flex;
