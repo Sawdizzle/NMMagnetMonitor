@@ -17,7 +17,7 @@ export default function Icon() {
           background: "#0a0d13",
         }}
       >
-        <BrandMark size={340} />
+        <BrandMark size={512} bleed />
       </div>
     ),
     { ...size }
