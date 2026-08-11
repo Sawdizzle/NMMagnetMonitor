@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import type { Session } from "@/lib/auth";
+import BrandMark from "@/components/BrandMark";
 
 type NavItem = {
   href: string;
@@ -50,11 +51,7 @@ export default function AppNav({ session }: { session: Session }) {
       <header className="app-topbar hidden md:flex">
         <Link href="/" className="flex items-center gap-2.5" aria-label="Magnet Monitor home">
           <span className="dash-mark" aria-hidden="true" style={{ width: 28, height: 28, borderRadius: 8 }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-              <path d="M5 4v7a7 7 0 0 0 14 0V4" stroke="#3fb9e0" strokeWidth="2.2" strokeLinecap="round" />
-              <path d="M3.5 4h4M16.5 4h4" stroke="#3fb9e0" strokeWidth="2.2" strokeLinecap="round" />
-              <circle cx="12" cy="19.5" r="1.6" fill="var(--status-online)" />
-            </svg>
+            <BrandMark size={18} />
           </span>
           <span className="text-sm font-semibold tracking-tight">Magnet Monitor</span>
         </Link>
