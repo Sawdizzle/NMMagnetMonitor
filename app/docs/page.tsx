@@ -236,7 +236,7 @@ function Docs() {
             <CheatGroup title="Collector services">
               <Cmd c="nm-magmon-gateway-CA1012" d="Reports telemetry for CA1012" />
               <Cmd c="nm-magmon-gateway-NM1001" d="Reports telemetry for NM1001" />
-              <Cmd c="nm-magmon-gateway-NM1003" d="Reports telemetry for NM1003" />
+              <Cmd c="nm-magmon-gateway-NM1003" d="Disabled 2026-08-11 — suspected MagMon IP conflict" />
               <Cmd c="nm-magmon-gateway-NM1019" d="Reports telemetry for NM1019" />
               <Cmd c="nm-magmon-gateway-NM1027" d="Reports telemetry for NM1027" />
               <Cmd c="nm-magmon-gateway-NM1034" d="Reports telemetry for NM1034" />
@@ -244,6 +244,20 @@ function Docs() {
             </CheatGroup>
             <P>SSH in and manage a collector by its service name:</P>
             <CodeBlock code={`ssh numed@100.120.75.117              # or 10.1.100.100 on the LAN\nls -la                                # the .py + .service pairs\nsystemctl status nm-magmon-gateway-NM1001\njournalctl -u nm-magmon-gateway-NM1001 -f     # live logs\nsudo systemctl restart nm-magmon-gateway-NM1001`} />
+            <P>
+              Take a collector out of service — stop it now and keep it from starting on boot (
+              <code className="doc-code">--now</code> does both):
+            </P>
+            <CodeBlock code={`sudo systemctl disable --now nm-magmon-gateway-NM1003\nsystemctl status nm-magmon-gateway-NM1003     # confirm: inactive (dead), disabled\npgrep -f nm-magmon-gateway-NM1003             # no output = nothing left running`} />
+            <P>
+              Re-enable it later with{" "}
+              <code className="doc-code">sudo systemctl enable --now nm-magmon-gateway-NM1003</code>.
+            </P>
+            <Callout variant="warn" title="NM1003 is disabled">
+              Stopped and disabled on 2026-08-11 — the MagMon&rsquo;s IP is suspected to conflict with
+              another device on the network, so it wasn&rsquo;t reporting. Re-enable it once the
+              address is resolved.
+            </Callout>
           </Section>
 
           {/* ---------------- Everyday commands ---------------- */}
