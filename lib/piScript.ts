@@ -408,24 +408,23 @@ def parse_dat(text):
     raise RuntimeError("No complete row found in .dat file.")
 
 def _ftp_latest_dat_name(ftp):
-    names = [n.split("/")[-1] for n in ftp.nlst() if n.lower().endswith(".dat")]
-    if not names:
-        raise RuntimeError("No .dat files in FTP mindata dir.")
-    # Prefer whatever the server reports as most recently modified; fall back to
-    # the dayDDMMYY.dat name (sorted as YYMMDD) if MDTM is unsupported. Both keep
-    # us on the current day and survive the midnight file rollover.
-    def mdtm(n):
-        try:
-            return ftp.sendcmd("MDTM " + n)[4:].strip()
-        except Exception:
-            return ""
-    stamped = [(mdtm(n), n) for n in names]
-    if all(ts for ts, _ in stamped):
-        return max(stamped)[1]
-    def daykey(n):
-        m = re.search(r"(\\d{2})(\\d{2})(\\d{2})", n)
-        return (m.group(3) + m.group(2) + m.group(1)) if m else ""
-    return max(names, key=daykey)
+    # Only the daily minute files are named dayDDMMYY.dat. Match that pattern
+    # EXACTLY and ignore everything else in the directory -- notably
+    # rfs_persist.dat, a small device state file that also ends in .dat and is
+    # rewritten far more recently than the finalized day files (so any
+    # "newest by mtime" pick would grab it by mistake). The name encodes the
+    # date authoritatively, so choose the newest by its DDMMYY -> YYMMDD key;
+    # this also rides cleanly across the midnight file rollover.
+    day = re.compile(r"(?i)^day(\\d{2})(\\d{2})(\\d{2})\\.dat$")
+    dated = []
+    for n in ftp.nlst():
+        m = day.match(n.split("/")[-1])
+        if m:
+            dd, mm, yy = m.groups()
+            dated.append((yy + mm + dd, n.split("/")[-1]))
+    if not dated:
+        raise RuntimeError("No dayDDMMYY.dat files in FTP mindata dir.")
+    return max(dated)[1]
 
 def fetch_latest_ftp_row():
     ftp = ftplib.FTP()
