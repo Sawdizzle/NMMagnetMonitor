@@ -11,7 +11,6 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export type Asset = {
   id: string;
   name: string;
-  magmon_version: string;
   site_name: string | null;
   site_address: string | null;
   offline_threshold_minutes: number | null;

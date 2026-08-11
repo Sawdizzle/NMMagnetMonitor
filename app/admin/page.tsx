@@ -8,8 +8,6 @@ import { actionError } from "@/lib/errors";
 import Protected from "@/components/Protected";
 import type { Session } from "@/lib/auth";
 
-const MAGMON_VERSIONS = ["v1", "v2", "v3"];
-
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "he_lvl", label: "Helium level", unit: "%" },
   { key: "he_press", label: "Helium pressure", unit: "" },
@@ -105,7 +103,6 @@ function AdminPanel({ me }: { me: Session }) {
   const [assetSearch, setAssetSearch] = useState("");
 
   const [assetName, setAssetName] = useState("");
-  const [assetVersion, setAssetVersion] = useState(MAGMON_VERSIONS[2]);
   const [assetSiteName, setAssetSiteName] = useState("");
   const [assetSiteAddress, setAssetSiteAddress] = useState("");
   const [offlineThreshold, setOfflineThreshold] = useState(15);
@@ -139,7 +136,6 @@ function AdminPanel({ me }: { me: Session }) {
   // inline asset editing (includes the asset's own location fields)
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
-  const [editVersion, setEditVersion] = useState(MAGMON_VERSIONS[2]);
   const [editSiteName, setEditSiteName] = useState("");
   const [editSiteAddress, setEditSiteAddress] = useState("");
   const [editThreshold, setEditThreshold] = useState(15);
@@ -179,7 +175,6 @@ function AdminPanel({ me }: { me: Session }) {
       p_actor_username: me.username,
       p_actor_pin: me.pin,
       p_name: assetName,
-      p_magmon_version: assetVersion,
       p_site_name: assetSiteName.trim() || null,
       p_site_address: assetSiteAddress.trim() || null,
       p_offline_threshold_minutes: offlineThreshold,
@@ -265,7 +260,6 @@ function AdminPanel({ me }: { me: Session }) {
     if (error || !config) return fail(error ? actionError("Could not load asset", error) : "Could not load asset: not found.");
     setEditingAssetId(asset.id);
     setEditName(asset.name);
-    setEditVersion(asset.magmon_version);
     setEditSiteName(asset.site_name ?? "");
     setEditSiteAddress(asset.site_address ?? "");
     setEditThreshold(asset.offline_threshold_minutes ?? 15);
@@ -283,7 +277,6 @@ function AdminPanel({ me }: { me: Session }) {
       p_actor_pin: me.pin,
       p_asset_id: editingAssetId,
       p_name: editName,
-      p_magmon_version: editVersion,
       p_site_name: editSiteName.trim() || null,
       p_site_address: editSiteAddress.trim() || null,
       p_offline_threshold_minutes: editThreshold,
@@ -540,8 +533,6 @@ function AdminPanel({ me }: { me: Session }) {
           handleAddAsset={handleAddAsset}
           assetName={assetName}
           setAssetName={setAssetName}
-          assetVersion={assetVersion}
-          setAssetVersion={setAssetVersion}
           assetSiteName={assetSiteName}
           setAssetSiteName={setAssetSiteName}
           assetSiteAddress={assetSiteAddress}
@@ -560,8 +551,6 @@ function AdminPanel({ me }: { me: Session }) {
           setEditingAssetId={setEditingAssetId}
           editName={editName}
           setEditName={setEditName}
-          editVersion={editVersion}
-          setEditVersion={setEditVersion}
           editSiteName={editSiteName}
           setEditSiteName={setEditSiteName}
           editSiteAddress={editSiteAddress}
@@ -667,8 +656,6 @@ function AssetsTab(props: {
   handleAddAsset: (e: React.FormEvent) => void;
   assetName: string;
   setAssetName: (v: string) => void;
-  assetVersion: string;
-  setAssetVersion: (v: string) => void;
   assetSiteName: string;
   setAssetSiteName: (v: string) => void;
   assetSiteAddress: string;
@@ -687,8 +674,6 @@ function AssetsTab(props: {
   setEditingAssetId: (v: string | null) => void;
   editName: string;
   setEditName: (v: string) => void;
-  editVersion: string;
-  setEditVersion: (v: string) => void;
   editSiteName: string;
   setEditSiteName: (v: string) => void;
   editSiteAddress: string;
@@ -740,13 +725,6 @@ function AssetsTab(props: {
           <Field label="Asset tag">
             <input required value={props.assetName} onChange={(e) => props.setAssetName(e.target.value)} placeholder="e.g. CA1012-SETONSW" className="input" />
           </Field>
-          <Field label="MagMon version">
-            <select value={props.assetVersion} onChange={(e) => props.setAssetVersion(e.target.value)} className="input">
-              {MAGMON_VERSIONS.map((v) => (
-                <option key={v} value={v}>{v.toUpperCase()}</option>
-              ))}
-            </select>
-          </Field>
           <Field label="Site name (optional)">
             <input value={props.assetSiteName} onChange={(e) => props.setAssetSiteName(e.target.value)} placeholder="e.g. Seton Northwest" className="input" />
           </Field>
@@ -789,7 +767,9 @@ function AssetsTab(props: {
                     <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
                       <div>
                         <p className="font-medium">{a.name}</p>
-                        <p className="text-xs text-[var(--text-dim)]">{a.magmon_version.toUpperCase()}</p>
+                        {a.site_address?.trim() && (
+                          <p className="text-xs text-[var(--text-dim)]">{a.site_address}</p>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button onClick={() => props.handleGetScriptForExisting(a)} className="btn-secondary">Get install script</button>
@@ -853,8 +833,6 @@ function AssetEditRow(props: {
   asset: Asset;
   editName: string;
   setEditName: (v: string) => void;
-  editVersion: string;
-  setEditVersion: (v: string) => void;
   editSiteName: string;
   setEditSiteName: (v: string) => void;
   editSiteAddress: string;
@@ -877,13 +855,6 @@ function AssetEditRow(props: {
       <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">Editing {props.asset.name}</p>
       <Field label="Asset tag">
         <input required value={props.editName} onChange={(e) => props.setEditName(e.target.value)} className="input" />
-      </Field>
-      <Field label="MagMon version">
-        <select value={props.editVersion} onChange={(e) => props.setEditVersion(e.target.value)} className="input">
-          {MAGMON_VERSIONS.map((v) => (
-            <option key={v} value={v}>{v.toUpperCase()}</option>
-          ))}
-        </select>
       </Field>
       <Field label="Site name (optional)">
         <input value={props.editSiteName} onChange={(e) => props.setEditSiteName(e.target.value)} placeholder="e.g. Seton Northwest" className="input" />

@@ -74,7 +74,6 @@ create table if not exists public.assets (
   name                       text        not null,
   site_name                  text,
   site_address               text,
-  magmon_version             text        not null default 'v1',
   gateway_token              text        not null default encode(extensions.gen_random_bytes(24), 'hex'),
   offline_threshold_minutes  integer     not null default 15,
   status                     text        not null default 'unknown',
@@ -150,7 +149,7 @@ create table if not exists public.alert_recipients (
 -- monitor_password, monitor_host/port/username). This is the shape the
 -- dashboard reads.
 create or replace view public.public_assets as
-  select id, name, magmon_version, site_name, site_address,
+  select id, name, site_name, site_address,
          offline_threshold_minutes, status, last_seen_at, created_at
   from public.assets;
 
@@ -298,7 +297,7 @@ $function$;
 -- were dropped when `sites` was folded into `assets`. Location is now set on
 -- the asset via admin_create_asset / admin_update_asset below.
 
-CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_magmon_version text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 15, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
+CREATE OR REPLACE FUNCTION public.admin_create_asset(p_actor_username text, p_actor_pin text, p_name text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text, p_offline_threshold_minutes integer DEFAULT 15, p_monitor_host text DEFAULT NULL::text, p_monitor_port integer DEFAULT 80, p_monitor_username text DEFAULT 'MMService'::text, p_monitor_password text DEFAULT 'MagnetMonitor'::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -311,11 +310,11 @@ begin
     raise exception 'not authorized';
   end if;
   insert into assets (
-    name, magmon_version, site_name, site_address, gateway_token, offline_threshold_minutes,
+    name, site_name, site_address, gateway_token, offline_threshold_minutes,
     status, monitor_host, monitor_port, monitor_username, monitor_password
   )
   values (
-    p_name, p_magmon_version, p_site_name, p_site_address, encode(extensions.gen_random_bytes(24), 'hex'), p_offline_threshold_minutes,
+    p_name, p_site_name, p_site_address, encode(extensions.gen_random_bytes(24), 'hex'), p_offline_threshold_minutes,
     'unknown', p_monitor_host, p_monitor_port, p_monitor_username, p_monitor_password
   )
   returning * into result;
@@ -324,7 +323,7 @@ begin
 end;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.admin_update_asset(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_name text, p_magmon_version text, p_offline_threshold_minutes integer, p_monitor_host text, p_monitor_port integer, p_monitor_username text, p_monitor_password text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text)
+CREATE OR REPLACE FUNCTION public.admin_update_asset(p_actor_username text, p_actor_pin text, p_asset_id uuid, p_name text, p_offline_threshold_minutes integer, p_monitor_host text, p_monitor_port integer, p_monitor_username text, p_monitor_password text, p_site_name text DEFAULT NULL::text, p_site_address text DEFAULT NULL::text)
  RETURNS assets
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -338,7 +337,6 @@ begin
   end if;
   update assets set
     name = p_name,
-    magmon_version = p_magmon_version,
     site_name = p_site_name,
     site_address = p_site_address,
     offline_threshold_minutes = p_offline_threshold_minutes,

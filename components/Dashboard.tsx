@@ -265,7 +265,7 @@ function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
         <div>
           <p className="font-semibold text-base">{asset.name}</p>
           <p className="text-xs text-[var(--text-dim)] mt-0.5">
-            {asset.site_name?.trim() || "No location set"} &middot; {asset.magmon_version.toUpperCase()}
+            {asset.site_name?.trim() || "No location set"}
           </p>
         </div>
         <FieldRing status={status} />

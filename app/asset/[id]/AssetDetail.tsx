@@ -96,7 +96,6 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
               {status}
             </span>
             <span className="text-xs text-[var(--text-dim)]">
-              {asset.magmon_version.toUpperCase()} &middot;{" "}
               {mins === null ? "never reported" : `last seen ${mins} min ago`}
             </span>
           </div>
