@@ -33,6 +33,12 @@ function navItems(session: Session): NavItem[] {
     });
   }
   items.push({
+    href: "/docs",
+    label: "Docs",
+    icon: <BookIcon />,
+    isActive: (p) => p.startsWith("/docs"),
+  });
+  items.push({
     href: "/account",
     label: "Account",
     icon: <UserIcon />,
@@ -118,6 +124,25 @@ function GearIcon() {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function BookIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v15H6a2 2 0 0 0-2 2V5.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v15h5a2 2 0 0 1 2 2V5.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
       />
     </svg>
   );
