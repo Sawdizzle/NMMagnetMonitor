@@ -106,15 +106,43 @@ export default function TvWall() {
   }, []);
   const autoPerView = vw < 900 ? 1 : vw < 1400 ? 2 : 3;
   const cols = Math.max(1, Math.min(perViewOverride ?? autoPerView, Math.max(1, assets.length)));
-  // Cards are wide and short, so stack them in rows to use the vertical space
-  // and fit more units per page. Default 2 rows; overridable via ?rows=.
+  // Rows for the rotation when nothing needs attention; overridable via ?rows=.
   const rowCount = clampInt(params.get("rows"), 1, 3, 2);
-  const pageSize = cols * rowCount;
 
-  // ---- ordering + paging (recomputed as `now` ticks so status stays live) -
+  // ---- ordering (recomputed as `now` ticks so status stays live) ---------
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
-  const pages = useMemo(() => chunk(ordered, pageSize), [ordered, pageSize]);
-  const pageCount = Math.max(1, pages.length);
+
+  // Split the fleet into a pinned "needs attention" zone (critical + warning)
+  // that never rotates off screen, and a rotating zone for everything calm
+  // (nominal / unknown / maintenance). Flipping a unit to maintenance is what
+  // moves it out of the pinned zone and into the rotation — i.e. "accepting" it.
+  const { attention, rest } = useMemo(() => {
+    const attention: FleetAsset[] = [];
+    const rest: FleetAsset[] = [];
+    for (const a of ordered) {
+      const level = computeAssetAlarm(a).level;
+      if (level === "critical" || level === "warning") attention.push(a);
+      else rest.push(a);
+    }
+    return { attention, rest };
+  }, [ordered, now]);
+
+  // Vertical budget: the pinned zone gets as many rows as its cards need (up to
+  // a cap so the rotation keeps a row), and the rotation takes the remainder.
+  const MAX_ATTN_ROWS = 2;
+  const TOTAL_ROWS = 3;
+  const attnRows =
+    attention.length === 0
+      ? 0
+      : Math.min(Math.ceil(attention.length / cols), rest.length > 0 ? MAX_ATTN_ROWS : TOTAL_ROWS);
+  const rotRows = attention.length === 0 ? rowCount : Math.max(1, TOTAL_ROWS - attnRows);
+
+  const attnShown = attention.slice(0, attnRows * cols);
+  const attnOverflow = attention.length - attnShown.length;
+
+  const restPageSize = Math.max(1, rotRows * cols);
+  const restPages = useMemo(() => chunk(rest, restPageSize), [rest, restPageSize]);
+  const pageCount = Math.max(1, restPages.length);
 
   // Every open issue as its own "ASSET — error" line for the scrolling ticker:
   // criticals and warnings both, so a warning stays visible until it's cleared
@@ -201,36 +229,62 @@ export default function TvWall() {
       {loaded && ordered.length === 0 && <CenterMsg>No assets to display.</CenterMsg>}
 
       {ordered.length > 0 && (
-        <div className="tv-viewport">
-          <div
-            className="tv-track"
-            style={{
-              width: `${pageCount * 100}%`,
-              // translateX % is relative to the track's own width (pageCount ×
-              // viewport), so divide by pageCount to advance exactly one page.
-              transform: `translateX(-${(page * 100) / pageCount}%)`,
-            }}
-          >
-            {pages.map((pageAssets, i) => (
+        <div className="tv-content">
+          {/* Pinned zone: units needing attention, always on screen. */}
+          {attnShown.length > 0 && (
+            <div
+              className="tv-attention"
+              style={{
+                flexGrow: attnRows,
+                gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${attnRows}, minmax(0, 1fr))`,
+              }}
+            >
+              {attnShown.map((a) => (
+                <TvCard key={a.id} asset={a} />
+              ))}
+              {attnOverflow > 0 && (
+                <div className="tv-attn-more" aria-hidden="true">
+                  +{attnOverflow} more · see ticker
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Rotating zone: everything calm, cycled a page at a time. */}
+          {rest.length > 0 && (
+            <div className="tv-viewport" style={{ flexGrow: rotRows }}>
               <div
-                key={i}
-                className="tv-page"
+                className="tv-track"
                 style={{
-                  width: `${100 / pageCount}%`,
-                  gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-                  gridTemplateRows: `repeat(${rowCount}, minmax(0, 1fr))`,
+                  width: `${pageCount * 100}%`,
+                  // translateX % is relative to the track's own width (pageCount
+                  // × viewport), so divide by pageCount to advance one page.
+                  transform: `translateX(-${(page * 100) / pageCount}%)`,
                 }}
               >
-                {pageAssets.map((a) => (
-                  <TvCard key={a.id} asset={a} />
+                {restPages.map((pageAssets, i) => (
+                  <div
+                    key={i}
+                    className="tv-page"
+                    style={{
+                      width: `${100 / pageCount}%`,
+                      gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                      gridTemplateRows: `repeat(${rotRows}, minmax(0, 1fr))`,
+                    }}
+                  >
+                    {pageAssets.map((a) => (
+                      <TvCard key={a.id} asset={a} />
+                    ))}
+                  </div>
                 ))}
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
-      {pageCount > 1 && (
+      {rest.length > 0 && pageCount > 1 && (
         <div className="tv-dots" aria-hidden="true">
           {Array.from({ length: pageCount }).map((_, i) => (
             <span key={i} className={`tv-dot${i === page ? " on" : ""}`} />

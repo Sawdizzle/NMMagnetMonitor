@@ -918,9 +918,40 @@ button {
 .tv-ticker-item.warning { color: #ffedbf; }
 .tv-ticker-item.warning .tv-ticker-dot { background: var(--status-warning); }
 
-/* --- carousel --- */
-.tv-viewport {
+/* --- content: pinned attention zone + rotating zone --- */
+.tv-content {
   flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.7rem, 1.6vh, 1.4rem);
+  z-index: 1;
+}
+/* The pinned zone (critical + warning) — always on screen, never rotates. */
+.tv-attention {
+  position: relative;
+  flex: 0 1 0;
+  min-height: 0;
+  display: grid;
+  gap: clamp(0.7rem, 1.6vw, 1.5rem);
+}
+.tv-attn-more {
+  position: absolute;
+  right: 0.6rem;
+  bottom: 0.5rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, var(--status-offline) 35%, #000);
+  color: #ffdcdd;
+  font-size: clamp(0.68rem, 1vw, 0.9rem);
+  font-weight: 650;
+  z-index: 2;
+}
+
+/* --- carousel (rotating zone) --- */
+.tv-viewport {
+  flex: 1 1 0;
+  min-height: 0;
   overflow: hidden;
   z-index: 1;
 }
