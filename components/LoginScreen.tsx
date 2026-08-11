@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginScreen() {
@@ -27,6 +28,17 @@ export default function LoginScreen() {
 
   return (
     <div id="main-content" className="min-h-screen flex items-center justify-center p-6" role="main">
+      <Link
+        href="/demo"
+        className="demo-link"
+        style={{ position: "fixed", top: 16, right: 16 }}
+        aria-label="Open the live demo"
+      >
+        View live demo
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M7 17L17 7M17 7H8M17 7v9" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </Link>
       <form
         onSubmit={handleSubmit}
         className="w-full max-w-xs rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 flex flex-col gap-4"

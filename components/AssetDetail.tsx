@@ -2,7 +2,9 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { supabase, type Asset, type TelemetrySample, type TelemetryBucket } from "@/lib/supabase";
+import { type Asset, type TelemetrySample, type TelemetryBucket } from "@/lib/supabase";
+import { getDataSource } from "@/lib/dataSource";
+import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -20,6 +22,7 @@ const METRICS: { key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">
 ];
 
 export default function AssetDetail({ assetId }: { assetId: string }) {
+  const { demo, basePath } = useDemo();
   const [asset, setAsset] = useState<Asset | null>(null);
   const [latest, setLatest] = useState<TelemetrySample | null>(null);
   const [buckets, setBuckets] = useState<TelemetryBucket[]>([]);
@@ -27,38 +30,25 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const { data: assetRow, error: assetErr } = await supabase
-      .from("public_assets")
-      .select("*")
-      .eq("id", assetId)
-      .single();
+    // Pre-aggregated into 15-minute averaged buckets (at most 96 rows for a 24h
+    // window in the live path) so the chart/table cost is fixed regardless of
+    // how many raw readings a gateway actually sent.
+    const { asset: assetRow, latest: latestRow, buckets: bucketRows, error: err } = await getDataSource(
+      demo
+    ).loadAssetDetail(assetId, HISTORY_HOURS);
 
-    if (assetErr || !assetRow) {
-      setError(assetErr?.message || "Asset not found");
-      setLoading(false);
-      return;
-    }
-
-    const [{ data: latestRow }, { data: bucketRows, error: bucketErr }] = await Promise.all([
-      supabase.from("latest_telemetry").select("*").eq("asset_id", assetId).maybeSingle(),
-      // Pre-aggregated in Postgres into 15-minute averaged buckets --
-      // at most 96 rows for a 24h window, regardless of how many raw
-      // readings a gateway actually sent.
-      supabase.rpc("asset_telemetry_15min", { p_asset_id: assetId, p_hours: HISTORY_HOURS }),
-    ]);
-
-    if (bucketErr) {
-      setError(bucketErr.message);
+    if (err || !assetRow) {
+      setError(err || "Asset not found");
       setLoading(false);
       return;
     }
 
     setAsset(assetRow);
-    setLatest(latestRow ?? null);
-    setBuckets(bucketRows ?? []);
+    setLatest(latestRow);
+    setBuckets(bucketRows);
     setError(null);
     setLoading(false);
-  }, [assetId]);
+  }, [assetId, demo]);
 
   useEffect(() => {
     load();
@@ -76,7 +66,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
 
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
-      <Link href="/" className="back-link">
+      <Link href={basePath || "/"} className="back-link">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>

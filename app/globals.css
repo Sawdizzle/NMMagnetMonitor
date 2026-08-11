@@ -327,6 +327,58 @@ button {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
+/* ---- Demo mode affordances ---- */
+/* Amber, deliberately distinct from the cyan brand accent, so a demo view is
+   never mistaken for the live fleet. */
+.demo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px 3px 9px;
+  border-radius: 20px;
+  color: #fbbf24;
+  background: color-mix(in srgb, #fbbf24 14%, transparent);
+  border: 1px solid color-mix(in srgb, #fbbf24 32%, transparent);
+}
+.demo-badge .cd {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.demo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  transition: background 0.15s;
+}
+.demo-link:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #fbbf24;
+  background: color-mix(in srgb, #fbbf24 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #fbbf24 24%, transparent);
+  padding: 7px 16px;
+}
+.demo-banner .demo-banner-cta {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .app-bottomnav {
   position: fixed;
   left: 0;

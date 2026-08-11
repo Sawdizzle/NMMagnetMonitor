@@ -2,16 +2,15 @@
 
 import { useEffect, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
-import { supabase, type Asset, type TelemetrySample } from "@/lib/supabase";
+import { type TelemetrySample } from "@/lib/supabase";
+import { getDataSource, type FleetAsset } from "@/lib/dataSource";
+import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
 import BrandMark from "./BrandMark";
 
-type AssetWithTelemetry = Asset & {
-  latest: TelemetrySample | null;
-  history: TelemetrySample[];
-};
+type AssetWithTelemetry = FleetAsset;
 
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 1;
@@ -26,6 +25,7 @@ const METRICS: { key: keyof TelemetrySample; label: string; unit: string; color:
 ];
 
 export default function Dashboard() {
+  const { demo, basePath, brand } = useDemo();
   const [assets, setAssets] = useState<AssetWithTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -33,47 +33,16 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState<"all" | "online" | "stale" | "offline" | "unknown">("all");
 
   const load = useCallback(async () => {
-    const historyCutoff = new Date(Date.now() - HISTORY_HOURS * 60 * 60 * 1000).toISOString();
-
-    const [
-      { data: assetRows, error: assetsErr },
-      { data: latest, error: latestErr },
-      { data: history, error: historyErr },
-    ] = await Promise.all([
-      supabase.from("public_assets").select("*").order("name"),
-      supabase.from("latest_telemetry").select("*"),
-      supabase
-        .from("telemetry_samples")
-        .select("*")
-        .gte("created_at", historyCutoff)
-        .order("created_at", { ascending: true })
-        .limit(5000),
-    ]);
-
-    if (assetsErr || latestErr || historyErr) {
-      setError(assetsErr?.message || latestErr?.message || historyErr?.message || "Failed to load");
+    const { assets: rows, error: err } = await getDataSource(demo).loadFleet(HISTORY_HOURS);
+    if (err) {
+      setError(err);
       return;
     }
-
-    const latestByAsset = new Map((latest ?? []).map((t) => [t.asset_id, t]));
-    const historyByAsset = new Map<string, TelemetrySample[]>();
-    for (const sample of history ?? []) {
-      const arr = historyByAsset.get(sample.asset_id) ?? [];
-      arr.push(sample);
-      historyByAsset.set(sample.asset_id, arr);
-    }
-
-    const merged: AssetWithTelemetry[] = (assetRows ?? []).map((a) => ({
-      ...a,
-      latest: latestByAsset.get(a.id) ?? null,
-      history: historyByAsset.get(a.id) ?? [],
-    }));
-
-    setAssets(merged);
+    setAssets(rows);
     setError(null);
     setLoading(false);
     setLastRefreshed(new Date());
-  }, []);
+  }, [demo]);
 
   useEffect(() => {
     load();
@@ -96,7 +65,7 @@ export default function Dashboard() {
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
       <header className="mb-6">
-        <p className="eyebrow mb-1.5">Numed &middot; Remote Monitoring</p>
+        <p className="eyebrow mb-1.5">{brand.eyebrow}</p>
         <div className="flex items-center gap-3">
           <span className="dash-mark" aria-hidden="true">
             <BrandMark size={20} />
@@ -221,7 +190,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {filteredAssets.map((a) => (
-          <AssetCard key={a.id} asset={a} />
+          <AssetCard key={a.id} asset={a} basePath={basePath} />
         ))}
       </div>
     </div>
@@ -264,13 +233,13 @@ function StatusTile({
   );
 }
 
-function AssetCard({ asset }: { asset: AssetWithTelemetry }) {
+function AssetCard({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
   const status = computeAssetHealth(asset);
   const mins = minutesSince(asset.last_seen_at);
 
   return (
     <Link
-      href={`/asset/${asset.id}`}
+      href={`${basePath}/asset/${asset.id}`}
       aria-label={`${asset.name}, ${status}, ${mins === null ? "never reported" : `last seen ${mins} minutes ago`}. View details.`}
       className="asset-card group rounded-2xl border border-[var(--border-soft)] bg-[var(--card)] hover:bg-[var(--card-hover)] hover:border-[var(--border)] transition-colors p-5 pl-6 flex flex-col gap-4"
       style={{ ["--sc" as string]: STATUS_COLORS[status] }}
