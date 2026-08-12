@@ -77,7 +77,7 @@ function metricValue(assetSeed: number, cfg: MetricCfg, tMs: number, skew: numbe
   return clampRound(baseAdj + slow + ripple, cfg);
 }
 
-function sampleAt(spec: AssetSpec, tMs: number): TelemetrySample {
+function sampleAt(spec: AssetSpec, tMs: number, nowMs: number): TelemetrySample {
   const metrics = Object.fromEntries(
     METRIC_CFGS.map((cfg) => [cfg.key, metricValue(spec.seed, cfg, tMs, spec.skew?.[cfg.key] ?? 1)])
   ) as Record<MetricKey, number>;
@@ -87,7 +87,15 @@ function sampleAt(spec: AssetSpec, tMs: number): TelemetrySample {
   // which TV mode would read as "compressor OFF", so pin it unless a fault is
   // injected for this unit.
   metrics.cs1 = spec.inject?.cs1 ?? 0;
-  if (spec.inject?.he_lvl !== undefined) metrics.he_lvl = spec.inject.he_lvl;
+  if (spec.inject?.he_lvl !== undefined) {
+    metrics.he_lvl = spec.inject.he_lvl;
+  } else if (spec.boilOffPerDay) {
+    // A steady linear decline anchored at `now` (drift 0 at now, higher in the
+    // past), so the boil-off forecast has a real slope to fit. Re-clamped since
+    // the drift is applied after the metric model's own clamp.
+    const drift = spec.boilOffPerDay * ((tMs - nowMs) / 86_400_000);
+    metrics.he_lvl = Math.max(0, Math.round((metrics.he_lvl + drift) * 10) / 10);
+  }
   if (spec.inject?.shield !== undefined) metrics.shield = spec.inject.shield;
 
   // Coldhead temperature isn't a typed column — TV mode reads it from `data`.
@@ -124,6 +132,10 @@ type AssetSpec = {
   inject?: Partial<{ cs1: number; coldheadK: number; he_lvl: number; shield: number }>;
   // Suppress value alarms on the TV (known-warm / in-service unit).
   maintenance?: boolean;
+  // A steady helium boil-off in %/day (negative = losing helium), so the
+  // days-to-refill forecast has a real declining trend to demonstrate. Absent =
+  // flat (healthy coldhead).
+  boilOffPerDay?: number;
   seed: number;
 };
 
@@ -132,10 +144,10 @@ const ROSTER: AssetSpec[] = [
   { id: "MM-1002", name: "MM-1002", site_name: "Summit Diagnostic Center", site_address: "455 Summit Ave, Fairview", lastSeenMinAgo: 4, inject: { cs1: 33, coldheadK: 58 }, seed: hashSeed("MM-1002") },
   { id: "MM-1003", name: "MM-1003", site_name: "Lakeside Medical Center", site_address: "88 Lakeshore Blvd, Elmwood", lastSeenMinAgo: 1, seed: hashSeed("MM-1003") },
   { id: "MM-1004", name: "MM-1004", site_name: "Harbor Radiology", site_address: "310 Harbor St, Bayport", lastSeenMinAgo: 47, seed: hashSeed("MM-1004") },
-  { id: "MM-1005", name: "MM-1005", site_name: "Grandview Regional Hospital", site_address: "2 Grandview Pkwy, Northfield", lastSeenMinAgo: 6, skew: { he_lvl: 0.42 }, seed: hashSeed("MM-1005") },
+  { id: "MM-1005", name: "MM-1005", site_name: "Grandview Regional Hospital", site_address: "2 Grandview Pkwy, Northfield", lastSeenMinAgo: 6, skew: { he_lvl: 0.42 }, boilOffPerDay: -0.6, seed: hashSeed("MM-1005") },
   { id: "MM-1006", name: "MM-1006", site_name: "Cedar Valley Clinic", site_address: "77 Cedar Valley Rd, Ashton", lastSeenMinAgo: 214, seed: hashSeed("MM-1006") },
   { id: "MM-1007", name: "MM-1007", site_name: "Northgate Imaging", site_address: "1450 Northgate Blvd, Westbrook", lastSeenMinAgo: 3, inject: { coldheadK: 128, he_lvl: 0, shield: 240 }, maintenance: true, seed: hashSeed("MM-1007") },
-  { id: "MM-1008", name: "MM-1008", site_name: "Pinehurst Health", site_address: "9 Pinehurst Way, Millbrook", lastSeenMinAgo: 9, seed: hashSeed("MM-1008") },
+  { id: "MM-1008", name: "MM-1008", site_name: "Pinehurst Health", site_address: "9 Pinehurst Way, Millbrook", lastSeenMinAgo: 9, boilOffPerDay: -1.3, seed: hashSeed("MM-1008") },
   { id: "MM-1009", name: "MM-1009", site_name: "Fairmont Mobile MRI", site_address: "Mobile unit · region 4", lastSeenMinAgo: null, seed: hashSeed("MM-1009") },
   { id: "MM-1010", name: "MM-1010", site_name: "Westland Imaging", site_address: "620 Westland Ave, Crestline", lastSeenMinAgo: 5, seed: hashSeed("MM-1010") },
 ];
@@ -180,8 +192,8 @@ export function demoFleet(historyHours: number): DemoFleetAsset[] {
     if (end === null) return { ...asset, latest: null, history: [] };
 
     const history: TelemetrySample[] = [];
-    for (let t = end - spanMs; t <= end; t += stepMs) history.push(sampleAt(spec, t));
-    return { ...asset, latest: sampleAt(spec, end), history };
+    for (let t = end - spanMs; t <= end; t += stepMs) history.push(sampleAt(spec, t, now));
+    return { ...asset, latest: sampleAt(spec, end, now), history };
   });
 }
 
@@ -201,7 +213,7 @@ export function demoAssetDetail(
   const stepMs = 15 * 60000;
   const buckets: TelemetryBucket[] = [];
   for (let t = end - historyHours * 60 * 60 * 1000; t <= end; t += stepMs) {
-    const s = sampleAt(spec, t);
+    const s = sampleAt(spec, t, now);
     const countRnd = mulberry32(spec.seed ^ Math.floor(t / stepMs));
     buckets.push({
       created_at: new Date(t).toISOString(),
@@ -215,5 +227,5 @@ export function demoAssetDetail(
     });
   }
 
-  return { asset, latest: sampleAt(spec, end), buckets };
+  return { asset, latest: sampleAt(spec, end, now), buckets };
 }

@@ -6,11 +6,16 @@ import { type Asset, type TelemetrySample, type TelemetryBucket } from "@/lib/su
 import { getDataSource } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
+import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
 
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 24;
+// The boil-off forecast fits a longer window than the 24h trend charts — a week
+// of 15-min buckets gives a stable slope. Refreshed slowly; the trend is daily.
+const FORECAST_HOURS = 24 * 7;
+const FORECAST_POLL_MS = 5 * 60_000;
 
 const METRICS: { key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">; label: string; unit: string; color: string }[] = [
   { key: "he_lvl", label: "He Lvl", unit: "%", color: "#22d3ee" },
@@ -55,6 +60,26 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     const interval = setInterval(load, POLL_MS);
     return () => clearInterval(interval);
   }, [load]);
+
+  // Helium boil-off forecast — its own slow-cadence load over a week-long window,
+  // independent of the 30s value poll above.
+  const [forecast, setForecast] = useState<HeliumForecast | null>(null);
+  const [forecastLoaded, setForecastLoaded] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      const { points } = await getDataSource(demo).loadHeliumSeries(assetId, FORECAST_HOURS);
+      if (!alive) return;
+      setForecast(heliumForecast(points));
+      setForecastLoaded(true);
+    };
+    run();
+    const id = setInterval(run, FORECAST_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [assetId, demo]);
 
   if (loading) return <div className="p-10 text-[var(--text-muted)]">Loading&hellip;</div>;
   if (error || !asset)
@@ -103,6 +128,8 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           <MetricCard label="CS1" value={latest.cs1} unit="" />
         </div>
       )}
+
+      <ForecastCard forecast={forecast} loaded={forecastLoaded} />
 
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
         Trends (last 24 hours &middot; 15-min averages)
@@ -189,6 +216,81 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+const CONFIDENCE_STYLE: Record<HeliumForecast["confidence"], { label: string; color: string }> = {
+  high: { label: "high confidence", color: "#4ade80" },
+  medium: { label: "medium confidence", color: "#fbbf24" },
+  low: { label: "low confidence", color: "#6b7280" },
+};
+
+function ForecastCard({ forecast, loaded }: { forecast: HeliumForecast | null; loaded: boolean }) {
+  // Days-to-refill drives the accent: a soon-due unit glows amber, a slower
+  // decline stays cool blue, and anything not falling is neutral cyan.
+  const daysLeft = forecast && forecast.trend === "falling" ? forecast.daysToRefill : null;
+  const accent =
+    !forecast || forecast.trend !== "falling"
+      ? "#38bdf8"
+      : daysLeft !== null && daysLeft < 14
+        ? "#fbbf24"
+        : "#5b93f7";
+
+  return (
+    <div className="rounded-2xl border border-[var(--border-soft)] bg-[var(--card)] p-5 mb-10">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Helium forecast</h2>
+        <span className="text-[10px] text-[var(--text-dim)]">boil-off &middot; 7-day fit</span>
+      </div>
+
+      {!loaded ? (
+        <p className="text-[var(--text-muted)] text-sm" aria-live="polite">Analyzing helium trend&hellip;</p>
+      ) : !forecast ? (
+        <p className="text-[var(--text-muted)] text-sm">Not enough helium history yet to project a refill.</p>
+      ) : (
+        <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
+          <div className="min-w-0">
+            <p className="text-2xl md:text-3xl font-semibold tracking-tight" style={{ color: accent }}>
+              {forecastHeadline(forecast)}
+            </p>
+            <p className="text-xs text-[var(--text-dim)] mt-1">
+              {forecast.trend === "falling" && forecast.refillBy
+                ? `Projected to reach ${forecast.floor}% by ${new Date(forecast.refillBy).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`
+                : forecast.trend === "rising"
+                  ? "Level is trending up — recently filled or recovering"
+                  : "Level is holding steady — no refill projected"}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-x-6 gap-y-2 font-mono-data text-sm">
+            <Stat label="Rate" value={`${forecast.ratePerDay > 0 ? "+" : ""}${forecast.ratePerDay.toFixed(2)} %/day`} />
+            <Stat label="Now (fit)" value={`${forecast.currentPct.toFixed(1)} %`} />
+            {daysLeft !== null && (
+              <Stat label="Days left" value={daysLeft < 1 ? "<1" : String(Math.round(daysLeft))} />
+            )}
+            <Stat label="Fit R²" value={forecast.r2.toFixed(2)} />
+          </div>
+
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--text-dim)]">
+            <span
+              className="inline-block w-2 h-2 rounded-full"
+              style={{ background: CONFIDENCE_STYLE[forecast.confidence].color }}
+              aria-hidden="true"
+            />
+            {CONFIDENCE_STYLE[forecast.confidence].label}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-[var(--text-dim)]">{label}</p>
+      <p className="text-[var(--text)]">{value}</p>
     </div>
   );
 }

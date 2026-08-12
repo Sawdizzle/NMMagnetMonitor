@@ -6,6 +6,7 @@
 
 import { supabase, type Asset, type TelemetrySample, type TelemetryBucket } from "./supabase";
 import { demoFleet, demoAssetDetail } from "./demoFixtures";
+import type { HeliumPoint } from "./forecast";
 
 export type FleetAsset = Asset & {
   latest: TelemetrySample | null;
@@ -19,10 +20,15 @@ export type AssetDetailResult = {
   buckets: TelemetryBucket[];
   error: string | null;
 };
+export type HeliumSeriesResult = { points: HeliumPoint[]; error: string | null };
 
 export interface DataSource {
   loadFleet(historyHours: number): Promise<FleetResult>;
   loadAssetDetail(assetId: string, historyHours: number): Promise<AssetDetailResult>;
+  // A downsampled he_lvl series (15-min buckets) over `historyHours`, for the
+  // boil-off forecast. Uses the same pre-aggregation as the detail charts so a
+  // multi-day window stays a few hundred rows, not tens of thousands of raw ones.
+  loadHeliumSeries(assetId: string, historyHours: number): Promise<HeliumSeriesResult>;
 }
 
 // ---- live: Supabase ------------------------------------------------------
@@ -89,6 +95,18 @@ const liveDataSource: DataSource = {
 
     return { asset: assetRow, latest: latestRow ?? null, buckets: bucketRows ?? [], error: null };
   },
+
+  async loadHeliumSeries(assetId, historyHours) {
+    const { data, error } = await supabase.rpc("asset_telemetry_15min", {
+      p_asset_id: assetId,
+      p_hours: historyHours,
+    });
+    if (error) return { points: [], error: error.message };
+    const points = (data ?? [])
+      .filter((b: TelemetryBucket) => b.he_lvl !== null)
+      .map((b: TelemetryBucket) => ({ t: new Date(b.created_at).getTime(), v: Number(b.he_lvl) }));
+    return { points, error: null };
+  },
 };
 
 // ---- demo: in-browser fixtures ------------------------------------------
@@ -101,6 +119,14 @@ const demoDataSource: DataSource = {
     const detail = demoAssetDetail(assetId, historyHours);
     if (!detail) return { asset: null, latest: null, buckets: [], error: "Asset not found" };
     return { ...detail, error: null };
+  },
+  async loadHeliumSeries(assetId, historyHours) {
+    const detail = demoAssetDetail(assetId, historyHours);
+    if (!detail) return { points: [], error: "Asset not found" };
+    const points = detail.buckets
+      .filter((b) => b.he_lvl !== null)
+      .map((b) => ({ t: new Date(b.created_at).getTime(), v: Number(b.he_lvl) }));
+    return { points, error: null };
   },
 };
 
