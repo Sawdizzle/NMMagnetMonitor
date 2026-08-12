@@ -14,6 +14,7 @@
 //   ?dwell=20    seconds each page is shown (default 15)
 //   ?perView=2   columns per page (default: auto-fit to screen width)
 //   ?rows=2      rows per page (default 2)
+//   ?anim=slide  rotation transition: fade | slide | up | zoom | blur | none
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -34,12 +35,19 @@ const POLL_MS = 30_000;
 const HISTORY_HOURS = 1;
 const DEFAULT_DWELL_S = 15;
 
+// Card entrance styles for units cycling into the rotation, selectable via
+// ?anim=. "none" turns the transition off. Default is "fade".
+const ENTER_ANIMS = ["fade", "slide", "up", "zoom", "blur", "none"];
+
 export default function TvWall() {
   const { demo, brand } = useDemo();
   const params = useSearchParams();
 
   const dwellMs = clampInt(params.get("dwell"), 5, 120, DEFAULT_DWELL_S) * 1000;
   const perViewOverride = params.get("perView") ? clampInt(params.get("perView"), 1, 6, 3) : null;
+  // Transition style for cards cycling into the rotation (see ENTER_ANIMS).
+  const animRaw = params.get("anim");
+  const enterAnim = animRaw && ENTER_ANIMS.includes(animRaw) ? animRaw : "fade";
 
   const [assets, setAssets] = useState<FleetAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -128,11 +136,12 @@ export default function TvWall() {
   const rotating = ordered.filter((a) => !pinnedIds.has(a.id));
   const rotCells = Math.max(0, totalCells - pinned.length); // cells left to rotate
 
-  const rotPages = useMemo(
-    () => (rotCells > 0 ? chunk(rotating, rotCells) : []),
-    [rotating, rotCells]
-  );
-  const pageCount = Math.max(1, rotPages.length);
+  // Page through the rotating units with a full-size window that never leaves a
+  // sparse or pinned-only last page: the final page's start is clamped so its
+  // window still ends at the list's end (overlapping the previous page instead
+  // of showing blanks), then rotation wraps back to the first page.
+  const pageCount =
+    rotCells > 0 && rotating.length > rotCells ? Math.ceil(rotating.length / rotCells) : 1;
 
   // Every open issue as its own "ASSET — error" line for the scrolling ticker:
   // criticals and warnings both, so a warning stays visible until it's cleared
@@ -161,7 +170,9 @@ export default function TvWall() {
     : "";
   const clockStr = clockDate ? clockDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
-  const rotWindow = rotPages.length > 0 ? rotPages[Math.min(page, pageCount - 1)] ?? [] : [];
+  const maxStart = Math.max(0, rotating.length - rotCells);
+  const rotStart = rotCells > 0 ? Math.min(page * rotCells, maxStart) : 0;
+  const rotWindow = rotCells > 0 ? rotating.slice(rotStart, rotStart + rotCells) : [];
 
   return (
     <div className="tv-root" role="main">
@@ -238,9 +249,9 @@ export default function TvWall() {
             <TvCard key={a.id} asset={a} />
           ))}
           {/* Remaining cells: the current rotation page (keyed by page so they
-              cross-fade in when the page turns). */}
+              animate in when the page turns). */}
           {rotWindow.map((a) => (
-            <TvCard key={`rot-${page}-${a.id}`} asset={a} enter />
+            <TvCard key={`rot-${page}-${a.id}`} asset={a} enterAnim={enterAnim} />
           ))}
         </div>
       )}
@@ -256,16 +267,18 @@ export default function TvWall() {
   );
 }
 
-function TvCard({ asset, enter }: { asset: FleetAsset; enter?: boolean }) {
+function TvCard({ asset, enterAnim }: { asset: FleetAsset; enterAnim?: string }) {
   const alarm = computeAssetAlarm(asset);
   const color = ALARM_COLORS[alarm.level];
   const mins = minutesSince(asset.last_seen_at);
   const t = asset.latest;
   const cold = readColdheadK(asset);
+  // "none" (and pinned cards, which pass no enterAnim) get no entrance animation.
+  const animClass = enterAnim && enterAnim !== "none" ? ` tv-enter-${enterAnim}` : "";
 
   return (
     <div
-      className={`tv-card${enter ? " tv-enter" : ""}`}
+      className={`tv-card${animClass}`}
       data-level={alarm.level}
       style={{ ["--lc" as string]: color }}
     >
@@ -457,13 +470,6 @@ function buildAlertItems(assets: FleetAsset[]): AlertItem[] {
     }
   }
   return items;
-}
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  if (size <= 0) return [arr];
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
 }
 
 function clampInt(raw: string | null, min: number, max: number, fallback: number): number {
