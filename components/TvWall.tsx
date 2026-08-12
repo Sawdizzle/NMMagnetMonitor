@@ -14,7 +14,7 @@
 //   ?dwell=20    seconds each page is shown (default 15)
 //   ?perView=2   columns per page (default: auto-fit to screen width)
 //   ?rows=2      rows per page (default 2)
-//   ?anim=slide  rotation transition: fade | slide | up | zoom | blur | none
+//   ?anim=slide  rotation transition: zoom (default) | fade | slide | up | blur | none
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -36,7 +36,7 @@ const HISTORY_HOURS = 1;
 const DEFAULT_DWELL_S = 15;
 
 // Card entrance styles for units cycling into the rotation, selectable via
-// ?anim=. "none" turns the transition off. Default is "fade".
+// ?anim=. "none" turns the transition off. Default is "zoom".
 const ENTER_ANIMS = ["fade", "slide", "up", "zoom", "blur", "none"];
 
 export default function TvWall() {
@@ -47,7 +47,7 @@ export default function TvWall() {
   const perViewOverride = params.get("perView") ? clampInt(params.get("perView"), 1, 6, 3) : null;
   // Transition style for cards cycling into the rotation (see ENTER_ANIMS).
   const animRaw = params.get("anim");
-  const enterAnim = animRaw && ENTER_ANIMS.includes(animRaw) ? animRaw : "fade";
+  const enterAnim = animRaw && ENTER_ANIMS.includes(animRaw) ? animRaw : "zoom";
 
   const [assets, setAssets] = useState<FleetAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
