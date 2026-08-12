@@ -6,6 +6,7 @@ import { type TelemetrySample } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
+import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems } from "@/lib/faults";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
 import BrandMark from "./BrandMark";
@@ -50,8 +51,13 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [load]);
 
+  // Sort so anything alerting (offline/stale or a value-fault like a warm
+  // coldhead) floats to the top of the grid, and gather the open issues for the
+  // ticker — same alert logic the TV uses.
+  const ordered = sortByAlarmPriority(assets);
+  const alertItems = buildAlertItems(ordered);
   const filteredAssets =
-    statusFilter === "all" ? assets : assets.filter((a) => computeAssetHealth(a) === statusFilter);
+    statusFilter === "all" ? ordered : ordered.filter((a) => computeAssetHealth(a) === statusFilter);
 
   const onlineCount = assets.filter((a) => computeAssetHealth(a) === "online").length;
   const staleCount = assets.filter((a) => computeAssetHealth(a) === "stale").length;
@@ -187,6 +193,46 @@ export default function Dashboard() {
         />
       </div>
 
+      {alertItems.length > 0 && (
+        <div
+          className="dash-ticker"
+          data-critical={alertItems.some((i) => i.severity === "critical") ? "true" : "false"}
+          role="status"
+          aria-label={`${alertItems.length} active ${alertItems.length === 1 ? "alert" : "alerts"}`}
+        >
+          <span className="dash-ticker-tag">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3.5 22 20H2L12 3.5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M12 10v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              <circle cx="12" cy="17" r="1" fill="currentColor" />
+            </svg>
+            {alertItems.length} {alertItems.length === 1 ? "alert" : "alerts"}
+          </span>
+          <div className="dash-ticker-viewport">
+            {/* Two copies back-to-back → seamless -50% marquee. Pauses on hover
+                (see globals.css) so an item can be read and clicked. */}
+            <div
+              className="dash-ticker-track"
+              style={{ animationDuration: `${Math.max(20, alertItems.length * 7)}s` }}
+            >
+              {[...alertItems, ...alertItems].map((it, i) => (
+                <Link
+                  key={i}
+                  href={`${basePath}/asset/${it.assetId}`}
+                  className={`dash-ticker-item ${it.severity}`}
+                >
+                  <span className="dash-ticker-dot" aria-hidden="true" />
+                  <b>{it.asset}</b>
+                  <span className="dash-ticker-sep">—</span>
+                  {it.label}
+                  {it.detail && <span className="dash-ticker-detail font-mono-data">{it.detail}</span>}
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading && <p className="text-[var(--text-muted)]" aria-live="polite">Loading fleet status&hellip;</p>}
       {error && (
         <p className="text-[var(--status-offline)] font-mono-data text-sm" role="alert">Error: {error}</p>
@@ -251,6 +297,7 @@ function StatusTile({
 
 function AssetCard({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
   const status = computeAssetHealth(asset);
+  const alarm = computeAssetAlarm(asset);
   const mins = minutesSince(asset.last_seen_at);
 
   return (
@@ -269,6 +316,16 @@ function AssetCard({ asset, basePath }: { asset: AssetWithTelemetry; basePath: s
         </div>
         <FieldRing status={status} />
       </div>
+
+      {alarm.faults.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 -mt-1.5">
+          {alarm.faults.slice(0, 3).map((f) => (
+            <span key={f.key} className={`fault-pill ${f.severity}`}>
+              {f.label} <b>{f.detail}</b>
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-2">
         {METRICS.map((m) => {

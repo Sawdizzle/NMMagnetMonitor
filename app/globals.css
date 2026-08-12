@@ -269,6 +269,102 @@ button {
   background: currentColor;
 }
 
+/* ---- Dashboard alert ticker (scrolling "ASSET — error", clickable) ---- */
+.dash-ticker {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 1.75rem;
+  border-radius: 0.7rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.dash-ticker[data-critical="true"] {
+  border-color: color-mix(in srgb, var(--status-offline) 50%, transparent);
+  background: color-mix(in srgb, var(--status-offline) 8%, var(--card));
+}
+.dash-ticker[data-critical="false"] {
+  border-color: color-mix(in srgb, var(--status-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 7%, var(--card));
+}
+.dash-ticker-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--text-muted);
+}
+.dash-ticker[data-critical="true"] .dash-ticker-tag { color: var(--status-offline); }
+.dash-ticker[data-critical="false"] .dash-ticker-tag { color: var(--status-warning); }
+.dash-ticker-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+.dash-ticker-track {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  will-change: transform;
+  animation-name: tv-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.dash-ticker:hover .dash-ticker-track,
+.dash-ticker:focus-within .dash-ticker-track {
+  animation-play-state: paused;
+}
+.dash-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 150ms;
+}
+.dash-ticker-item:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.dash-ticker-item b { font-weight: 700; color: var(--text); }
+.dash-ticker-sep { opacity: 0.5; }
+.dash-ticker-detail { opacity: 0.85; }
+.dash-ticker-dot { width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; }
+.dash-ticker-item.critical .dash-ticker-dot { background: var(--status-offline); }
+.dash-ticker-item.warning .dash-ticker-dot { background: var(--status-warning); }
+
+/* Per-card value-fault pill (compressor off, warm coldhead, …) */
+.fault-pill {
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.4rem;
+  font-size: 0.7rem;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.fault-pill b { font-weight: 700; }
+.fault-pill.critical {
+  background: color-mix(in srgb, var(--status-offline) 16%, transparent);
+  border-color: color-mix(in srgb, var(--status-offline) 45%, transparent);
+  color: color-mix(in srgb, var(--status-offline) 65%, var(--text));
+}
+.fault-pill.warning {
+  background: color-mix(in srgb, var(--status-warning) 15%, transparent);
+  border-color: color-mix(in srgb, var(--status-warning) 45%, transparent);
+  color: color-mix(in srgb, var(--status-warning) 60%, var(--text));
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-ticker-track { animation: none; }
+}
+
 /* ---- Asset card status rail + metric tiles ---- */
 .asset-card {
   position: relative;

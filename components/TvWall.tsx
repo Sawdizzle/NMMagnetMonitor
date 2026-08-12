@@ -25,6 +25,7 @@ import { minutesSince } from "@/lib/health";
 import {
   computeAssetAlarm,
   sortByAlarmPriority,
+  buildAlertItems,
   ALARM_COLORS,
   ALARM_LABELS,
   type AlarmLevel,
@@ -495,31 +496,6 @@ function readColdheadK(asset: FleetAsset): number | null {
 
 function countLevel(assets: FleetAsset[], level: AlarmLevel): number {
   return assets.filter((a) => computeAssetAlarm(a).level === level).length;
-}
-
-type AlertItem = { key: string; asset: string; label: string; detail: string; severity: "critical" | "warning" };
-
-// Flatten every open issue across the fleet into one "ASSET — error" line per
-// fault (plus a connectivity line for offline/stale), for the scrolling ticker.
-// Only critical/warning units contribute; maintenance/ok/unknown are excluded.
-function buildAlertItems(assets: FleetAsset[]): AlertItem[] {
-  const items: AlertItem[] = [];
-  for (const a of assets) {
-    const alarm = computeAssetAlarm(a);
-    if (alarm.level !== "critical" && alarm.level !== "warning") continue;
-
-    if (alarm.connectivity === "offline") {
-      const m = minutesSince(a.last_seen_at);
-      items.push({ key: `${a.id}-offline`, asset: a.name, label: "Offline", detail: m === null ? "" : `${m} min`, severity: "critical" });
-    } else if (alarm.connectivity === "stale") {
-      const m = minutesSince(a.last_seen_at);
-      items.push({ key: `${a.id}-stale`, asset: a.name, label: "No recent data", detail: m === null ? "" : `${m} min`, severity: "warning" });
-    }
-    for (const f of alarm.faults) {
-      items.push({ key: `${a.id}-${f.key}`, asset: a.name, label: f.label, detail: f.detail, severity: f.severity });
-    }
-  }
-  return items;
 }
 
 function clampInt(raw: string | null, min: number, max: number, fallback: number): number {
