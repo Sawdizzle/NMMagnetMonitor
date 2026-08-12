@@ -9,6 +9,7 @@ import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
+import PushToggle from "./PushToggle";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
 import BrandMark from "./BrandMark";
@@ -82,20 +83,23 @@ export default function Dashboard() {
             </span>
             <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
           </div>
-          <Link
-            href={`${basePath}/tv`}
-            target="_blank"
-            rel="noopener"
-            className="btn-secondary inline-flex items-center gap-1.5 shrink-0"
-            aria-label="Open TV / Display mode in a new tab"
-            title="Full-screen wall display that auto-rotates through the fleet"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <rect x="3" y="4" width="18" height="12" rx="1.6" stroke="currentColor" strokeWidth="2" />
-              <path d="M8 20h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            TV mode
-          </Link>
+          <div className="flex items-center gap-2 shrink-0">
+            {!demo && <PushToggle />}
+            <Link
+              href={`${basePath}/tv`}
+              target="_blank"
+              rel="noopener"
+              className="btn-secondary inline-flex items-center gap-1.5 shrink-0"
+              aria-label="Open TV / Display mode in a new tab"
+              title="Full-screen wall display that auto-rotates through the fleet"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="12" rx="1.6" stroke="currentColor" strokeWidth="2" />
+                <path d="M8 20h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              TV mode
+            </Link>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-[var(--text-dim)]">
           <span className="flex items-center gap-1.5 text-[var(--text-muted)]">

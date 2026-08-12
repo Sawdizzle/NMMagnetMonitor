@@ -987,17 +987,74 @@ where not exists (
 
 
 -- =====================================================================
+-- WEB PUSH (browser / PWA notifications) — added 2026-08-12
+-- =====================================================================
+-- VAPID keypair lives in app_settings (keys 'vapid_public' / 'vapid_private'),
+-- generated once by the vapid-keygen edge function (Web Crypto P-256). The
+-- private key stays server-side; the public key is exposed to the client via
+-- get_vapid_public_key(). alert_events gained a push_notified_at column so push
+-- delivery tracks independently of email's notified_at. Migrations:
+-- push_subscriptions_and_rpcs, alert_events_push_notified_at.
+
+create table if not exists public.push_subscriptions (
+  id           uuid primary key default gen_random_uuid(),
+  endpoint     text not null unique,
+  p256dh       text not null,
+  auth         text not null,
+  username     text,
+  user_agent   text,
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+alter table public.push_subscriptions enable row level security;  -- no public policy: SECURITY DEFINER RPCs only
+
+-- Upsert a device subscription (self-serve; the dashboard toggle is behind login).
+CREATE OR REPLACE FUNCTION public.save_push_subscription(p_endpoint text, p_p256dh text, p_auth text, p_username text DEFAULT NULL, p_user_agent text DEFAULT NULL)
+ RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
+AS $function$
+begin
+  insert into push_subscriptions (endpoint, p256dh, auth, username, user_agent)
+  values (p_endpoint, p_p256dh, p_auth, p_username, p_user_agent)
+  on conflict (endpoint) do update
+    set p256dh = excluded.p256dh, auth = excluded.auth,
+        username = coalesce(excluded.username, push_subscriptions.username),
+        user_agent = excluded.user_agent, last_seen_at = now();
+  return true;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.delete_push_subscription(p_endpoint text)
+ RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
+AS $function$
+begin
+  delete from push_subscriptions where endpoint = p_endpoint;
+  return true;
+end;
+$function$;
+
+-- The VAPID public key is not secret; expose it so the client can subscribe.
+CREATE OR REPLACE FUNCTION public.get_vapid_public_key()
+ RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path TO 'public' STABLE
+AS $function$ select value from app_settings where key = 'vapid_public'; $function$;
+
+
+-- =====================================================================
 -- SCHEDULED JOBS (pg_cron)
 -- =====================================================================
 -- Live jobs as of 2026-08-12:
 --   jobid 1  cleanup_old_telemetry  '0 3 * * *'  delete telemetry_samples > 7 days
 --   jobid 2  evaluate-alerts        '* * * * *'  select public.evaluate_alerts()
 --   jobid 3  notify-alerts          '* * * * *'  net.http_post -> notify-alerts edge fn
+--   jobid 4  send-push              '* * * * *'  net.http_post -> send-push edge fn
 -- evaluate-alerts (Phase 1) opens/resolves alert_events. notify-alerts (Phase 3,
 -- added 2026-08-12) invokes the edge function over pg_net; the function emails
 -- new open events (debounced ALERT_DEBOUNCE_MINUTES, default 5) via Resend to
 -- alert_recipients, then stamps notified_at. Requires the pg_net extension and
 -- the RESEND_API_KEY + ALERT_FROM edge-function secrets.
+-- send-push (added 2026-08-12) is the web-push companion: same debounce, sends a
+-- browser/PWA notification for new open events to every push_subscriptions row,
+-- stamps push_notified_at, and prunes expired (404/410) endpoints. Uses the VAPID
+-- keys in app_settings (vapid_public / vapid_private).
 --
 -- To (re)create the schedules:
 --   select cron.schedule('evaluate-alerts', '* * * * *', $$ select public.evaluate_alerts(); $$);
