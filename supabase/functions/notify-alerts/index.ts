@@ -9,7 +9,20 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 //     UI. PIN-gated via is_admin so the endpoint isn't an open email relay.
 // The From address is the app_settings 'alert_from' value if set, else the
 // ALERT_FROM secret, else Resend's test sender. Resend key is never hardcoded.
+//
+// CORS: the test mode is invoked from the admin page in the browser, so the
+// function must answer the preflight and set CORS headers on every response;
+// without them the browser blocks the call ("Failed to send a request to the
+// Edge Function"). The cron/pg_net path is server-to-server and unaffected.
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const resendKey = Deno.env.get("RESEND_API_KEY");
@@ -108,6 +121,6 @@ function sendEmail(key: string, from: string, to: string[], subject: string, tex
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...CORS },
   });
 }
