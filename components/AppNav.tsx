@@ -70,6 +70,12 @@ function demoNavItems(basePath: string): NavItem[] {
       isActive: (p) => p === basePath || p === home || p.startsWith(`${basePath}/asset`),
     },
     {
+      href: `${basePath}/tv`,
+      label: "TV",
+      icon: <TvIcon />,
+      isActive: (p) => p.startsWith(`${basePath}/tv`),
+    },
+    {
       href: `${basePath}/docs`,
       label: "Docs",
       icon: <BookIcon />,
