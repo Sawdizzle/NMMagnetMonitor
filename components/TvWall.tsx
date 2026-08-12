@@ -16,7 +16,7 @@
 //   ?rows=2      rows per page (default 2)
 //   ?anim=slide  rotation transition: zoom (default) | fade | slide | up | blur | none
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
@@ -103,6 +103,21 @@ export default function TvWall() {
       document.removeEventListener("visibilitychange", onVisible);
       sentinel?.release().catch(() => {});
     };
+  }, []);
+
+  // ---- full screen (a one-tap toggle for the wall TV setup) --------------
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    } else {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
   }, []);
 
   // ---- responsive cards-per-page -----------------------------------------
@@ -194,15 +209,34 @@ export default function TvWall() {
           <Tally color={ALARM_COLORS.maintenance} n={countLevel(ordered, "maintenance")} label="Maint." />
         </div>
 
-        <div className="tv-clock">
-          <span className="tv-live" aria-hidden="true">
-            <span className="tv-live-dot" style={{ background: error ? ALARM_COLORS.warning : ALARM_COLORS.ok }} />
-            {error ? "reconnecting" : "live"}
-          </span>
-          <span className="tv-time font-mono-data">
-            <span className="tv-date">{dateStr}</span>
-            {clockStr}
-          </span>
+        <div className="tv-header-right">
+          <button
+            type="button"
+            className="tv-fs"
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
+            title={isFullscreen ? "Exit full screen" : "Full screen"}
+          >
+            {isFullscreen ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M9 4v3a2 2 0 0 1-2 2H4M20 9h-3a2 2 0 0 1-2-2V4M15 20v-3a2 2 0 0 1 2-2h3M4 15h3a2 2 0 0 1 2 2v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+          <div className="tv-clock">
+            <span className="tv-live" aria-hidden="true">
+              <span className="tv-live-dot" style={{ background: error ? ALARM_COLORS.warning : ALARM_COLORS.ok }} />
+              {error ? "reconnecting" : "live"}
+            </span>
+            <span className="tv-time font-mono-data">
+              <span className="tv-date">{dateStr}</span>
+              {clockStr}
+            </span>
+          </div>
         </div>
       </header>
 

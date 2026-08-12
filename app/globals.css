@@ -787,6 +787,33 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
+.tv-header-right {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.6rem, 1.5vw, 1.3rem);
+}
+.tv-fs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: clamp(2.1rem, 3vw, 2.7rem);
+  height: clamp(2.1rem, 3vw, 2.7rem);
+  border-radius: 0.6rem;
+  border: 1px solid var(--tv-border);
+  background: color-mix(in srgb, var(--tv-panel) 75%, transparent);
+  color: var(--tv-dim);
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 200ms, color 200ms, border-color 200ms;
+}
+.tv-fs:hover,
+.tv-fs:focus-visible {
+  opacity: 1;
+  color: var(--tv-text);
+  border-color: var(--accent);
+  outline: none;
+}
 .tv-clock {
   display: flex;
   flex-direction: column;
