@@ -115,6 +115,33 @@ export default function PushToggle() {
     }
   }, []);
 
+  const test = useCallback(async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (!sub) {
+        setState("default");
+        setMsg("This device isn’t subscribed.");
+        return;
+      }
+      const { data, error } = await supabase.functions.invoke("send-push", {
+        body: { test: true, endpoint: sub.endpoint },
+      });
+      if (error) {
+        setMsg(`Test failed: ${error.message}`);
+        return;
+      }
+      const res = data as { ok?: boolean; message?: string };
+      setMsg(res?.message ?? (res?.ok ? "Test notification sent." : "Test failed."));
+    } catch {
+      setMsg("Couldn’t send a test.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   if (state === "unsupported" || state === "loading") return null;
 
   const bell = (
@@ -125,23 +152,40 @@ export default function PushToggle() {
   );
 
   return (
-    <span className="inline-flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       {state === "denied" ? (
         <span className="text-xs text-[var(--text-dim)]" title="Allow notifications for this site in your browser settings to enable push.">
           Push blocked
         </span>
       ) : state === "subscribed" ? (
-        <button
-          type="button"
-          onClick={disable}
-          disabled={busy}
-          className="btn-secondary inline-flex items-center gap-1.5 shrink-0"
-          style={{ color: "var(--status-online)" }}
-          title="Alerts push to this device — click to turn off"
-        >
-          {bell}
-          {busy ? "…" : "Push on"}
-        </button>
+        <>
+          <span
+            className="inline-flex items-center gap-1.5 text-sm shrink-0"
+            style={{ color: "var(--status-online)" }}
+            title="Alerts push to this device"
+          >
+            {bell}
+            Push on
+          </span>
+          <button
+            type="button"
+            onClick={test}
+            disabled={busy}
+            className="btn-secondary shrink-0"
+            title="Send a test notification to this device"
+          >
+            {busy ? "Sending…" : "Send test"}
+          </button>
+          <button
+            type="button"
+            onClick={disable}
+            disabled={busy}
+            className="btn-secondary shrink-0"
+            title="Turn push off on this device"
+          >
+            Turn off
+          </button>
+        </>
       ) : (
         <button
           type="button"
@@ -154,7 +198,7 @@ export default function PushToggle() {
           {busy ? "Enabling…" : "Enable push"}
         </button>
       )}
-      {msg && <span className="text-xs text-[var(--text-dim)] hidden sm:inline">{msg}</span>}
-    </span>
+      {msg && <span className="text-xs text-[var(--text-dim)] w-full">{msg}</span>}
+    </div>
   );
 }
