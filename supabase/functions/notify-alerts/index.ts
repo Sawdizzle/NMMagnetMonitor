@@ -17,11 +17,18 @@ Deno.serve(async () => {
 
   const supabase = createClient(supabaseUrl, serviceKey);
 
+  // Debounce: only notify events that have stayed open at least this long, so a
+  // metric flapping across its threshold (e.g. he_press hovering near 3.0) opens
+  // and resolves without ever emailing. Tunable via ALERT_DEBOUNCE_MINUTES.
+  const debounceMin = Number(Deno.env.get("ALERT_DEBOUNCE_MINUTES") ?? "5");
+  const debounceCutoff = new Date(Date.now() - debounceMin * 60_000).toISOString();
+
   const { data: events, error: evErr } = await supabase
     .from("alert_events")
     .select("id, kind, message, triggered_at")
     .is("resolved_at", null)
     .is("notified_at", null)
+    .lte("triggered_at", debounceCutoff)
     .order("triggered_at", { ascending: true });
   if (evErr) return json({ error: evErr.message }, 500);
   if (!events || events.length === 0) return json({ sent: 0, reason: "no new alerts" });
