@@ -21,15 +21,19 @@ alerting/DB session.
 
 | # | Feature | Surface | Backend? | Status |
 |---|---------|---------|----------|--------|
-| 1 | Audible chime on new critical | `/tv` | none | ☐ |
-| 2 | Helium boil-off forecast engine + asset card | `lib/forecast.ts`, asset page | existing RPC | ☐ |
-| 3 | Fleet "days to refill" chips | dashboard + `/tv` | existing RPC | ☐ |
-| 4 | 24h trend sparklines | `/tv` | existing RPC (+ optional coldhead RPC) | ☐ |
-| 5 | Shift summary / handoff card | `/tv` | none (v1) | ☐ |
+| 1 | Audible chime on new critical | `/tv` | none | ✅ shipped |
+| 2 | Helium boil-off forecast engine + asset card | `lib/forecast.ts`, asset page | existing RPC | ✅ shipped |
+| 3 | Fleet "days to refill" chips | dashboard + `/tv` | existing RPC | ✅ shipped |
+| 4 | 24h trend sparklines | `/tv` | **read-only coldhead RPC** | ⏳ backend session |
+| 5 | Shift summary / handoff card | `/tv` | none (v1) | ✅ shipped |
 | 6 | Incident capture | new table + cron + UI | **new migrations** | ⏳ backend session |
 
-Each of 1–5 is a self-contained commit to `main`. #6 is designed now (schema +
-detection) and applied live alongside alerting with explicit go-ahead.
+Features 1, 2, 3, 5 shipped to `main` as self-contained commits. **Decision
+(2026-08-11):** #4 is deferred to the backend session and done in full there —
+a small read-only `SECURITY DEFINER` RPC aggregates coldhead out of the `data`
+blob so all four sparklines become a uniform 24h at once, rather than shipping a
+mixed-window interim. #6 is designed now and applied live alongside alerting with
+explicit go-ahead.
 
 ## Notes per feature
 
@@ -50,9 +54,10 @@ feature is visible in `/demo`.
 Loaded on a slow cadence (~10 min) separate from the 30s status poll, so ten
 extra per-asset RPC calls don't ride every refresh.
 
-**4 — 24h sparklines.** TV sparklines go from 1h to 24h for the typed metrics.
-Coldhead (blob-sourced) either stays 1h or waits for the read-only coldhead-history
-RPC added in the backend session.
+**4 — 24h sparklines.** TV sparklines go from 1h to 24h. Deferred to the backend
+session so it can be done uniformly: a read-only RPC aggregates coldhead (which
+lives in the `data` blob) into 15-min buckets alongside the typed metrics, so all
+four card sparklines share one 24h window instead of a mixed-window interim.
 
 **5 — Shift handoff.** A calm periodic panel: who's in alarm, who's offline, lowest
 helium, soonest refill, count nominal. v1 is an honest snapshot of current state +
