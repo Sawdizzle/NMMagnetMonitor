@@ -190,6 +190,7 @@ export default function TvWall() {
           <Tally color={ALARM_COLORS.critical} n={countLevel(ordered, "critical")} label="Alarm" />
           <Tally color={ALARM_COLORS.warning} n={countLevel(ordered, "warning")} label="Warning" />
           <Tally color={ALARM_COLORS.ok} n={countLevel(ordered, "ok")} label="Nominal" />
+          <Tally color={ALARM_COLORS.unknown} n={countLevel(ordered, "unknown")} label="No data" />
           <Tally color={ALARM_COLORS.maintenance} n={countLevel(ordered, "maintenance")} label="Maint." />
         </div>
 
