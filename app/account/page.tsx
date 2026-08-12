@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Protected from "@/components/Protected";
+import PushToggle from "@/components/PushToggle";
 import { useAuth } from "@/lib/auth";
 import type { Session } from "@/lib/auth";
 
@@ -97,6 +98,18 @@ function AccountPanel({ session }: { session: Session }) {
         </Field>
         <button type="submit" className="btn-primary">Update PIN</button>
       </form>
+
+      <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
+        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Notifications</h2>
+        <p className="text-xs text-[var(--text-dim)]">
+          Get fleet alerts as push notifications on this device, alongside email. Enable it on each device you
+          want notified. On iPhone/iPad the app must be installed to the Home Screen first (Share &rarr; Add to
+          Home Screen).
+        </p>
+        <div>
+          <PushToggle />
+        </div>
+      </div>
 
       <button onClick={handleSignOut} className="btn-secondary w-full">
         Sign out
