@@ -52,6 +52,11 @@ export default function TvWall() {
   // Transition style for cards cycling into the rotation (see ENTER_ANIMS).
   const animRaw = params.get("anim");
   const enterAnim = animRaw && ENTER_ANIMS.includes(animRaw) ? animRaw : "zoom";
+  // Shift-handoff overlay: opt-in via ?handoff=<minutes> (0/absent = off, so the
+  // existing wall display is unchanged). Shows a full-fleet digest for a few
+  // seconds on that cadence. ?handoffSecs= tunes how long it stays up.
+  const handoffMin = params.get("handoff") ? clampInt(params.get("handoff"), 1, 240, 0) : 0;
+  const handoffSecs = clampInt(params.get("handoffSecs"), 5, 120, 18);
 
   const [assets, setAssets] = useState<FleetAsset[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -172,6 +177,26 @@ export default function TvWall() {
 
   // Fleet helium forecasts (days-to-refill), on their own slow cadence.
   const forecasts = useFleetForecasts(assets.map((a) => a.id), demo);
+
+  // ---- shift-handoff overlay ---------------------------------------------
+  const [showHandoff, setShowHandoff] = useState(false);
+  useEffect(() => {
+    if (handoffMin <= 0) return;
+    let hideTimer: ReturnType<typeof setTimeout>;
+    const reveal = () => {
+      setShowHandoff(true);
+      hideTimer = setTimeout(() => setShowHandoff(false), handoffSecs * 1000);
+    };
+    // Appear shortly after load so it's demonstrable, then on the chosen cadence.
+    const firstTimer = setTimeout(reveal, 8000);
+    const id = setInterval(reveal, handoffMin * 60_000);
+    return () => {
+      clearTimeout(firstTimer);
+      clearTimeout(hideTimer);
+      clearInterval(id);
+    };
+  }, [handoffMin, handoffSecs]);
+  const summary = useMemo(() => buildShiftSummary(ordered, forecasts), [ordered, forecasts, now]);
 
   // One uniform, edge-to-edge grid of equal cards. Critical (red) units hold the
   // first cells and stay put (never rotate); every remaining cell cycles through
@@ -403,6 +428,158 @@ export default function TvWall() {
           ))}
         </div>
       )}
+
+      {showHandoff && (
+        <HandoffOverlay summary={summary} dateStr={dateStr} clockStr={clockStr} />
+      )}
+    </div>
+  );
+}
+
+type ShiftSummary = {
+  critical: string[];
+  warning: string[];
+  offline: string[];
+  noData: number;
+  nominal: number;
+  lowestHelium: { name: string; pct: number } | null;
+  soonestRefill: { name: string; days: number } | null;
+};
+
+// A point-in-time digest of the whole fleet for the shift-handoff overlay,
+// derived from current state + forecasts (no persisted event history yet — that
+// arrives with the alert_events/incidents work).
+function buildShiftSummary(
+  assets: FleetAsset[],
+  forecasts: Record<string, HeliumForecast | null>
+): ShiftSummary {
+  const critical: string[] = [];
+  const warning: string[] = [];
+  const offline: string[] = [];
+  let noData = 0;
+  let nominal = 0;
+  let lowestHelium: { name: string; pct: number } | null = null;
+
+  for (const a of assets) {
+    const alarm = computeAssetAlarm(a);
+    // Offline units go to the Offline row only (they're critical-level too, but
+    // listing them twice muddies the handoff). Everything else buckets by level.
+    if (alarm.connectivity === "offline") offline.push(a.name);
+    else if (alarm.level === "critical") critical.push(a.name);
+    else if (alarm.level === "warning") warning.push(a.name);
+    else if (alarm.level === "ok") nominal++;
+    else if (alarm.level === "unknown") noData++;
+
+    const he = numVal(a.latest?.he_lvl);
+    if (he !== null && (lowestHelium === null || he < lowestHelium.pct)) {
+      lowestHelium = { name: a.name, pct: he };
+    }
+  }
+
+  let soonestRefill: { name: string; days: number } | null = null;
+  for (const a of assets) {
+    const f = forecasts[a.id];
+    if (f && f.trend === "falling" && f.daysToRefill !== null) {
+      if (soonestRefill === null || f.daysToRefill < soonestRefill.days) {
+        soonestRefill = { name: a.name, days: f.daysToRefill };
+      }
+    }
+  }
+
+  return { critical, warning, offline, noData, nominal, lowestHelium, soonestRefill };
+}
+
+function HandoffOverlay({
+  summary,
+  dateStr,
+  clockStr,
+}: {
+  summary: ShiftSummary;
+  dateStr: string;
+  clockStr: string;
+}) {
+  const allClear =
+    summary.critical.length === 0 && summary.warning.length === 0 && summary.offline.length === 0;
+
+  return (
+    <div className="tv-handoff" role="status" aria-live="polite">
+      <div className="tv-handoff-card">
+        <div className="tv-handoff-head">
+          <span>Shift Summary</span>
+          <span className="font-mono-data tv-handoff-when">
+            {dateStr} · {clockStr}
+          </span>
+        </div>
+
+        {allClear ? (
+          <p className="tv-handoff-allclear" style={{ color: ALARM_COLORS.ok }}>
+            All systems nominal
+          </p>
+        ) : (
+          <div className="tv-handoff-rows">
+            {summary.critical.length > 0 && (
+              <HandoffRow color={ALARM_COLORS.critical} label="Alarms" items={summary.critical} />
+            )}
+            {summary.offline.length > 0 && (
+              <HandoffRow color={ALARM_COLORS.critical} label="Offline" items={summary.offline} />
+            )}
+            {summary.warning.length > 0 && (
+              <HandoffRow color={ALARM_COLORS.warning} label="Warnings" items={summary.warning} />
+            )}
+          </div>
+        )}
+
+        <div className="tv-handoff-stats">
+          <HandoffStat value={String(summary.nominal)} label="Nominal" color={ALARM_COLORS.ok} />
+          {summary.lowestHelium && (
+            <HandoffStat
+              value={`${summary.lowestHelium.pct.toFixed(0)}%`}
+              label={`Lowest He · ${summary.lowestHelium.name}`}
+              color="#5b93f7"
+            />
+          )}
+          {summary.soonestRefill && (
+            <HandoffStat
+              value={soonestRefillLabel(summary.soonestRefill.days)}
+              label={`Next refill · ${summary.soonestRefill.name}`}
+              color="#38bdf8"
+            />
+          )}
+          {summary.noData > 0 && (
+            <HandoffStat value={String(summary.noData)} label="No data" color={ALARM_COLORS.unknown} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function soonestRefillLabel(days: number): string {
+  if (days < 1) return "now";
+  if (days < 14) return `${Math.round(days)}d`;
+  if (days < 60) return `${Math.round(days / 7)}w`;
+  return `${Math.round(days / 30)}mo`;
+}
+
+function HandoffRow({ color, label, items }: { color: string; label: string; items: string[] }) {
+  return (
+    <div className="tv-handoff-row">
+      <span className="tv-handoff-row-label" style={{ color }}>
+        <span className="tv-handoff-dot" style={{ background: color }} />
+        {label} <b>{items.length}</b>
+      </span>
+      <span className="tv-handoff-names">{items.join(" · ")}</span>
+    </div>
+  );
+}
+
+function HandoffStat({ value, label, color }: { value: string; label: string; color: string }) {
+  return (
+    <div className="tv-handoff-stat">
+      <span className="tv-handoff-stat-n font-mono-data" style={{ color }}>
+        {value}
+      </span>
+      <span className="tv-handoff-stat-label">{label}</span>
     </div>
   );
 }

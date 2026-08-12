@@ -1281,10 +1281,94 @@ button {
   color: var(--tv-dim);
 }
 
+/* --- shift-handoff overlay (opt-in via ?handoff=) --- */
+.tv-handoff {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1rem, 4vw, 4rem);
+  background: color-mix(in srgb, var(--tv-bg) 82%, transparent);
+  backdrop-filter: blur(6px);
+  animation: tv-handoff-in 500ms ease both;
+}
+@keyframes tv-handoff-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.tv-handoff-card {
+  width: min(1100px, 92%);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1rem, 2.5vh, 2rem);
+  padding: clamp(1.4rem, 3.5vw, 3rem);
+  border-radius: 1.2rem;
+  background: var(--tv-panel);
+  border: 1px solid var(--tv-border);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+}
+.tv-handoff-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: clamp(1rem, 1.8vw, 1.6rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--tv-text);
+}
+.tv-handoff-when { color: var(--tv-dim); font-weight: 500; letter-spacing: 0; }
+.tv-handoff-allclear {
+  font-size: clamp(1.8rem, 5vw, 4rem);
+  font-weight: 700;
+  text-align: center;
+  padding: clamp(1rem, 3vh, 2.5rem) 0;
+}
+.tv-handoff-rows {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.7rem, 1.6vh, 1.2rem);
+}
+.tv-handoff-row {
+  display: flex;
+  align-items: baseline;
+  gap: clamp(0.8rem, 1.6vw, 1.6rem);
+  font-size: clamp(1rem, 1.7vw, 1.5rem);
+}
+.tv-handoff-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  min-width: clamp(7rem, 12vw, 11rem);
+  font-weight: 600;
+}
+.tv-handoff-row-label b { font-weight: 800; }
+.tv-handoff-dot { width: 0.7rem; height: 0.7rem; border-radius: 999px; }
+.tv-handoff-names { color: var(--tv-dim); }
+.tv-handoff-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(1.2rem, 3vw, 3rem);
+  padding-top: clamp(0.6rem, 1.6vh, 1.2rem);
+  border-top: 1px solid var(--tv-border);
+}
+.tv-handoff-stat { display: flex; flex-direction: column; gap: 0.25rem; }
+.tv-handoff-stat-n { font-size: clamp(1.4rem, 3vw, 2.4rem); font-weight: 700; }
+.tv-handoff-stat-label {
+  font-size: clamp(0.68rem, 1vw, 0.9rem);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tv-dim);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tv-ticker, .tv-ticker-track,
   .tv-enter-fade, .tv-enter-slide, .tv-enter-up, .tv-enter-zoom, .tv-enter-blur,
-  .tv-card[data-level="critical"],
+  .tv-card[data-level="critical"], .tv-handoff,
   .tv-live-dot, .tv-card[data-level="critical"] .tv-level-dot {
     animation: none;
   }
