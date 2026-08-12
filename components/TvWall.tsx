@@ -16,7 +16,7 @@
 //   ?rows=2      rows per page (default 2)
 //   ?anim=slide  rotation transition: zoom (default) | fade | slide | up | blur | none
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
@@ -122,6 +122,36 @@ export default function TvWall() {
     }
   }, []);
 
+  // ---- audible chime on a NEW critical -----------------------------------
+  // Off by default (an unattended wall shouldn't surprise anyone), opt-in via
+  // the header toggle and remembered per browser. Browsers block audio until a
+  // user gesture, so the AudioContext is created/resumed inside the toggle.
+  const [soundOn, setSoundOn] = useState(false);
+  useEffect(() => {
+    setSoundOn(localStorage.getItem("tv-sound") === "on");
+  }, []);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  // The set of asset ids currently critical, so we chime only on new entries.
+  const seenCriticalRef = useRef<Set<string> | null>(null);
+
+  const toggleSound = useCallback(() => {
+    setSoundOn((on) => {
+      const next = !on;
+      localStorage.setItem("tv-sound", next ? "on" : "off");
+      if (next) {
+        // Create/resume the context on this gesture so later chimes are allowed,
+        // and give an immediate confirmation blip that sound is armed.
+        const ctx =
+          audioCtxRef.current ??
+          (audioCtxRef.current = new (window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)());
+        ctx.resume().catch(() => {});
+        playChime(ctx, "arm");
+      }
+      return next;
+    });
+  }, []);
+
   // ---- responsive cards-per-page -----------------------------------------
   const [vw, setVw] = useState(1280);
   useEffect(() => {
@@ -146,6 +176,39 @@ export default function TvWall() {
     () => ordered.filter((a) => computeAssetAlarm(a).level === "critical"),
     [ordered, now]
   );
+
+  // Chime when an asset newly crosses into critical. Diffs the current critical
+  // id set against the previous one; the first populated frame only establishes
+  // the baseline (so opening the page over an existing alarm stays silent).
+  const criticalKey = useMemo(
+    () => criticalUnits.map((a) => a.id).sort().join(","),
+    [criticalUnits]
+  );
+  useEffect(() => {
+    if (!loaded) return; // wait for real data — the empty mount frame isn't a baseline
+    const current = new Set(criticalKey ? criticalKey.split(",") : []);
+    const prev = seenCriticalRef.current;
+    seenCriticalRef.current = current;
+    if (prev === null) return; // first loaded frame only establishes the baseline
+    if (!soundOn) return;
+    let isNew = false;
+    for (const id of current) if (!prev.has(id)) { isNew = true; break; }
+    if (!isNew) return;
+    // Reuse the gesture-unlocked context if we have one; otherwise try to make
+    // one. On a normal browser it stays suspended (silent, no error) until the
+    // operator has interacted; on a kiosk with autoplay allowed it just sounds.
+    let ctx = audioCtxRef.current;
+    if (!ctx) {
+      try {
+        ctx = audioCtxRef.current = new (window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      } catch {
+        return;
+      }
+    }
+    ctx.resume().catch(() => {});
+    playChime(ctx, "alert");
+  }, [criticalKey, soundOn, loaded]);
 
   const totalCells = cols * rowCount;
   const pinned = criticalUnits.slice(0, totalCells); // static, capped to the grid
@@ -212,6 +275,27 @@ export default function TvWall() {
         </div>
 
         <div className="tv-header-right">
+          <button
+            type="button"
+            className="tv-fs"
+            onClick={toggleSound}
+            aria-pressed={soundOn}
+            aria-label={soundOn ? "Mute alarm chime" : "Enable alarm chime"}
+            title={soundOn ? "Alarm chime on — click to mute" : "Alarm chime off — click to enable"}
+            style={soundOn ? { opacity: 1, color: ALARM_COLORS.ok, borderColor: ALARM_COLORS.ok } : undefined}
+          >
+            {soundOn ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 9v6h4l5 4V5L8 9H4Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                <path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 9v6h4l5 4V5L8 9H4Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                <path d="M17 9.5l4 5M21 9.5l-4 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            )}
+          </button>
           <Link
             href={basePath || "/"}
             className="tv-fs"
@@ -471,6 +555,37 @@ function CenterMsg({ children }: { children: React.ReactNode }) {
 }
 
 // ---- small pure helpers --------------------------------------------------
+
+// A short WebAudio tone so there's no audio asset to ship. "alert" is an
+// attention-getting rising two-note ping repeated once; "arm" is a single soft
+// blip confirming the toggle. Gain is enveloped to avoid start/stop clicks.
+function playChime(ctx: AudioContext, kind: "alert" | "arm") {
+  const t0 = ctx.currentTime;
+  const notes: { freq: number; at: number; dur: number; gain: number }[] =
+    kind === "alert"
+      ? [
+          { freq: 784, at: 0.0, dur: 0.18, gain: 0.22 }, // G5
+          { freq: 1047, at: 0.16, dur: 0.22, gain: 0.22 }, // C6
+          { freq: 784, at: 0.42, dur: 0.18, gain: 0.18 },
+          { freq: 1047, at: 0.58, dur: 0.28, gain: 0.18 },
+        ]
+      : [{ freq: 880, at: 0.0, dur: 0.12, gain: 0.14 }]; // A5 confirmation blip
+
+  for (const n of notes) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = n.freq;
+    const start = t0 + n.at;
+    const end = start + n.dur;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(n.gain, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, end);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(start);
+    osc.stop(end + 0.02);
+  }
+}
 
 function numVal(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
