@@ -4,8 +4,8 @@
 // implementation with getDataSource(demo) and are otherwise identical in both
 // modes.
 
-import { supabase, type Asset, type TelemetrySample, type TelemetryBucket } from "./supabase";
-import { demoFleet, demoAssetDetail } from "./demoFixtures";
+import { supabase, type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent } from "./supabase";
+import { demoFleet, demoAssetDetail, demoAssetAlerts } from "./demoFixtures";
 import type { HeliumPoint } from "./forecast";
 
 export type FleetAsset = Asset & {
@@ -21,6 +21,7 @@ export type AssetDetailResult = {
   error: string | null;
 };
 export type HeliumSeriesResult = { points: HeliumPoint[]; error: string | null };
+export type AssetAlertsResult = { events: AlertEvent[]; error: string | null };
 
 export interface DataSource {
   loadFleet(historyHours: number): Promise<FleetResult>;
@@ -29,6 +30,9 @@ export interface DataSource {
   // boil-off forecast. Uses the same pre-aggregation as the detail charts so a
   // multi-day window stays a few hundred rows, not tens of thousands of raw ones.
   loadHeliumSeries(assetId: string, historyHours: number): Promise<HeliumSeriesResult>;
+  // Persisted alert_events for one asset (open + recent resolved), newest first.
+  // The system-of-record view that evaluate_alerts() maintains on its cron.
+  loadAssetAlerts(assetId: string, limit?: number): Promise<AssetAlertsResult>;
 }
 
 // ---- live: Supabase ------------------------------------------------------
@@ -107,6 +111,17 @@ const liveDataSource: DataSource = {
       .map((b: TelemetryBucket) => ({ t: new Date(b.created_at).getTime(), v: Number(b.he_lvl) }));
     return { points, error: null };
   },
+
+  async loadAssetAlerts(assetId, limit = 20) {
+    const { data, error } = await supabase
+      .from("alert_events")
+      .select("id, asset_id, alert_rule_id, kind, message, triggered_at, resolved_at, notified_at")
+      .eq("asset_id", assetId)
+      .order("triggered_at", { ascending: false })
+      .limit(limit);
+    if (error) return { events: [], error: error.message };
+    return { events: (data ?? []) as AlertEvent[], error: null };
+  },
 };
 
 // ---- demo: in-browser fixtures ------------------------------------------
@@ -127,6 +142,9 @@ const demoDataSource: DataSource = {
       .filter((b) => b.he_lvl !== null)
       .map((b) => ({ t: new Date(b.created_at).getTime(), v: Number(b.he_lvl) }));
     return { points, error: null };
+  },
+  async loadAssetAlerts(assetId) {
+    return { events: demoAssetAlerts(assetId), error: null };
   },
 };
 

@@ -4,7 +4,7 @@
 // time): stable enough that a metric doesn't jump wildly between 30s polls, but
 // time-dependent so the charts visibly evolve on a live walkthrough.
 
-import type { Asset, TelemetrySample, TelemetryBucket } from "./supabase";
+import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent } from "./supabase";
 
 export type DemoFleetAsset = Asset & {
   latest: TelemetrySample | null;
@@ -228,4 +228,56 @@ export function demoAssetDetail(
   }
 
   return { asset, latest: sampleAt(spec, end, now), buckets };
+}
+
+// Synthetic alert_events for one demo asset, so the asset page's Alerts section
+// has something to show in /demo. Evaluated against the SAME global thresholds
+// the live evaluator uses (he_lvl<40, he_press>3, h2o_flow<0.6, h2o_temp>75,
+// shield>80, cs1>0) plus offline, so demo and live read consistently.
+// Maintenance units are exempt, mirroring evaluate_alerts().
+export function demoAssetAlerts(assetId: string): AlertEvent[] {
+  const spec = ROSTER.find((a) => a.id === assetId);
+  if (!spec || spec.maintenance) return [];
+
+  const now = Date.now();
+  const events: AlertEvent[] = [];
+  let id = 1;
+  const push = (kind: string, message: string, triggeredMsAgo: number, resolvedMsAgo: number | null = null) =>
+    events.push({
+      id: id++,
+      asset_id: spec.id,
+      alert_rule_id: kind === "offline" ? null : `demo-${spec.id}-${id}`,
+      kind,
+      message,
+      triggered_at: new Date(now - triggeredMsAgo).toISOString(),
+      resolved_at: resolvedMsAgo === null ? null : new Date(now - resolvedMsAgo).toISOString(),
+      notified_at: null,
+    });
+
+  // Offline (only when the unit is genuinely dark, matching the >60-min rule).
+  if (spec.lastSeenMinAgo !== null && spec.lastSeenMinAgo > 60) {
+    push("offline", `${spec.name} offline — no report`, spec.lastSeenMinAgo * 60_000);
+  }
+
+  // Open threshold events from the current reading.
+  const end = effectiveEnd(spec, now);
+  if (end !== null) {
+    const s = sampleAt(spec, end, now);
+    const check = (bad: boolean, msg: string) => {
+      if (bad) push("threshold", `${spec.name} ${msg}`, 22 * 60_000);
+    };
+    check((s.he_lvl ?? 100) < 40, `he_lvl < 40 (now ${s.he_lvl})`);
+    check((s.he_press ?? 0) > 3, `he_press > 3.0 (now ${s.he_press})`);
+    check((s.cs1 ?? 0) > 0, `cs1 > 0 (now ${s.cs1})`);
+    check((s.h2o_temp ?? 0) > 75, `h2o_temp > 75 (now ${s.h2o_temp})`);
+    check((s.shield ?? 0) > 80, `shield > 80 (now ${s.shield})`);
+  }
+
+  // One resolved event a day back so the history isn't all-open.
+  push("threshold", `${spec.name} h2o_temp > 75 (now 78.2)`, 26 * 3_600_000, 25 * 3_600_000);
+
+  // Open first, then newest triggered first.
+  return events.sort(
+    (a, b) => (a.resolved_at ? 1 : 0) - (b.resolved_at ? 1 : 0) || b.triggered_at.localeCompare(a.triggered_at)
+  );
 }

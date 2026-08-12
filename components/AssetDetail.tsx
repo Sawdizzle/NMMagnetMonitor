@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { type Asset, type TelemetrySample, type TelemetryBucket } from "@/lib/supabase";
+import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent } from "@/lib/supabase";
 import { getDataSource } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
@@ -81,6 +81,23 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     };
   }, [assetId, demo]);
 
+  // Persisted alert history (alert_events), on the same 30s cadence as telemetry.
+  // Failures are tolerated (empty list) so the page still renders without alerts.
+  const [alerts, setAlerts] = useState<AlertEvent[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      const { events } = await getDataSource(demo).loadAssetAlerts(assetId);
+      if (alive) setAlerts(events);
+    };
+    run();
+    const id = setInterval(run, POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [assetId, demo]);
+
   if (loading) return <div className="p-10 text-[var(--text-muted)]">Loading&hellip;</div>;
   if (error || !asset)
     return <div className="p-10 text-[var(--status-offline)] font-mono-data">Error: {error}</div>;
@@ -130,6 +147,8 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       )}
 
       <ForecastCard forecast={forecast} loaded={forecastLoaded} />
+
+      <AlertsSection events={alerts} />
 
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
         Trends (last 24 hours &middot; 15-min averages)
@@ -218,6 +237,74 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       </div>
     </div>
   );
+}
+
+function AlertsSection({ events }: { events: AlertEvent[] }) {
+  const open = events.filter((e) => !e.resolved_at);
+  const resolved = events.filter((e) => e.resolved_at);
+
+  return (
+    <section className="mb-10">
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
+        Alerts
+        {open.length > 0 && <span className="alert-count">{open.length} active</span>}
+      </h2>
+
+      {events.length === 0 ? (
+        <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-4 py-3 text-sm text-[var(--text-dim)]">
+          No alerts on record for this unit.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {open.map((e) => (
+            <AlertRow key={e.id} e={e} />
+          ))}
+          {resolved.length > 0 && (
+            <>
+              {open.length > 0 && (
+                <p className="text-[10px] uppercase tracking-wide text-[var(--text-dim)] mt-2">Recently resolved</p>
+              )}
+              {resolved.slice(0, 5).map((e) => (
+                <AlertRow key={e.id} e={e} />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AlertRow({ e }: { e: AlertEvent }) {
+  const isOpen = !e.resolved_at;
+  const color = isOpen
+    ? e.kind === "offline"
+      ? "var(--status-offline)"
+      : "var(--status-warning)"
+    : "var(--text-dim)";
+  return (
+    <div className="alert-row" data-open={isOpen ? "true" : "false"} style={{ ["--ac" as string]: color }}>
+      <span className="alert-dot" aria-hidden="true" />
+      <span className="alert-msg">{e.message}</span>
+      <span className="alert-meta font-mono-data">{alertTiming(e)}</span>
+    </div>
+  );
+}
+
+function fmtDur(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+function alertTiming(e: AlertEvent): string {
+  const now = Date.now();
+  const trig = new Date(e.triggered_at).getTime();
+  if (!e.resolved_at) return `open ${fmtDur(now - trig)}`;
+  const res = new Date(e.resolved_at).getTime();
+  return `resolved ${fmtDur(now - res)} ago · lasted ${fmtDur(res - trig)}`;
 }
 
 const CONFIDENCE_STYLE: Record<HeliumForecast["confidence"], { label: string; color: string }> = {

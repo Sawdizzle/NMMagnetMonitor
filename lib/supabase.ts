@@ -38,6 +38,20 @@ export type TelemetrySample = {
   data: Record<string, unknown> | null;
 };
 
+// A fired alert, from the alert_events table (public-readable). Opened and
+// resolved by evaluate_alerts() on its cron; notified_at is stamped once a
+// notifier delivers it (Phase 3). kind is 'offline' | 'threshold'.
+export type AlertEvent = {
+  id: number;
+  asset_id: string;
+  alert_rule_id: string | null;
+  kind: string;
+  message: string;
+  triggered_at: string;
+  resolved_at: string | null;
+  notified_at: string | null;
+};
+
 // A 15-minute averaged bucket, from the asset_telemetry_15min RPC. Same
 // field names as TelemetrySample for the metrics + created_at so it can
 // drop into the same chart/table components; adds sample_count so the UI
