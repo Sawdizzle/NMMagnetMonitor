@@ -7,6 +7,8 @@ import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
 import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems } from "@/lib/faults";
+import { useFleetForecasts } from "@/lib/useFleetForecasts";
+import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
 import BrandMark from "./BrandMark";
@@ -56,6 +58,7 @@ export default function Dashboard() {
   // ticker — same alert logic the TV uses.
   const ordered = sortByAlarmPriority(assets);
   const alertItems = buildAlertItems(ordered);
+  const forecasts = useFleetForecasts(assets.map((a) => a.id), demo);
   const filteredAssets =
     statusFilter === "all" ? ordered : ordered.filter((a) => computeAssetHealth(a) === statusFilter);
 
@@ -252,7 +255,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {filteredAssets.map((a) => (
-          <AssetCard key={a.id} asset={a} basePath={basePath} />
+          <AssetCard key={a.id} asset={a} basePath={basePath} forecast={forecasts[a.id] ?? null} />
         ))}
       </div>
     </div>
@@ -295,10 +298,33 @@ function StatusTile({
   );
 }
 
-function AssetCard({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
+function DropletIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 3.5c3.5 4 6 6.9 6 10.1a6 6 0 0 1-12 0c0-3.2 2.5-6.1 6-10.1Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AssetCard({
+  asset,
+  basePath,
+  forecast,
+}: {
+  asset: AssetWithTelemetry;
+  basePath: string;
+  forecast: HeliumForecast | null;
+}) {
   const status = computeAssetHealth(asset);
   const alarm = computeAssetAlarm(asset);
   const mins = minutesSince(asset.last_seen_at);
+  const refillLabel = refillChipLabel(forecast);
+  const refillColor = forecast && refillUrgency(forecast) === "soon" ? "var(--status-warning)" : "#38bdf8";
 
   return (
     <Link
@@ -317,13 +343,19 @@ function AssetCard({ asset, basePath }: { asset: AssetWithTelemetry; basePath: s
         <FieldRing status={status} />
       </div>
 
-      {alarm.faults.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 -mt-1.5">
+      {(alarm.faults.length > 0 || refillLabel) && (
+        <div className="flex flex-wrap items-center gap-1.5 -mt-1.5">
           {alarm.faults.slice(0, 3).map((f) => (
             <span key={f.key} className={`fault-pill ${f.severity}`}>
               {f.label} <b>{f.detail}</b>
             </span>
           ))}
+          {refillLabel && (
+            <span className="refill-pill" style={{ ["--rc" as string]: refillColor }}>
+              <DropletIcon />
+              {refillLabel}
+            </span>
+          )}
         </div>
       )}
 

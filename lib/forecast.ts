@@ -117,6 +117,29 @@ function gradeConfidence(r2: number, spanDays: number, n: number): ForecastConfi
   return "low";
 }
 
+// How soon a refill is due — drives chip color across the fleet.
+export type RefillUrgency = "soon" | "watch";
+
+// A compact chip label for fleet views ("12d to refill"), or null when the unit
+// isn't meaningfully falling toward a fill within the planning horizon. Farther
+// than ~4 months out reads as effectively stable, so it stays off the glance.
+const CHIP_HORIZON_DAYS = 120;
+export function refillChipLabel(f: HeliumForecast | null): string | null {
+  if (!f || f.trend !== "falling" || f.daysToRefill === null) return null;
+  const d = f.daysToRefill;
+  if (d >= CHIP_HORIZON_DAYS) return null;
+  if (d < 1) return "refill due";
+  if (d < 14) return `${Math.round(d)}d to refill`;
+  if (d < 60) return `${Math.round(d / 7)}w to refill`;
+  return `${Math.round(d / 30)}mo to refill`;
+}
+
+// Under two weeks is "soon" (amber); otherwise "watch" (cool). Only meaningful
+// when refillChipLabel is non-null.
+export function refillUrgency(f: HeliumForecast): RefillUrgency {
+  return f.daysToRefill !== null && f.daysToRefill < 14 ? "soon" : "watch";
+}
+
 // A short, glanceable phrase for the forecast headline.
 export function forecastHeadline(f: HeliumForecast): string {
   if (f.trend === "rising") return "Helium rising";

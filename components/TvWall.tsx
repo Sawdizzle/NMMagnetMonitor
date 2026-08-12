@@ -30,6 +30,8 @@ import {
   ALARM_LABELS,
   type AlarmLevel,
 } from "@/lib/faults";
+import { useFleetForecasts } from "@/lib/useFleetForecasts";
+import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import BrandMark from "./BrandMark";
 import MiniLineChart from "./MiniLineChart";
 
@@ -167,6 +169,9 @@ export default function TvWall() {
 
   // ---- ordering (recomputed as `now` ticks so status stays live) ---------
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
+
+  // Fleet helium forecasts (days-to-refill), on their own slow cadence.
+  const forecasts = useFleetForecasts(assets.map((a) => a.id), demo);
 
   // One uniform, edge-to-edge grid of equal cards. Critical (red) units hold the
   // first cells and stay put (never rotate); every remaining cell cycles through
@@ -381,12 +386,12 @@ export default function TvWall() {
         >
           {/* Critical units: first cells, static (stable keys → never re-mount). */}
           {pinned.map((a) => (
-            <TvCard key={a.id} asset={a} />
+            <TvCard key={a.id} asset={a} forecast={forecasts[a.id] ?? null} />
           ))}
           {/* Remaining cells: the current rotation page (keyed by page so they
               animate in when the page turns). */}
           {rotWindow.map((a) => (
-            <TvCard key={`rot-${page}-${a.id}`} asset={a} enterAnim={enterAnim} />
+            <TvCard key={`rot-${page}-${a.id}`} asset={a} forecast={forecasts[a.id] ?? null} enterAnim={enterAnim} />
           ))}
         </div>
       )}
@@ -402,12 +407,22 @@ export default function TvWall() {
   );
 }
 
-function TvCard({ asset, enterAnim }: { asset: FleetAsset; enterAnim?: string }) {
+function TvCard({
+  asset,
+  forecast,
+  enterAnim,
+}: {
+  asset: FleetAsset;
+  forecast: HeliumForecast | null;
+  enterAnim?: string;
+}) {
   const alarm = computeAssetAlarm(asset);
   const color = ALARM_COLORS[alarm.level];
   const mins = minutesSince(asset.last_seen_at);
   const t = asset.latest;
   const cold = readColdheadK(asset);
+  const refillLabel = refillChipLabel(forecast);
+  const refillColor = forecast && refillUrgency(forecast) === "soon" ? ALARM_COLORS.warning : "#38bdf8";
   // "none" (and pinned cards, which pass no enterAnim) get no entrance animation.
   const animClass = enterAnim && enterAnim !== "none" ? ` tv-enter-${enterAnim}` : "";
 
@@ -458,6 +473,15 @@ function TvCard({ asset, enterAnim }: { asset: FleetAsset; enterAnim?: string })
         </div>
       ) : (
         <div className="tv-faults tv-faults-clear">All readings nominal</div>
+      )}
+
+      {refillLabel && (
+        <div className="tv-refill" style={{ ["--rc" as string]: refillColor }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3.5c3.5 4 6 6.9 6 10.1a6 6 0 0 1-12 0c0-3.2 2.5-6.1 6-10.1Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+          </svg>
+          {refillLabel}
+        </div>
       )}
 
       <div className="tv-metrics">
