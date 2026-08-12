@@ -24,14 +24,17 @@ happens to be looking. (Architecture review finding **F-2**.)
   + `admin_list_alert_events` (migration `admin_alert_recipient_and_event_rpcs`,
   verified live). *(Optional remaining: a fleet-level persisted-alert count on the
   dashboard alongside the client-derived ticker.)*
-- [ ] **Phase 3 — notifications (channel = Resend email).** SMTP/O365 dropped in
-  favor of **Resend** — the deployed `notify-alerts` edge function is already
-  written for it. Remaining: (1) user sets `RESEND_API_KEY` + `ALERT_FROM`
-  (verified sender) as edge-function secrets; (2) add per-rule **debounce**
-  (don't notify until an event has been open ≥N min) so a flapping `he_press`≈3
-  doesn't spam; (3) add ≥1 recipient via the new admin UI; (4) schedule the
-  notifier after the evaluator (edge cron or pg_net) and handle its
-  `verify_jwt`; (5) test with one throwaway rule before going live.
+- [x] **Phase 3 — notifications LIVE (channel = Resend email).** Done 2026-08-12:
+  `notify-alerts` edge fn redeployed (v3) with debounce (only emails events open
+  ≥ `ALERT_DEBOUNCE_MINUTES`, default 5); `pg_net` enabled; recipient added; cron
+  job `notify-alerts` (`* * * * *`) invokes the fn over `net.http_post` right
+  alongside the evaluator. Controlled test returned HTTP 200 `{"sent":1,"events":6}`
+  and stamped all six. **Caveat:** `ALERT_FROM = onboarding@resend.dev` (Resend
+  test sender) delivers **only to the Resend account's own email**. For
+  fleet-wide / multiple recipients, verify a domain in Resend (e.g.
+  `numedmagnetdata.com`) and set `ALERT_FROM` to an address on it.
+  *(Remaining polish: coldhead-from-blob check so emails match the TV; richer
+  email formatting; optional per-rule debounce windows.)*
 
 ### Tuning backlog (needs the physicist/engineer)
 - `he_press > 3.0` flaps near threshold (NM1035 3.318, NM1004 in/out) — raise it

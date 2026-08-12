@@ -961,9 +961,20 @@ where not exists (
 -- Live jobs as of 2026-08-12:
 --   jobid 1  cleanup_old_telemetry  '0 3 * * *'  delete telemetry_samples > 7 days
 --   jobid 2  evaluate-alerts        '* * * * *'  select public.evaluate_alerts()
--- The evaluator job was added 2026-08-12 (Phase 1 of alerting rollout). It only
--- opens/resolves alert_events; no notification is sent until the notify-alerts
--- edge function is scheduled (Phase 3). To (re)create the evaluator schedule:
+--   jobid 3  notify-alerts          '* * * * *'  net.http_post -> notify-alerts edge fn
+-- evaluate-alerts (Phase 1) opens/resolves alert_events. notify-alerts (Phase 3,
+-- added 2026-08-12) invokes the edge function over pg_net; the function emails
+-- new open events (debounced ALERT_DEBOUNCE_MINUTES, default 5) via Resend to
+-- alert_recipients, then stamps notified_at. Requires the pg_net extension and
+-- the RESEND_API_KEY + ALERT_FROM edge-function secrets.
+--
+-- To (re)create the schedules:
 --   select cron.schedule('evaluate-alerts', '* * * * *', $$ select public.evaluate_alerts(); $$);
--- To remove it:
---   select cron.unschedule('evaluate-alerts');
+--   select cron.schedule('notify-alerts', '* * * * *', $$
+--     select net.http_post(
+--       url := 'https://wxygirzfxutvtfkxxcvw.supabase.co/functions/v1/notify-alerts',
+--       headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <ANON_KEY>')
+--     );
+--   $$);
+-- To remove: select cron.unschedule('evaluate-alerts');  select cron.unschedule('notify-alerts');
+-- pg_net enabled 2026-08-12 via migration enable_pg_net_for_alert_notifier.
