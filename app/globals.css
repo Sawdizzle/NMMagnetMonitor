@@ -179,11 +179,13 @@ button {
   transform: translateX(-2px);
 }
 .dash-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: linear-gradient(150deg, #16324a, #0e1a2a);
-  border: 1px solid #24435c;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  /* Dark surface shows through the bore cut-out; the teal mark fills the rest,
+     so the box reads as one solid rounded teal square (matches the app icon). */
+  background: #0a0d13;
+  overflow: hidden;
   display: grid;
   place-items: center;
   flex: none;

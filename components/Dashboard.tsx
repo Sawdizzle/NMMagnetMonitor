@@ -78,7 +78,7 @@ export default function Dashboard() {
         <div className="flex items-center gap-3 justify-between">
           <div className="flex items-center gap-3">
             <span className="dash-mark" aria-hidden="true">
-              <BrandMark size={20} />
+              <BrandMark size="100%" bleed />
             </span>
             <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
           </div>

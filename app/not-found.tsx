@@ -9,7 +9,7 @@ export default function NotFound() {
       role="main"
     >
       <span className="dash-mark" aria-hidden="true">
-        <BrandMark size={20} />
+        <BrandMark size="100%" bleed />
       </span>
       <p className="eyebrow">Error 404</p>
       <h1 className="text-2xl font-semibold tracking-tight">Page not found</h1>

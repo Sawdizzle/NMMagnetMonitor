@@ -24,7 +24,7 @@ export default function BrandMark({
   bleed = false,
   style,
 }: {
-  size?: number;
+  size?: number | string;
   body?: string;
   pulse?: string;
   bleed?: boolean;
