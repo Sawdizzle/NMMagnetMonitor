@@ -14,11 +14,14 @@ import { useAuth } from "@/lib/auth";
 
 type PushState = "loading" | "unsupported" | "default" | "denied" | "subscribed";
 
-function urlBase64ToUint8Array(base64: string): Uint8Array {
+function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
   const normalized = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
   const raw = atob(normalized);
-  const out = new Uint8Array(raw.length);
+  // Back the view with a concrete ArrayBuffer so it types as Uint8Array<ArrayBuffer>,
+  // which applicationServerKey (BufferSource) accepts — a bare Uint8Array is
+  // Uint8Array<ArrayBufferLike> under TS 5.7+ and is rejected.
+  const out = new Uint8Array(new ArrayBuffer(raw.length));
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
   return out;
 }
