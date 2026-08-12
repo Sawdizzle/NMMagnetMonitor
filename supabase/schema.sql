@@ -802,6 +802,37 @@ begin
 end;
 $function$;
 
+-- Alert sending address (app_settings key 'alert_from'), admin-editable from the
+-- UI (migration admin_alert_from_setting_rpcs, 2026-08-12). notify-alerts reads
+-- this value; DB overrides the ALERT_FROM secret overrides the Resend test sender.
+CREATE OR REPLACE FUNCTION public.admin_get_alert_from(p_actor_username text, p_actor_pin text)
+ RETURNS text
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  return (select value from app_settings where key = 'alert_from');
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.admin_set_alert_from(p_actor_username text, p_actor_pin text, p_from text)
+ RETURNS boolean
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  if btrim(coalesce(p_from, '')) = '' then
+    delete from app_settings where key = 'alert_from';
+    perform _record_audit(p_actor_username, 'set_alert_from', 'app', 'alert_from', 'Cleared sending address (revert to default)');
+  else
+    insert into app_settings (key, value) values ('alert_from', btrim(p_from))
+      on conflict (key) do update set value = excluded.value;
+    perform _record_audit(p_actor_username, 'set_alert_from', 'app', 'alert_from', format('Sending address set to %s', btrim(p_from)));
+  end if;
+  return true;
+end;
+$function$;
+
 
 -- =====================================================================
 -- AUDIT LOG (added 2026-08-10)

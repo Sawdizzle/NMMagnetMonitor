@@ -766,6 +766,7 @@ function AdminPanel({ me }: { me: Session }) {
             handleDeleteRule={handleDeleteRule}
           />
           <AlertRecipientsSection me={me} notify={notify} fail={fail} askConfirm={askConfirm} />
+          <AlertSenderSection me={me} notify={notify} fail={fail} />
           <AlertEventsSection me={me} />
         </>
       )}
@@ -1220,6 +1221,7 @@ function AlertRecipientsSection({
   const [channel, setChannel] = useState<"email" | "sms">("email");
   const [address, setAddress] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const { data } = await supabase.rpc("admin_list_alert_recipients", {
@@ -1283,6 +1285,23 @@ function AlertRecipientsSection({
     if (editingId === r.id) reset();
     load();
   }
+  // Send a single test email to this recipient via the notify-alerts function's
+  // admin-gated test mode, so a new address can be verified end-to-end.
+  async function test(r: AlertRecipient) {
+    if (r.channel !== "email") return fail("Test currently supports email recipients only.");
+    setTestingId(r.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("notify-alerts", {
+        body: { test: true, to: r.address, actor_username: me.username, actor_pin: me.pin },
+      });
+      if (error) return fail(`Test failed: ${error.message}`);
+      const res = data as { ok?: boolean; message?: string };
+      if (res?.ok) notify(res.message ?? `Test sent to ${r.address}.`);
+      else fail(res?.message ?? "Test failed.");
+    } finally {
+      setTestingId(null);
+    }
+  }
 
   return (
     <section className="mb-10">
@@ -1329,6 +1348,14 @@ function AlertRecipientsSection({
               <p className="text-xs text-[var(--text-dim)] uppercase tracking-wide">{r.channel}</p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => test(r)}
+                disabled={testingId === r.id}
+                className="btn-secondary"
+                title="Send a test email to this address"
+              >
+                {testingId === r.id ? "Sending…" : "Test"}
+              </button>
               <button onClick={() => toggle(r)} className="btn-secondary">{r.enabled ? "Disable" : "Enable"}</button>
               <button onClick={() => edit(r)} className="btn-secondary">Edit</button>
               <button onClick={() => remove(r)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Remove</button>
@@ -1339,6 +1366,70 @@ function AlertRecipientsSection({
           <p className="px-4 py-6 text-center text-[var(--text-dim)]">No recipients yet — add one to receive alert emails.</p>
         )}
       </div>
+    </section>
+  );
+}
+
+/* ----------------------------------------------------- Sending address section */
+
+function AlertSenderSection({
+  me,
+  notify,
+  fail,
+}: {
+  me: Session;
+  notify: (msg: string) => void;
+  fail: (msg: string) => void;
+}) {
+  const [from, setFrom] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.rpc("admin_get_alert_from", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+    });
+    setFrom((data as string | null) ?? "");
+    setLoaded(true);
+  }, [me.username, me.pin]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    const { error } = await supabase.rpc("admin_set_alert_from", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_from: from,
+    });
+    if (error) return fail(actionError("Could not save sending address", error));
+    notify(from.trim() ? "Sending address updated." : "Sending address cleared — using the default.");
+    load();
+  }
+
+  return (
+    <section className="mb-10">
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-2">Sending address</h2>
+      <p className="text-xs text-[var(--text-dim)] mb-3">
+        The <span className="font-mono-data">From</span> address on alert emails. Must be a{" "}
+        <strong>Resend-verified sender</strong> (verify a domain in Resend first). Leave blank to fall back to the
+        <span className="font-mono-data"> ALERT_FROM</span> secret, then Resend&apos;s test sender
+        (<span className="font-mono-data">onboarding@resend.dev</span>, which only delivers to your own Resend account).
+        Use a recipient&apos;s <strong>Test</strong> button above to confirm a change works.
+      </p>
+      <form onSubmit={save} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4">
+        <Field label="From address">
+          <input
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            placeholder="MagMon Alerts <alerts@numedmagnetdata.com>"
+            className="input min-w-[20rem] font-mono-data"
+            disabled={!loaded}
+          />
+        </Field>
+        <button type="submit" className="btn-primary" disabled={!loaded}>Save</button>
+      </form>
     </section>
   );
 }
@@ -1619,6 +1710,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   delete_alert_rule: "Alert rule deleted",
   upsert_alert_recipient: "Alert recipient saved",
   delete_alert_recipient: "Alert recipient removed",
+  set_alert_from: "Sending address changed",
 };
 
 function auditActionLabel(action: string): string {
