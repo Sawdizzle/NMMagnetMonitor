@@ -881,6 +881,7 @@ create policy "public read alert_events" on public.alert_events      for select 
 insert into public.alert_rules (asset_id, field, comparator, threshold, enabled)
 select v.asset_id, v.field, v.comparator, v.threshold, v.enabled
 from (values
+  (null::uuid, 'he_lvl',   '<',  40::numeric,  true),  -- helium low; matches TV amber warning (added 2026-08-12)
   (null::uuid, 'he_press', '>',  3.0::numeric, true),
   (null::uuid, 'h2o_flow', '<',  0.6::numeric, true),
   (null::uuid, 'h2o_temp', '>',  75::numeric,  true),
