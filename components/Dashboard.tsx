@@ -2,11 +2,12 @@
 
 import { useEffect, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { type TelemetrySample } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
-import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems } from "@/lib/faults";
+import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "./FieldRing";
@@ -18,14 +19,30 @@ type AssetWithTelemetry = FleetAsset;
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 1;
 
-const METRICS: { key: keyof TelemetrySample; label: string; unit: string; color: string }[] = [
-  { key: "he_lvl", label: "He Lvl", unit: "%", color: "#22d3ee" },
-  { key: "h2o_flow", label: "H2O Flow", unit: "gpm", color: "#5b93f7" },
-  { key: "he_press", label: "He Press", unit: "psi", color: "#4ade80" },
-  { key: "h2o_temp", label: "H2O Temp", unit: "°F", color: "#fbbf24" },
-  { key: "shield", label: "Shield", unit: "", color: "#f0575a" },
-  { key: "cs1", label: "CS1", unit: "", color: "#a78bfa" },
+// `label` is the full form used on the cards; `short` is the compact header used
+// by the collapsed table, where seven columns share a phone's width.
+const METRICS: { key: keyof TelemetrySample; label: string; short: string; unit: string; color: string }[] = [
+  { key: "he_lvl", label: "He Lvl", short: "He Lvl", unit: "%", color: "#22d3ee" },
+  { key: "h2o_flow", label: "H2O Flow", short: "Flow", unit: "gpm", color: "#5b93f7" },
+  { key: "he_press", label: "He Press", short: "Press", unit: "psi", color: "#4ade80" },
+  { key: "h2o_temp", label: "H2O Temp", short: "Temp", unit: "°F", color: "#fbbf24" },
+  { key: "shield", label: "Shield", short: "Shield", unit: "", color: "#f0575a" },
+  { key: "cs1", label: "CS1", short: "CS1", unit: "", color: "#a78bfa" },
 ];
+
+// Value-faults map onto exactly one metric column, so the offending cell can
+// tint itself in the table. Keys come from computeAssetFaults (lib/faults.ts);
+// `coldhead` has no column of its own (it lives in the raw data blob), so it
+// shows only via the row's status edge.
+const FAULT_METRIC: Record<string, keyof TelemetrySample> = {
+  compressor: "cs1",
+  helium: "he_lvl",
+  he_press: "he_press",
+  shield: "shield",
+};
+
+type FleetView = "cards" | "table";
+const VIEW_KEY = "dashboard-view";
 
 export default function Dashboard() {
   const { demo, basePath, brand } = useDemo();
@@ -34,6 +51,24 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "online" | "stale" | "offline" | "unknown">("all");
+  // Cards vs. the collapsed table. Starts as "cards" so server and first client
+  // render agree (no hydration mismatch); the effect below then resolves the
+  // real preference — a saved choice, or table-by-default on a phone.
+  const [view, setView] = useState<FleetView>("cards");
+
+  useEffect(() => {
+    const saved = localStorage.getItem(VIEW_KEY);
+    if (saved === "cards" || saved === "table") {
+      setView(saved);
+    } else if (window.matchMedia("(max-width: 767px)").matches) {
+      setView("table");
+    }
+  }, []);
+
+  const chooseView = useCallback((v: FleetView) => {
+    setView(v);
+    localStorage.setItem(VIEW_KEY, v);
+  }, []);
 
   const load = useCallback(async () => {
     const { assets: rows, error: err } = await getDataSource(demo).loadFleet(HISTORY_HOURS);
@@ -253,12 +288,142 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {filteredAssets.map((a) => (
-          <AssetCard key={a.id} asset={a} basePath={basePath} forecast={forecasts[a.id] ?? null} />
-        ))}
+      {!loading && !error && filteredAssets.length > 0 && (
+        <>
+          <div className="flex items-center justify-end mb-3">
+            <ViewToggle view={view} onChange={chooseView} />
+          </div>
+
+          {view === "cards" ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {filteredAssets.map((a) => (
+                <AssetCard key={a.id} asset={a} basePath={basePath} forecast={forecasts[a.id] ?? null} />
+              ))}
+            </div>
+          ) : (
+            <AssetTable assets={filteredAssets} basePath={basePath} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ViewToggle({ view, onChange }: { view: FleetView; onChange: (v: FleetView) => void }) {
+  return (
+    <div className="view-seg" role="group" aria-label="Dashboard layout">
+      <button
+        type="button"
+        className={view === "cards" ? "on" : ""}
+        aria-pressed={view === "cards"}
+        onClick={() => onChange("cards")}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.6" />
+          <rect x="9.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.6" />
+          <rect x="1.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.6" />
+          <rect x="9.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.6" />
+        </svg>
+        Cards
+      </button>
+      <button
+        type="button"
+        className={view === "table" ? "on" : ""}
+        aria-pressed={view === "table"}
+        onClick={() => onChange("table")}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M1.5 3.5h13M1.5 8h13M1.5 12.5h13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+        Table
+      </button>
+    </div>
+  );
+}
+
+function AssetTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePath: string }) {
+  return (
+    <div className="fleet-table-wrap">
+      <div className="fleet-scroll">
+        <table className="fleet-table">
+          <thead>
+            <tr>
+              <th className="ft-asset-h">Asset</th>
+              {METRICS.map((m) => (
+                <th key={m.key as string}>
+                  <span className="ft-h">{m.short}</span>
+                  <span className="ft-u">{m.unit || " "}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((a) => (
+              <AssetRow key={a.id} asset={a} basePath={basePath} />
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
+  );
+}
+
+function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
+  const router = useRouter();
+  const alarm = computeAssetAlarm(asset);
+  const status = computeAssetHealth(asset);
+  const mins = minutesSince(asset.last_seen_at);
+  const href = `${basePath}/asset/${asset.id}`;
+
+  // Colored edge = the single folded alarm level (matches the TV card rail),
+  // falling back to plain connectivity color when nothing's wrong.
+  const edge = alarm.level === "ok" ? STATUS_COLORS[status] : ALARM_COLORS[alarm.level];
+  const alarming = alarm.level === "critical" || alarm.level === "warning";
+
+  // Which cell (if any) each fault should light up, and how severely.
+  const faultCell: Partial<Record<keyof TelemetrySample, FaultSeverity>> = {};
+  for (const f of alarm.faults) {
+    const mk = FAULT_METRIC[f.key];
+    if (!mk) continue;
+    if (faultCell[mk] !== "critical") faultCell[mk] = f.severity;
+  }
+
+  const sub = alarm.maintenance
+    ? "maintenance"
+    : mins === null
+      ? "never reported"
+      : `${mins} min ago`;
+
+  return (
+    <tr
+      className="fleet-row"
+      data-alarm={alarming ? "true" : "false"}
+      style={{ ["--sc" as string]: edge }}
+      onClick={() => router.push(href)}
+    >
+      <td className="ft-asset">
+        <Link
+          href={href}
+          className="ft-name"
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`${asset.name}, ${alarm.maintenance ? "maintenance" : status}, ${sub}. View details.`}
+        >
+          <span className="ft-dot" aria-hidden="true" />
+          {asset.name}
+        </Link>
+        <div className="ft-sub">{sub}</div>
+      </td>
+      {METRICS.map((m) => {
+        const value = asset.latest?.[m.key] as number | null | undefined;
+        const sev = faultCell[m.key];
+        const cls = alarm.maintenance ? "dim" : sev === "critical" ? "bad" : sev === "warning" ? "warn" : "";
+        return (
+          <td key={m.key as string} className={`ft-m ${cls}`.trim()}>
+            {value ?? "—"}
+          </td>
+        );
+      })}
+    </tr>
   );
 }
 

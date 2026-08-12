@@ -438,6 +438,153 @@ button {
   border: 1px solid var(--border-soft);
 }
 
+/* ---- Cards / Table layout toggle ---- */
+.view-seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+}
+.view-seg button {
+  min-height: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 6px 11px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+.view-seg button.on {
+  background: var(--card-hover);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.view-seg button:hover:not(.on) {
+  color: var(--text);
+}
+.view-seg svg {
+  display: block;
+}
+
+/* ---- Collapsed fleet table (dense, mobile-first alternative to the cards).
+   One row per magnet; STATUS is the colored left edge, LAST-SEEN tucks under
+   the name, and a value-fault tints its own metric cell. Units live once in the
+   header so all six datapoints fit a phone without horizontal scroll. ---- */
+.fleet-table-wrap {
+  border: 1px solid var(--border-soft);
+  border-radius: 13px;
+  overflow: hidden;
+  background: var(--card);
+}
+.fleet-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.fleet-table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+.fleet-table thead th {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  text-align: right;
+  padding: 8px 6px 7px;
+  line-height: 1.15;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.fleet-table thead th.ft-asset-h {
+  text-align: left;
+  width: 92px;
+}
+.fleet-table thead th .ft-h {
+  display: block;
+}
+.fleet-table thead th .ft-u {
+  display: block;
+  font-size: 8.5px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-dim) 78%, transparent);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-top: 1px;
+  min-height: 0.9em;
+}
+.fleet-row {
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.fleet-row:last-child {
+  border-bottom: 0;
+}
+.fleet-row:hover {
+  background: var(--card-hover);
+}
+.fleet-row td.ft-asset {
+  text-align: left;
+  padding: 9px 8px 9px 13px;
+  border-left: 3px solid var(--sc);
+  width: 92px;
+}
+.fleet-row[data-alarm="true"] td.ft-asset {
+  background: color-mix(in srgb, var(--sc) 8%, var(--card));
+}
+.ft-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.ft-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sc);
+  flex: none;
+}
+.ft-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+.ft-m {
+  text-align: right;
+  padding: 10px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.ft-m.dim {
+  color: var(--text-dim);
+}
+.ft-m.bad {
+  color: color-mix(in srgb, var(--status-offline) 72%, var(--text));
+  background: color-mix(in srgb, var(--status-offline) 12%, transparent);
+  font-weight: 600;
+}
+.ft-m.warn {
+  color: color-mix(in srgb, var(--status-warning) 68%, var(--text));
+  background: color-mix(in srgb, var(--status-warning) 12%, transparent);
+  font-weight: 600;
+}
+
 /* ---- Adaptive app nav: top bar on desktop, bottom tab bar on mobile ---- */
 .app-topbar {
   align-items: center;
