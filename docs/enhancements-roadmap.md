@@ -62,4 +62,5 @@ shift start."
 **6 — Incident capture.** `incidents` table (immune to the telemetry purge), a
 detection function on cron (quench signature: coldhead spike + helium drop +
 pressure swing; plus compressor-off and offline transitions), and an incident
-timeline page. Applied with the alerting migrations.
+timeline page. Applied with the alerting migrations. Full design in
+[incident-capture-design.md](incident-capture-design.md).
