@@ -26,9 +26,14 @@ export const FAULT_THRESHOLDS = {
   // clearly warm is critical.
   coldheadWarnK: 6,
   coldheadCriticalK: 20,
-  // Helium level (%). Healthy ~55–82 %.
-  heliumWarnBelow: 40,
-  heliumCriticalBelow: 15,
+  // Helium level (%). Active fleet sits ~55–82 % (lowest healthy unit ~56).
+  // Low thresholds tuned 2026-08-12 against live readings + the legacy MagMon
+  // 50 % low limit: warn early enough to schedule a refill, critical when it's
+  // genuinely urgent. A high alarm catches sensor faults / overfill — nobody
+  // fills above ~82 %, so >90 only ever means something's wrong.
+  heliumWarnBelow: 50,
+  heliumCriticalBelow: 30,
+  heliumHighAbove: 90,
   // Helium pressure. Healthy ~0.9–1.1. Negative reads as a sensor/system fault;
   // well above nominal reads as abnormal.
   hePressLow: 0,
@@ -36,6 +41,47 @@ export const FAULT_THRESHOLDS = {
   // Shield temperature (K). Healthy ~38–47 K.
   shieldWarnK: 60,
 } as const;
+
+// A per-asset override lives in alert_rules (asset_id = that asset). It folds
+// onto these defaults: same table, same precedence the server evaluator uses
+// (per-asset beats fleet-wide). Only the bounds the TV actually evaluates are
+// mapped — helium/pressure/shield/compressor; a rule on an unmapped field
+// (h2o_flow/h2o_temp, or a coldhead rule) is ignored here and left to the
+// server-side evaluate_alerts() notifier.
+type Thresholds = { -readonly [K in keyof typeof FAULT_THRESHOLDS]: number };
+
+// Fold this asset's per-asset alert_rules onto FAULT_THRESHOLDS. Returns the
+// shared default object untouched when the asset has no overrides (the common
+// case), so we don't allocate per call for the whole fleet.
+function effectiveThresholds(asset: FleetAsset): Thresholds {
+  const rules = asset.alertRules;
+  if (!rules || rules.length === 0) return FAULT_THRESHOLDS;
+  const t: Thresholds = { ...FAULT_THRESHOLDS };
+  for (const r of rules) {
+    if (r.enabled === false) continue;
+    const v = num(r.threshold);
+    if (v === null) continue;
+    const gt = r.comparator === ">" || r.comparator === ">=";
+    const lt = r.comparator === "<" || r.comparator === "<=";
+    switch (r.field) {
+      case "he_press":
+        if (gt) t.hePressHigh = v;
+        else if (lt) t.hePressLow = v;
+        break;
+      case "he_lvl": // low-side override tunes the warn tier; critical stays default
+        if (lt) t.heliumWarnBelow = v;
+        break;
+      case "shield":
+        if (gt) t.shieldWarnK = v;
+        break;
+      case "cs1":
+        if (gt) t.compressorOffAbove = v;
+        break;
+      // he_lvl critical, coldhead (JSON blob), h2o_* have no per-asset slot yet.
+    }
+  }
+  return t;
+}
 
 // ---- types ---------------------------------------------------------------
 
@@ -114,37 +160,44 @@ export function computeAssetFaults(asset: FleetAsset): Fault[] {
   const t = asset.latest;
   if (!t) return [];
   const faults: Fault[] = [];
+  // Per-asset overrides folded onto the fleet defaults (e.g. NM1035's elevated
+  // He-pressure ceiling), so an off-nominal-but-healthy unit doesn't false-alarm.
+  const th = effectiveThresholds(asset);
 
   const cs1 = num(t.cs1);
-  if (cs1 !== null && cs1 > FAULT_THRESHOLDS.compressorOffAbove) {
+  if (cs1 !== null && cs1 > th.compressorOffAbove) {
     faults.push({ key: "compressor", label: "Compressor OFF", detail: `CS1 ${fmt(cs1)}`, severity: "critical" });
   }
 
   const cold = coldheadK(asset);
   if (cold !== null) {
-    if (cold > FAULT_THRESHOLDS.coldheadCriticalK) {
+    if (cold > th.coldheadCriticalK) {
       faults.push({ key: "coldhead", label: "Coldhead warm", detail: `${fmt(cold)} K`, severity: "critical" });
-    } else if (cold > FAULT_THRESHOLDS.coldheadWarnK) {
+    } else if (cold > th.coldheadWarnK) {
       faults.push({ key: "coldhead", label: "Coldhead warming", detail: `${fmt(cold, 1)} K`, severity: "warning" });
     }
   }
 
   const he = num(t.he_lvl);
   if (he !== null) {
-    if (he < FAULT_THRESHOLDS.heliumCriticalBelow) {
+    if (he < th.heliumCriticalBelow) {
       faults.push({ key: "helium", label: "Helium critical", detail: `${fmt(he, 1)} %`, severity: "critical" });
-    } else if (he < FAULT_THRESHOLDS.heliumWarnBelow) {
+    } else if (he < th.heliumWarnBelow) {
       faults.push({ key: "helium", label: "Helium low", detail: `${fmt(he, 1)} %`, severity: "warning" });
+    } else if (he > th.heliumHighAbove) {
+      // Above any normal fill level — reads as a sensor fault / overfill, not an
+      // imminent magnet risk, so amber not red.
+      faults.push({ key: "helium", label: "Helium high", detail: `${fmt(he, 1)} %`, severity: "warning" });
     }
   }
 
   const press = num(t.he_press);
-  if (press !== null && (press < FAULT_THRESHOLDS.hePressLow || press > FAULT_THRESHOLDS.hePressHigh)) {
+  if (press !== null && (press < th.hePressLow || press > th.hePressHigh)) {
     faults.push({ key: "he_press", label: "He pressure abnormal", detail: `${fmt(press, 1)} psi`, severity: "warning" });
   }
 
   const shield = num(t.shield);
-  if (shield !== null && shield > FAULT_THRESHOLDS.shieldWarnK) {
+  if (shield !== null && shield > th.shieldWarnK) {
     faults.push({ key: "shield", label: "Shield warm", detail: `${fmt(shield)} K`, severity: "warning" });
   }
 

@@ -57,6 +57,22 @@ export type AlertEvent = {
   notified_at: string | null;
 };
 
+// A threshold rule from alert_rules. asset_id null = fleet-wide default;
+// asset_id set = per-asset override. The TV/dashboard fault model reads the
+// per-asset rows as overrides on the built-in FAULT_THRESHOLDS (lib/faults.ts),
+// exactly as the server-side evaluate_alerts() cron does for email/push — so a
+// unit that legitimately runs off-nominal (e.g. NM1035's elevated He pressure)
+// stops false-alarming without loosening the fleet default. Public-readable
+// (RLS policy "public read alert_rules").
+export type AlertRule = {
+  id: string;
+  asset_id: string | null;
+  field: string; // 'he_lvl' | 'he_press' | 'h2o_flow' | 'h2o_temp' | 'shield' | 'cs1'
+  comparator: string; // '<' | '<=' | '>' | '>=' | '=' | '!='
+  threshold: number;
+  enabled: boolean;
+};
+
 // A 15-minute averaged bucket, from the asset_telemetry_15min RPC. Same
 // field names as TelemetrySample for the metrics + created_at so it can
 // drop into the same chart/table components; adds sample_count so the UI

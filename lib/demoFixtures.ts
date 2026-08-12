@@ -9,6 +9,7 @@ import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent } from "./supa
 export type DemoFleetAsset = Asset & {
   latest: TelemetrySample | null;
   history: TelemetrySample[];
+  alertRules: never[]; // demo has no per-asset overrides — always empty
 };
 
 // ---- deterministic helpers ----------------------------------------------
@@ -197,11 +198,11 @@ export function demoFleet(historyHours: number): DemoFleetAsset[] {
   return ROSTER.map((spec) => {
     const asset = specToAsset(spec, now);
     const end = effectiveEnd(spec, now);
-    if (end === null) return { ...asset, latest: null, history: [] };
+    if (end === null) return { ...asset, latest: null, history: [], alertRules: [] };
 
     const history: TelemetrySample[] = [];
     for (let t = end - spanMs; t <= end; t += stepMs) history.push(sampleAt(spec, t, now));
-    return { ...asset, latest: sampleAt(spec, end, now), history };
+    return { ...asset, latest: sampleAt(spec, end, now), history, alertRules: [] };
   });
 }
 

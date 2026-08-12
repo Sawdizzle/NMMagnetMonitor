@@ -1018,7 +1018,7 @@ create policy "public read alert_events" on public.alert_events      for select 
 insert into public.alert_rules (asset_id, field, comparator, threshold, enabled)
 select v.asset_id, v.field, v.comparator, v.threshold, v.enabled
 from (values
-  (null::uuid, 'he_lvl',   '<',  40::numeric,  true),  -- helium low; matches TV amber warning (added 2026-08-12)
+  (null::uuid, 'he_lvl',   '<',  50::numeric,  true),  -- helium low; matches TV amber warning (warn <50 / crit <30 in FAULT_THRESHOLDS; server is single-tier per field so it notifies at the warn level). Retuned 40->50 on 2026-08-12.
   (null::uuid, 'he_press', '>',  3.0::numeric, true),
   (null::uuid, 'h2o_flow', '<',  0.6::numeric, true),
   (null::uuid, 'h2o_temp', '>',  75::numeric,  true),
@@ -1028,6 +1028,20 @@ from (values
 where not exists (
   select 1 from public.alert_rules ar where ar.asset_id is null and ar.field = v.field
 );
+
+-- --- per-asset overrides (name-keyed so a rebuild restores them) -----
+-- NM1035 legitimately runs an elevated He-pressure band (~3.2-3.9 psi vs the
+-- ~1.0 fleet), so the fleet-wide he_press > 3.0 rule false-alarmed it. This
+-- per-asset ceiling (>4.5) supersedes the global rule for NM1035 in both the
+-- TV fault model (lib/faults.ts) and the server evaluator (per-asset beats
+-- fleet-wide). Added 2026-08-12. Idempotent.
+insert into public.alert_rules (asset_id, field, comparator, threshold, enabled)
+select a.id, 'he_press', '>', 4.5::numeric, true
+from public.assets a
+where a.name = 'NM1035'
+  and not exists (
+    select 1 from public.alert_rules ar where ar.asset_id = a.id and ar.field = 'he_press'
+  );
 
 
 -- =====================================================================
