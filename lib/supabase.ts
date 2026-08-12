@@ -22,6 +22,11 @@ export type Asset = {
   // (known-warm / in-service assets), showing a calm "Maintenance" state
   // instead of flashing red. Connectivity status is unaffected.
   maintenance: boolean;
+  // Last iR305 state from InHand Device Manager (via the dm-webhook edge fn).
+  // false = router reported down (connectivity, magnet likely fine); null =
+  // unknown / not on an iR305. Drives the "router_offline" health state.
+  router_online?: boolean | null;
+  router_status_at?: string | null;
 };
 
 export type TelemetrySample = {

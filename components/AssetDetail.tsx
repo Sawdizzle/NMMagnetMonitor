@@ -5,7 +5,7 @@ import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent } from "@/lib/supabase";
 import { getDataSource } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
-import { computeAssetHealth, minutesSince, STATUS_COLORS } from "@/lib/health";
+import { computeAssetHealth, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -125,7 +125,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
             <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
               <span className="cd" aria-hidden="true" />
-              {status}
+              {STATUS_LABELS[status]}
             </span>
             <span className="text-xs text-[var(--text-dim)]">
               {mins === null ? "never reported" : `last seen ${mins} min ago`}
@@ -280,7 +280,9 @@ function AlertRow({ e }: { e: AlertEvent }) {
   const color = isOpen
     ? e.kind === "offline"
       ? "var(--status-offline)"
-      : "var(--status-warning)"
+      : e.kind === "router_offline"
+        ? "#38bdf8" // sky — iR305 down, matches STATUS_COLORS.router_offline
+        : "var(--status-warning)"
     : "var(--text-dim)";
   return (
     <div className="alert-row" data-open={isOpen ? "true" : "false"} style={{ ["--ac" as string]: color }}>

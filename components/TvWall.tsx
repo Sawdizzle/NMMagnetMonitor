@@ -299,6 +299,8 @@ export default function TvWall() {
         <div className="tv-summary" aria-live="off">
           <Tally color={ALARM_COLORS.critical} n={countLevel(ordered, "critical")} label="Alarm" />
           <Tally color={ALARM_COLORS.warning} n={countLevel(ordered, "warning")} label="Warning" />
+          <Tally color={ALARM_COLORS.link} n={countLevel(ordered, "link")} label="iR305" />
+
           <Tally color={ALARM_COLORS.ok} n={countLevel(ordered, "ok")} label="Nominal" />
           <Tally color={ALARM_COLORS.unknown} n={countLevel(ordered, "unknown")} label="No data" />
           <Tally color={ALARM_COLORS.maintenance} n={countLevel(ordered, "maintenance")} label="Maint." />
@@ -440,6 +442,7 @@ type ShiftSummary = {
   critical: string[];
   warning: string[];
   offline: string[];
+  routerOffline: string[];
   noData: number;
   nominal: number;
   lowestHelium: { name: string; pct: number } | null;
@@ -456,15 +459,18 @@ function buildShiftSummary(
   const critical: string[] = [];
   const warning: string[] = [];
   const offline: string[] = [];
+  const routerOffline: string[] = [];
   let noData = 0;
   let nominal = 0;
   let lowestHelium: { name: string; pct: number } | null = null;
 
   for (const a of assets) {
     const alarm = computeAssetAlarm(a);
-    // Offline units go to the Offline row only (they're critical-level too, but
-    // listing them twice muddies the handoff). Everything else buckets by level.
-    if (alarm.connectivity === "offline") offline.push(a.name);
+    // Connectivity states get their own rows (offline = red, iR305-down = sky)
+    // so a router drop reads as "check the link", not a magnet alarm. Everything
+    // else buckets by folded level.
+    if (alarm.connectivity === "router_offline" && !alarm.maintenance) routerOffline.push(a.name);
+    else if (alarm.connectivity === "offline") offline.push(a.name);
     else if (alarm.level === "critical") critical.push(a.name);
     else if (alarm.level === "warning") warning.push(a.name);
     else if (alarm.level === "ok") nominal++;
@@ -486,7 +492,7 @@ function buildShiftSummary(
     }
   }
 
-  return { critical, warning, offline, noData, nominal, lowestHelium, soonestRefill };
+  return { critical, warning, offline, routerOffline, noData, nominal, lowestHelium, soonestRefill };
 }
 
 function HandoffOverlay({
@@ -499,7 +505,10 @@ function HandoffOverlay({
   clockStr: string;
 }) {
   const allClear =
-    summary.critical.length === 0 && summary.warning.length === 0 && summary.offline.length === 0;
+    summary.critical.length === 0 &&
+    summary.warning.length === 0 &&
+    summary.offline.length === 0 &&
+    summary.routerOffline.length === 0;
 
   return (
     <div className="tv-handoff" role="status" aria-live="polite">
@@ -522,6 +531,9 @@ function HandoffOverlay({
             )}
             {summary.offline.length > 0 && (
               <HandoffRow color={ALARM_COLORS.critical} label="Offline" items={summary.offline} />
+            )}
+            {summary.routerOffline.length > 0 && (
+              <HandoffRow color={ALARM_COLORS.link} label="iR305 Down" items={summary.routerOffline} />
             )}
             {summary.warning.length > 0 && (
               <HandoffRow color={ALARM_COLORS.warning} label="Warnings" items={summary.warning} />
@@ -631,6 +643,12 @@ function TvCard({
       ) : alarm.level === "maintenance" ? (
         <div className="tv-faults">
           <span className="tv-fault maint">In service — alarms muted</span>
+        </div>
+      ) : alarm.connectivity === "router_offline" ? (
+        <div className="tv-faults">
+          <span className="tv-fault" style={{ color: ALARM_COLORS.link, borderColor: ALARM_COLORS.link }}>
+            iR305 offline — link down {mins !== null && <b>{mins} min</b>}
+          </span>
         </div>
       ) : alarm.connectivity === "offline" ? (
         <div className="tv-faults">

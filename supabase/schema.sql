@@ -92,6 +92,14 @@ create table if not exists public.assets (
   -- so the wall display doesn't flash red forever. Connectivity status is
   -- unaffected. Toggled from the admin panel via admin_set_asset_maintenance.
   maintenance                boolean     not null default false,
+  -- InHand Device Manager (DM) router disambiguation. router_device_id is the
+  -- gateway's identity in DM (SN / device id) that DM sends in its webhook
+  -- payload; router_online is the last state DM told us (null = unknown, no DM
+  -- mapping yet). Lets us split a real magnet/collector fault from a mere iR305
+  -- cellular drop — see evaluate_alerts and the dm-webhook edge function.
+  router_device_id           text,
+  router_online              boolean,
+  router_status_at           timestamptz,
   constraint assets_name_unique unique (name)
 );
 
@@ -128,7 +136,7 @@ create table if not exists public.alert_events (
   id             bigint      generated always as identity primary key,
   asset_id       uuid        not null references public.assets(id) on delete cascade,
   alert_rule_id  uuid        references public.alert_rules(id) on delete set null,
-  kind           text        not null,   -- 'offline' | 'threshold'
+  kind           text        not null,   -- 'offline' | 'router_offline' | 'threshold'
   message        text        not null,
   triggered_at   timestamptz not null default now(),
   resolved_at    timestamptz,
@@ -160,7 +168,7 @@ create table if not exists public.alert_recipients (
 create or replace view public.public_assets as
   select id, name, site_name, site_address,
          offline_threshold_minutes, status, last_seen_at, created_at, service_user,
-         maintenance
+         maintenance, router_online, router_status_at
   from public.assets;
 
 -- latest_telemetry: newest reading per asset.
@@ -605,6 +613,36 @@ $function$;
 
 
 -- =====================================================================
+-- DM ROUTER STATUS (InHand Device Manager webhook disambiguation)
+-- =====================================================================
+-- Idempotent live-DB migration for the router_* columns declared on the
+-- assets table above (create-table is a no-op on an existing table, so the
+-- columns are added here for already-provisioned databases). Safe to re-run.
+alter table public.assets add column if not exists router_device_id text;
+alter table public.assets add column if not exists router_online     boolean;
+alter table public.assets add column if not exists router_status_at   timestamptz;
+create index if not exists idx_assets_router_device_id
+  on public.assets (router_device_id);
+
+-- Raw landing table for every DM webhook POST. We keep the full payload so the
+-- FIRST real "Gateway Offline"/"Gateway Online" event reveals DM's exact field
+-- names (device id, event type, timestamp) — then the dm-webhook function's
+-- best-effort parser can be tightened to match. Also an audit trail. Written
+-- only by the service-role edge function; no public policy.
+create table if not exists public.dm_webhook_events (
+  id            bigint      generated always as identity primary key,
+  received_at   timestamptz not null default now(),
+  event_type    text,                         -- best-effort parsed (online/offline/…)
+  device_id     text,                         -- best-effort parsed gateway id
+  matched_asset uuid        references public.assets(id) on delete set null,
+  authed        boolean     not null default false, -- did the shared key verify?
+  payload       jsonb       not null,          -- the full body DM sent
+  note          text
+);
+create index if not exists idx_dm_webhook_events_received
+  on public.dm_webhook_events using btree (received_at desc);
+
+-- =====================================================================
 -- ALERTING (offline + threshold/state rules; evaluated by pg_cron once live)
 -- =====================================================================
 
@@ -629,15 +667,21 @@ begin
   from assets a
   where e.asset_id = a.id and e.resolved_at is null and a.maintenance;
 
-  -- OFFLINE open (skip maintenance)
+  -- OFFLINE open (skip maintenance). We only raise the generic (collector /
+  -- magnet-side) offline when the router is NOT known to be down: router_online
+  -- false means DM has told us the iR305 itself dropped, so the silence is
+  -- explained by connectivity and the dm-webhook function owns a distinct
+  -- 'router_offline' event instead. null/unknown (no DM mapping, or a missed
+  -- webhook) still falls through to the generic offline, so we never go silent.
   for r in
     select a.id, a.name, a.last_seen_at, a.offline_threshold_minutes
     from assets a
     where a.maintenance = false
       and a.last_seen_at is not null
       and a.last_seen_at < now() - make_interval(mins => a.offline_threshold_minutes)
+      and coalesce(a.router_online, true) = true
   loop
-    if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
+    if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind in ('offline','router_offline') and e.resolved_at is null) then
       insert into alert_events (asset_id, kind, message)
       values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
     end if;

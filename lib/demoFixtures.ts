@@ -132,6 +132,11 @@ type AssetSpec = {
   inject?: Partial<{ cs1: number; coldheadK: number; he_lvl: number; shield: number }>;
   // Suppress value alarms on the TV (known-warm / in-service unit).
   maintenance?: boolean;
+  // Simulate InHand DM reporting this unit's iR305 cellular link down. Combined
+  // with a late lastSeenMinAgo it demonstrates the "router_offline" state (sky
+  // "iR305 down") — connectivity lost, magnet likely fine — vs. a plain red
+  // Offline. Ignored unless the unit is already stale/offline.
+  routerOffline?: boolean;
   // A steady helium boil-off in %/day (negative = losing helium), so the
   // days-to-refill forecast has a real declining trend to demonstrate. Absent =
   // flat (healthy coldhead).
@@ -150,6 +155,7 @@ const ROSTER: AssetSpec[] = [
   { id: "MM-1008", name: "MM-1008", site_name: "Pinehurst Health", site_address: "9 Pinehurst Way, Millbrook", lastSeenMinAgo: 9, boilOffPerDay: -1.3, seed: hashSeed("MM-1008") },
   { id: "MM-1009", name: "MM-1009", site_name: "Fairmont Mobile MRI", site_address: "Mobile unit · region 4", lastSeenMinAgo: null, seed: hashSeed("MM-1009") },
   { id: "MM-1010", name: "MM-1010", site_name: "Westland Imaging", site_address: "620 Westland Ave, Crestline", lastSeenMinAgo: 5, seed: hashSeed("MM-1010") },
+  { id: "MM-1011", name: "MM-1011", site_name: "Union Hospital", site_address: "1606 N 7th St, Terre Haute · iR305", lastSeenMinAgo: 88, routerOffline: true, seed: hashSeed("MM-1011") },
 ];
 
 // Every demo asset id, exposed so the demo docs can reference a consistent
@@ -169,6 +175,8 @@ function specToAsset(spec: AssetSpec, now: number): Asset {
     created_at: new Date(now - 400 * 24 * 60 * 60 * 1000).toISOString(),
     service_user: "gateway",
     maintenance: spec.maintenance ?? false,
+    router_online: spec.routerOffline ? false : null,
+    router_status_at: spec.routerOffline ? lastSeen : null,
   };
 }
 
@@ -255,8 +263,14 @@ export function demoAssetAlerts(assetId: string): AlertEvent[] {
     });
 
   // Offline (only when the unit is genuinely dark, matching the >60-min rule).
+  // A router-down unit gets the distinct router_offline event instead — the
+  // same split the dm-webhook function makes (connectivity, not magnet fault).
   if (spec.lastSeenMinAgo !== null && spec.lastSeenMinAgo > 60) {
-    push("offline", `${spec.name} offline — no report`, spec.lastSeenMinAgo * 60_000);
+    if (spec.routerOffline) {
+      push("router_offline", `${spec.name}: iR305 offline — cellular/router link down per InHand DM. Magnet is likely fine; check carrier/SIM/antenna.`, spec.lastSeenMinAgo * 60_000);
+    } else {
+      push("offline", `${spec.name} offline — no report`, spec.lastSeenMinAgo * 60_000);
+    }
   }
 
   // Open threshold events from the current reading.
