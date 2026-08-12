@@ -1,9 +1,40 @@
 # Alerting implementation plan
 
-**Status:** proposal — nothing here has been applied to the live database.
+**Status (2026-08-12):** Phase 1 LIVE. The evaluator + tables + admin rule RPCs
++ seed rules already existed on the live DB; on 2026-08-12 we (a) patched
+`evaluate_alerts()` to exempt maintenance units — migration
+`evaluate_alerts_exempt_maintenance` — and (b) scheduled it every minute via
+pg_cron job `evaluate-alerts`. So `alert_events` now fills continuously (no
+emails yet). Remaining: surface persisted alerts in-app + admin Alerts UI
+(Phase 2), then notifications with debounce (Phase 3).
 **Goal:** turn the dashboard into a monitor that *tells someone* when a magnet
 is in trouble or a gateway goes dark, instead of only showing it to whoever
 happens to be looking. (Architecture review finding **F-2**.)
+
+## Rollout status
+
+- [x] **Phase 1 — evaluator safe + scheduled.** Maintenance exemption applied;
+  `evaluate-alerts` cron runs `evaluate_alerts()` every minute. Dry-run confirmed
+  no phantom alarms on NM1001/NM1034/NM1037; real events open for NM1003 (offline),
+  NM1006/NM1027 (h2o_temp/flow), NM1035 (he_press, borderline).
+- [ ] **Phase 2 — surface in-app.** Read persisted `alert_events` on the
+  dashboard + asset pages; admin Alerts UI (rules editor over existing
+  `admin_*_alert_rule` RPCs, recipients editor, event log).
+- [ ] **Phase 3 — notifications.** Channel = Microsoft Graph `sendMail` (email,
+  from the M365 domain) and/or RingCentral REST (SMS) — both HTTPS from the
+  notifier, not SMTP/sockets. Add per-rule **debounce** (N consecutive
+  violations) before enabling outbound, or a flapping metric like `he_press`≈3
+  will spam. Needs: provider app registration + secrets (user-provided),
+  recipients, and scheduling the notifier.
+
+### Tuning backlog (needs the physicist/engineer)
+- `he_press > 3.0` flaps near threshold (NM1035 3.318, NM1004 in/out) — raise it
+  or add debounce.
+- No `he_lvl` low rule — NM1004 read **0.69%** helium and nothing alerted. Add a
+  `he_lvl <` rule.
+- Coldhead (lives in the `data` blob) isn't evaluated in SQL, so email/persisted
+  alerts don't match the TV's coldhead-warming detection. Add a blob-aware check
+  (dovetails with the #4 coldhead RPC).
 
 ---
 

@@ -610,7 +610,12 @@ $function$;
 
 -- Evaluate offline + threshold/state conditions and open/resolve alert_events.
 -- Idempotent. A per-asset rule overrides the global (asset_id NULL) rule for
--- the same field. Inert until scheduled with pg_cron; sends nothing itself.
+-- the same field. Maintenance-flagged units are exempt (mirrors TV/Display):
+-- their open events are resolved and no new ones are opened, so known-warm
+-- service-center units (e.g. NM1034) don't raise permanent phantom alarms.
+-- Scheduled every minute by pg_cron job 'evaluate-alerts' (see end of file);
+-- sends nothing itself — notification is a separate step.
+-- APPLIED to live DB 2026-08-12 via migration evaluate_alerts_exempt_maintenance.
 CREATE OR REPLACE FUNCTION public.evaluate_alerts()
  RETURNS void
  LANGUAGE plpgsql
@@ -619,11 +624,17 @@ CREATE OR REPLACE FUNCTION public.evaluate_alerts()
 AS $function$
 declare r record;
 begin
-  -- OFFLINE open
+  -- MAINTENANCE mute: resolve any open events for units now in maintenance.
+  update alert_events e set resolved_at = now()
+  from assets a
+  where e.asset_id = a.id and e.resolved_at is null and a.maintenance;
+
+  -- OFFLINE open (skip maintenance)
   for r in
     select a.id, a.name, a.last_seen_at, a.offline_threshold_minutes
     from assets a
-    where a.last_seen_at is not null
+    where a.maintenance = false
+      and a.last_seen_at is not null
       and a.last_seen_at < now() - make_interval(mins => a.offline_threshold_minutes)
   loop
     if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
@@ -637,14 +648,14 @@ begin
   where e.asset_id=a.id and e.kind='offline' and e.resolved_at is null
     and a.last_seen_at >= now() - make_interval(mins => a.offline_threshold_minutes);
 
-  -- THRESHOLD / STATE with per-asset override
+  -- THRESHOLD / STATE with per-asset override (skip maintenance)
   for r in
     with effective as (
       select distinct on (a.id, ar.field)
         a.id as asset_id, a.name, ar.id as rule_id, ar.field, ar.comparator, ar.threshold
       from assets a
       join alert_rules ar on (ar.asset_id = a.id or ar.asset_id is null)
-      where ar.enabled
+      where ar.enabled and a.maintenance = false
       order by a.id, ar.field, (ar.asset_id is not null) desc
     )
     select e.asset_id, e.name, e.rule_id, e.field, e.comparator, e.threshold,
@@ -879,3 +890,17 @@ from (values
 where not exists (
   select 1 from public.alert_rules ar where ar.asset_id is null and ar.field = v.field
 );
+
+
+-- =====================================================================
+-- SCHEDULED JOBS (pg_cron)
+-- =====================================================================
+-- Live jobs as of 2026-08-12:
+--   jobid 1  cleanup_old_telemetry  '0 3 * * *'  delete telemetry_samples > 7 days
+--   jobid 2  evaluate-alerts        '* * * * *'  select public.evaluate_alerts()
+-- The evaluator job was added 2026-08-12 (Phase 1 of alerting rollout). It only
+-- opens/resolves alert_events; no notification is sent until the notify-alerts
+-- edge function is scheduled (Phase 3). To (re)create the evaluator schedule:
+--   select cron.schedule('evaluate-alerts', '* * * * *', $$ select public.evaluate_alerts(); $$);
+-- To remove it:
+--   select cron.unschedule('evaluate-alerts');
