@@ -49,6 +49,23 @@ type AlertRule = {
   enabled: boolean;
   created_at: string;
 };
+type AlertRecipient = {
+  id: string;
+  channel: "email" | "sms";
+  address: string;
+  enabled: boolean;
+  created_at: string;
+};
+type AlertEventRow = {
+  id: number;
+  asset_id: string;
+  asset_name: string;
+  kind: string;
+  message: string;
+  triggered_at: string;
+  resolved_at: string | null;
+  notified_at: string | null;
+};
 
 type Toast = { msg: string; kind: "success" | "error" };
 type ConfirmReq = { message: string; danger?: boolean; resolve: (ok: boolean) => void };
@@ -727,26 +744,30 @@ function AdminPanel({ me }: { me: Session }) {
       )}
 
       {activeTab === "alerts" && (
-        <AlertsTab
-          assets={assets}
-          alertRules={alertRules}
-          editingRuleId={editingRuleId}
-          ruleScope={ruleScope}
-          setRuleScope={setRuleScope}
-          ruleField={ruleField}
-          setRuleField={setRuleField}
-          ruleComparator={ruleComparator}
-          setRuleComparator={setRuleComparator}
-          ruleThreshold={ruleThreshold}
-          setRuleThreshold={setRuleThreshold}
-          ruleEnabled={ruleEnabled}
-          setRuleEnabled={setRuleEnabled}
-          handleSaveRule={handleSaveRule}
-          resetRuleForm={resetRuleForm}
-          handleToggleRule={handleToggleRule}
-          handleEditRule={handleEditRule}
-          handleDeleteRule={handleDeleteRule}
-        />
+        <>
+          <AlertsTab
+            assets={assets}
+            alertRules={alertRules}
+            editingRuleId={editingRuleId}
+            ruleScope={ruleScope}
+            setRuleScope={setRuleScope}
+            ruleField={ruleField}
+            setRuleField={setRuleField}
+            ruleComparator={ruleComparator}
+            setRuleComparator={setRuleComparator}
+            ruleThreshold={ruleThreshold}
+            setRuleThreshold={setRuleThreshold}
+            ruleEnabled={ruleEnabled}
+            setRuleEnabled={setRuleEnabled}
+            handleSaveRule={handleSaveRule}
+            resetRuleForm={resetRuleForm}
+            handleToggleRule={handleToggleRule}
+            handleEditRule={handleEditRule}
+            handleDeleteRule={handleDeleteRule}
+          />
+          <AlertRecipientsSection me={me} notify={notify} fail={fail} askConfirm={askConfirm} />
+          <AlertEventsSection me={me} />
+        </>
       )}
 
       {activeTab === "users" && (
@@ -1111,9 +1132,10 @@ function AlertsTab(props: {
   const { assets, alertRules, editingRuleId } = props;
   return (
     <section className="mb-10">
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-2">Alert rules</h2>
       <p className="text-xs text-[var(--text-dim)] mb-3">
         A rule scoped to <strong>All assets</strong> is the fleet default. Scope a rule to a single asset to
-        override the fleet default for just that unit.
+        override the fleet default for just that unit. The evaluator runs every minute; maintenance units are exempt.
       </p>
       <form onSubmit={props.handleSaveRule} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
         <Field label="Scope">
@@ -1175,6 +1197,210 @@ function AlertsTab(props: {
           );
         })}
         {alertRules.length === 0 && <p className="px-4 py-6 text-center text-[var(--text-dim)]">No alert rules yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------- Alert recipients section */
+
+function AlertRecipientsSection({
+  me,
+  notify,
+  fail,
+  askConfirm,
+}: {
+  me: Session;
+  notify: (msg: string) => void;
+  fail: (msg: string) => void;
+  askConfirm: (message: string, danger?: boolean) => Promise<boolean>;
+}) {
+  const [recipients, setRecipients] = useState<AlertRecipient[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [channel, setChannel] = useState<"email" | "sms">("email");
+  const [address, setAddress] = useState("");
+  const [enabled, setEnabled] = useState(true);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.rpc("admin_list_alert_recipients", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+    });
+    setRecipients((data as AlertRecipient[]) ?? []);
+  }, [me.username, me.pin]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  function reset() {
+    setEditingId(null);
+    setChannel("email");
+    setAddress("");
+    setEnabled(true);
+  }
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    const { error } = await supabase.rpc("admin_upsert_alert_recipient", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_id: editingId,
+      p_channel: channel,
+      p_address: address,
+      p_enabled: enabled,
+    });
+    if (error) return fail(actionError("Could not save recipient", error));
+    notify(editingId ? "Recipient updated." : "Recipient added.");
+    reset();
+    load();
+  }
+  function edit(r: AlertRecipient) {
+    setEditingId(r.id);
+    setChannel(r.channel);
+    setAddress(r.address);
+    setEnabled(r.enabled);
+  }
+  async function toggle(r: AlertRecipient) {
+    const { error } = await supabase.rpc("admin_upsert_alert_recipient", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_id: r.id,
+      p_channel: r.channel,
+      p_address: r.address,
+      p_enabled: !r.enabled,
+    });
+    if (error) return fail(actionError("Could not update recipient", error));
+    load();
+  }
+  async function remove(r: AlertRecipient) {
+    if (!(await askConfirm(`Remove ${r.address} from alert recipients?`, true))) return;
+    const { error } = await supabase.rpc("admin_delete_alert_recipient", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_id: r.id,
+    });
+    if (error) return fail(actionError("Could not remove recipient", error));
+    notify("Recipient removed.");
+    if (editingId === r.id) reset();
+    load();
+  }
+
+  return (
+    <section className="mb-10">
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-2">Recipients</h2>
+      <p className="text-xs text-[var(--text-dim)] mb-3">
+        Who gets notified when an alert opens. Email is delivered via Resend once the notifier is enabled; the SMS
+        channel is stored but not yet wired.
+      </p>
+      <form onSubmit={save} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
+        <Field label="Channel">
+          <select value={channel} onChange={(e) => setChannel(e.target.value as "email" | "sms")} className="input">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+          </select>
+        </Field>
+        <Field label={channel === "email" ? "Email address" : "Phone (E.164)"}>
+          <input
+            required
+            type={channel === "email" ? "email" : "text"}
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder={channel === "email" ? "name@example.com" : "+15125550123"}
+            className="input min-w-[16rem] font-mono-data"
+          />
+        </Field>
+        <label className="flex items-center gap-2 text-xs text-[var(--text-dim)]">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          Enabled
+        </label>
+        <button type="submit" className="btn-primary">{editingId ? "Save recipient" : "Add recipient"}</button>
+        {editingId && (
+          <button type="button" onClick={reset} className="btn-secondary">Cancel</button>
+        )}
+      </form>
+
+      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+        {recipients.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+            <div>
+              <p className="font-medium font-mono-data">
+                {r.address}
+                {!r.enabled && <span className="ml-2 text-xs text-[var(--text-dim)]">(disabled)</span>}
+              </p>
+              <p className="text-xs text-[var(--text-dim)] uppercase tracking-wide">{r.channel}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => toggle(r)} className="btn-secondary">{r.enabled ? "Disable" : "Enable"}</button>
+              <button onClick={() => edit(r)} className="btn-secondary">Edit</button>
+              <button onClick={() => remove(r)} className="btn-secondary" style={{ color: "var(--status-offline)" }}>Remove</button>
+            </div>
+          </div>
+        ))}
+        {recipients.length === 0 && (
+          <p className="px-4 py-6 text-center text-[var(--text-dim)]">No recipients yet — add one to receive alert emails.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------ Recent alerts section */
+
+function AlertEventsSection({ me }: { me: Session }) {
+  const [events, setEvents] = useState<AlertEventRow[]>([]);
+  const load = useCallback(async () => {
+    const { data } = await supabase.rpc("admin_list_alert_events", {
+      p_actor_username: me.username,
+      p_actor_pin: me.pin,
+      p_limit: 100,
+    });
+    setEvents((data as AlertEventRow[]) ?? []);
+  }, [me.username, me.pin]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const openCount = events.filter((e) => !e.resolved_at).length;
+
+  return (
+    <section className="mb-10">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">
+          Recent alerts
+          {openCount > 0 && <span className="alert-count">{openCount} active</span>}
+        </h2>
+        <button onClick={load} className="btn-secondary">Refresh</button>
+      </div>
+      <p className="text-xs text-[var(--text-dim)] mb-3">
+        Opened and resolved automatically by the evaluator each minute. Active first, showing the most recent {events.length}.
+      </p>
+      <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
+        {events.map((e) => {
+          const isOpen = !e.resolved_at;
+          const color = isOpen
+            ? e.kind === "offline"
+              ? "var(--status-offline)"
+              : "var(--status-warning)"
+            : "var(--text-dim)";
+          return (
+            <div
+              key={e.id}
+              className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0"
+              style={{ opacity: isOpen ? 1 : 0.68 }}
+            >
+              <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm">{e.message}</p>
+                <p className="text-xs text-[var(--text-dim)]">
+                  {isOpen ? "open" : "resolved"} · {formatAuditTime(isOpen ? e.triggered_at : (e.resolved_at as string))}
+                  {e.notified_at ? " · notified" : ""}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+        {events.length === 0 && (
+          <p className="px-4 py-6 text-center text-[var(--text-dim)]">No alerts recorded yet.</p>
+        )}
       </div>
     </section>
   );
@@ -1391,6 +1617,8 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   create_alert_rule: "Alert rule added",
   update_alert_rule: "Alert rule edited",
   delete_alert_rule: "Alert rule deleted",
+  upsert_alert_recipient: "Alert recipient saved",
+  delete_alert_recipient: "Alert recipient removed",
 };
 
 function auditActionLabel(action: string): string {

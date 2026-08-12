@@ -740,6 +740,68 @@ begin
 end;
 $function$;
 
+-- Alert recipients CRUD + joined event-log reader (added 2026-08-12, migration
+-- admin_alert_recipient_and_event_rpcs). alert_recipients has no public policy,
+-- so it's reached only through these SECURITY DEFINER functions.
+CREATE OR REPLACE FUNCTION public.admin_list_alert_recipients(p_actor_username text, p_actor_pin text)
+ RETURNS TABLE(id uuid, channel text, address text, enabled boolean, created_at timestamptz)
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  return query select r.id, r.channel, r.address, r.enabled, r.created_at
+    from alert_recipients r order by r.channel, r.address;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.admin_upsert_alert_recipient(p_actor_username text, p_actor_pin text, p_id uuid, p_channel text, p_address text, p_enabled boolean)
+ RETURNS uuid
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+AS $function$
+declare v_id uuid;
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  if p_channel not in ('email','sms') then raise exception 'invalid channel: %', p_channel; end if;
+  if btrim(coalesce(p_address, '')) = '' then raise exception 'address required'; end if;
+  if p_id is null then
+    insert into alert_recipients (channel, address, enabled)
+    values (p_channel, btrim(p_address), coalesce(p_enabled, true)) returning id into v_id;
+  else
+    update alert_recipients set channel = p_channel, address = btrim(p_address), enabled = coalesce(p_enabled, true)
+      where id = p_id returning id into v_id;
+  end if;
+  perform _record_audit(p_actor_username, 'upsert_alert_recipient', 'alert_recipient', v_id::text,
+    format('%s recipient %s (%s)', case when p_id is null then 'Added' else 'Updated' end, p_address, p_channel));
+  return v_id;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.admin_delete_alert_recipient(p_actor_username text, p_actor_pin text, p_id uuid)
+ RETURNS boolean
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  delete from alert_recipients where id = p_id;
+  perform _record_audit(p_actor_username, 'delete_alert_recipient', 'alert_recipient', p_id::text, 'Removed alert recipient');
+  return true;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.admin_list_alert_events(p_actor_username text, p_actor_pin text, p_limit integer DEFAULT 100)
+ RETURNS TABLE(id bigint, asset_id uuid, asset_name text, kind text, message text, triggered_at timestamptz, resolved_at timestamptz, notified_at timestamptz)
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+AS $function$
+begin
+  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
+  return query
+    select e.id, e.asset_id, a.name, e.kind, e.message, e.triggered_at, e.resolved_at, e.notified_at
+    from alert_events e join assets a on a.id = e.asset_id
+    order by (e.resolved_at is null) desc, e.triggered_at desc
+    limit least(coalesce(p_limit, 100), 500);
+end;
+$function$;
+
 
 -- =====================================================================
 -- AUDIT LOG (added 2026-08-10)

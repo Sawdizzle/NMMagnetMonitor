@@ -17,15 +17,21 @@ happens to be looking. (Architecture review finding **F-2**.)
   `evaluate-alerts` cron runs `evaluate_alerts()` every minute. Dry-run confirmed
   no phantom alarms on NM1001/NM1034/NM1037; real events open for NM1003 (offline),
   NM1006/NM1027 (h2o_temp/flow), NM1035 (he_press, borderline).
-- [ ] **Phase 2 — surface in-app.** Read persisted `alert_events` on the
-  dashboard + asset pages; admin Alerts UI (rules editor over existing
-  `admin_*_alert_rule` RPCs, recipients editor, event log).
-- [ ] **Phase 3 — notifications.** Channel = Microsoft Graph `sendMail` (email,
-  from the M365 domain) and/or RingCentral REST (SMS) — both HTTPS from the
-  notifier, not SMTP/sockets. Add per-rule **debounce** (N consecutive
-  violations) before enabling outbound, or a flapping metric like `he_press`≈3
-  will spam. Needs: provider app registration + secrets (user-provided),
-  recipients, and scheduling the notifier.
+- [x] **Phase 2 — surface in-app.** Asset page shows persisted `alert_events`
+  (open + recent resolved, with durations) via the public-read policy. Admin
+  Alerts tab gained a **recipients editor** and a **recent-alerts log** on top of
+  the existing rules editor, backed by new RPCs `admin_list/upsert/delete_alert_recipient`
+  + `admin_list_alert_events` (migration `admin_alert_recipient_and_event_rpcs`,
+  verified live). *(Optional remaining: a fleet-level persisted-alert count on the
+  dashboard alongside the client-derived ticker.)*
+- [ ] **Phase 3 — notifications (channel = Resend email).** SMTP/O365 dropped in
+  favor of **Resend** — the deployed `notify-alerts` edge function is already
+  written for it. Remaining: (1) user sets `RESEND_API_KEY` + `ALERT_FROM`
+  (verified sender) as edge-function secrets; (2) add per-rule **debounce**
+  (don't notify until an event has been open ≥N min) so a flapping `he_press`≈3
+  doesn't spam; (3) add ≥1 recipient via the new admin UI; (4) schedule the
+  notifier after the evaluator (edge cron or pg_net) and handle its
+  `verify_jwt`; (5) test with one throwaway rule before going live.
 
 ### Tuning backlog (needs the physicist/engineer)
 - `he_press > 3.0` flaps near threshold (NM1035 3.318, NM1004 in/out) — raise it
