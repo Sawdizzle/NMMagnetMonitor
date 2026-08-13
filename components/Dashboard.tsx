@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { type TelemetrySample } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
-import { computeAssetHealth, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
+import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
@@ -50,7 +50,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
-  const [statusFilter, setStatusFilter] = useState<"all" | "online" | "stale" | "offline" | "router_offline" | "unknown">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "online" | "stale" | "offline" | "unknown">("all");
   // Cards vs. the collapsed table. Starts as "cards" so server and first client
   // render agree (no hydration mismatch); the effect below then resolves the
   // real preference — a saved choice, or table-by-default on a phone.
@@ -100,7 +100,6 @@ export default function Dashboard() {
   const onlineCount = assets.filter((a) => computeAssetHealth(a) === "online").length;
   const staleCount = assets.filter((a) => computeAssetHealth(a) === "stale").length;
   const offlineCount = assets.filter((a) => computeAssetHealth(a) === "offline").length;
-  const routerOfflineCount = assets.filter((a) => computeAssetHealth(a) === "router_offline").length;
   const unknownCount = assets.filter((a) => computeAssetHealth(a) === "unknown").length;
 
   const siteCount = new Set(
@@ -217,22 +216,6 @@ export default function Dashboard() {
             </>
           }
         />
-        {(routerOfflineCount > 0 || statusFilter === "router_offline") && (
-          <StatusTile
-            color={STATUS_COLORS.router_offline}
-            count={routerOfflineCount}
-            label="iR305 Down"
-            active={statusFilter === "router_offline"}
-            onClick={() => setStatusFilter(statusFilter === "router_offline" ? "all" : "router_offline")}
-            icon={
-              <>
-                <path d="M4 9a12 12 0 0 1 16 0M7 12.5a7 7 0 0 1 10 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                <circle cx="12" cy="16.5" r="1.4" fill="currentColor" />
-                <path d="M4 4l16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </>
-            }
-          />
-        )}
         <StatusTile
           color={STATUS_COLORS.unknown}
           count={unknownCount}
@@ -558,10 +541,22 @@ function AssetCard({
       </div>
 
       <div className="flex items-center justify-between text-xs text-[var(--text-dim)] pt-3 border-t border-[var(--border-soft)]">
-        <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
-          <span className="cd" aria-hidden="true" />
-          {STATUS_LABELS[status]}
-        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
+            <span className="cd" aria-hidden="true" />
+            {STATUS_LABELS[status]}
+          </span>
+          {connectivityStatuses(asset).map((c) => (
+            <span
+              key={c.key}
+              className="status-chip"
+              style={{ ["--sc" as string]: c.up ? CONNECTIVITY_COLORS.up : CONNECTIVITY_COLORS.down }}
+            >
+              <span className="cd" aria-hidden="true" />
+              {c.label}
+            </span>
+          ))}
+        </div>
         <span>{mins === null ? "never reported" : `${mins} min ago`}</span>
       </div>
     </Link>

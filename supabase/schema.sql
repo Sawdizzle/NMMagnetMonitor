@@ -100,6 +100,14 @@ create table if not exists public.assets (
   router_device_id           text,
   router_online              boolean,
   router_status_at           timestamptz,
+  -- Tailscale node liveness for this unit's collector Pi, polled from the
+  -- Tailscale API by the tailscale-poll edge function. Same disambiguation as
+  -- the iR305/DM signal but for the Pi itself: node up + no telemetry = the
+  -- collector/MagMon is the fault; node down = Pi/site network down. null =
+  -- unknown / no Tailscale node mapped yet.
+  tailscale_device_id        text,
+  tailscale_online           boolean,
+  tailscale_status_at        timestamptz,
   constraint assets_name_unique unique (name)
 );
 
@@ -119,6 +127,12 @@ create table if not exists public.telemetry_samples (
 );
 create index if not exists idx_telemetry_asset_created on public.telemetry_samples using btree (asset_id, created_at desc);
 create index if not exists idx_telemetry_created_at    on public.telemetry_samples using btree (created_at);
+-- One reading per asset per timestamp. Doubles as the ON CONFLICT target for
+-- report_telemetry_batch's idempotent inserts and as the index that serves
+-- latest_telemetry's `order by recorded_at desc limit 1`. Applied to the live
+-- DB 2026-08-12 (migration telemetry_batch_reporting_and_recorded_at_readpath),
+-- which first de-duplicated 106 byte-identical (asset_id, recorded_at) rows.
+create unique index if not exists idx_telemetry_asset_recorded on public.telemetry_samples (asset_id, recorded_at);
 
 -- --- alert_rules (per-asset thresholds; currently unused) ------------
 create table if not exists public.alert_rules (
@@ -168,10 +182,15 @@ create table if not exists public.alert_recipients (
 create or replace view public.public_assets as
   select id, name, site_name, site_address,
          offline_threshold_minutes, status, last_seen_at, created_at, service_user,
-         maintenance, router_online, router_status_at
+         maintenance, router_online, router_status_at,
+         tailscale_online, tailscale_status_at
   from public.assets;
 
--- latest_telemetry: newest reading per asset.
+-- latest_telemetry: newest reading per asset, by recorded_at (true reading
+-- time). Ordering by created_at would be unsafe once report_telemetry_batch
+-- inserts several rows sharing one created_at -- it could return an arbitrary
+-- reading from the batch as "latest". The idx_telemetry_asset_recorded unique
+-- index serves this order-by-recorded_at-desc-limit-1.
 create or replace view public.latest_telemetry as
   select t.asset_id, t.id, t.recorded_at, t.created_at,
          t.he_lvl, t.he_press, t.h2o_flow, t.h2o_temp, t.shield, t.cs1, t.data
@@ -181,7 +200,7 @@ create or replace view public.latest_telemetry as
            ts.he_lvl, ts.he_press, ts.h2o_flow, ts.h2o_temp, ts.shield, ts.cs1, ts.created_at
     from public.telemetry_samples ts
     where ts.asset_id = a.id
-    order by ts.created_at desc
+    order by ts.recorded_at desc
     limit 1
   ) t;
 
@@ -564,6 +583,55 @@ begin
 end;
 $function$;
 
+-- report_telemetry_batch: report every NEW minute row a collector fetched this
+-- cycle in one call, instead of only the latest (report_telemetry above). This
+-- gives true minute-resolution history WITHOUT polling the MagMon any harder --
+-- the collector already fetches the last hour of minute rows each cycle. Inserts
+-- are idempotent on (asset_id, recorded_at) via idx_telemetry_asset_recorded, so
+-- overlapping fetches and restart re-sends are harmless. Returns the count of
+-- rows actually inserted. p_samples is a JSON array of objects, each with
+-- recorded_at (Pi-anchored, minute-truncated) plus the numeric metric fields;
+-- the whole object is also stored in `data` for audit (keeps the source tag).
+CREATE OR REPLACE FUNCTION public.report_telemetry_batch(p_gateway_token text, p_samples jsonb)
+ RETURNS integer
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_asset_id uuid;
+  v_inserted int;
+begin
+  select id into v_asset_id from assets where gateway_token = p_gateway_token;
+  if v_asset_id is null then
+    raise exception 'invalid gateway token';
+  end if;
+
+  -- Liveness stamp uses ingest wall-clock (now()), never the reading time, so a
+  -- backfill of delayed rows can never make a unit look more recently seen than
+  -- it is. Mirrors the single-row report_telemetry.
+  update assets set last_seen_at = now(), status = 'online' where id = v_asset_id;
+
+  insert into telemetry_samples (asset_id, recorded_at, he_lvl, he_press, h2o_flow, h2o_temp, shield, cs1, data)
+  select v_asset_id,
+         (s->>'recorded_at')::timestamptz,
+         (s->>'he_lvl')::numeric,
+         (s->>'he_press')::numeric,
+         (s->>'h2o_flow')::numeric,
+         (s->>'h2o_temp')::numeric,
+         (s->>'shield')::numeric,
+         (s->>'cs1')::numeric,
+         s
+  from jsonb_array_elements(p_samples) s
+  where (s->>'recorded_at') is not null
+  on conflict (asset_id, recorded_at) do nothing;
+
+  get diagnostics v_inserted = row_count;
+  return v_inserted;
+end;
+$function$;
+grant execute on function public.report_telemetry_batch(text, jsonb) to anon, authenticated, service_role;
+
 CREATE OR REPLACE FUNCTION public.asset_telemetry_15min(p_asset_id uuid, p_hours integer DEFAULT 24)
  RETURNS TABLE(created_at timestamp with time zone, he_lvl numeric, he_press numeric, h2o_flow numeric, h2o_temp numeric, shield numeric, cs1 numeric, sample_count bigint)
  LANGUAGE sql
@@ -571,7 +639,7 @@ CREATE OR REPLACE FUNCTION public.asset_telemetry_15min(p_asset_id uuid, p_hours
  SET search_path TO 'public'
 AS $function$
   select
-    to_timestamp(floor(extract(epoch from t.created_at) / 900) * 900) as created_at,
+    to_timestamp(floor(extract(epoch from t.recorded_at) / 900) * 900) as created_at,
     round(avg(t.he_lvl), 2) as he_lvl,
     round(avg(t.he_press), 3) as he_press,
     round(avg(t.h2o_flow), 3) as h2o_flow,
@@ -581,10 +649,13 @@ AS $function$
     count(*) as sample_count
   from telemetry_samples t
   where t.asset_id = p_asset_id
-    and t.created_at >= now() - (p_hours || ' hours')::interval
+    and t.recorded_at >= now() - (p_hours || ' hours')::interval
   group by 1
   order by 1;
 $function$;
+-- NB: buckets/windows on recorded_at (true reading time), not created_at
+-- (ingest time). The output column keeps the name created_at so the chart and
+-- table components need no change -- it now carries the reading-time bucket.
 
 
 -- ── Gateway token rotation (backs the admin "Rotate token" button) ──
@@ -667,21 +738,17 @@ begin
   from assets a
   where e.asset_id = a.id and e.resolved_at is null and a.maintenance;
 
-  -- OFFLINE open (skip maintenance). We only raise the generic (collector /
-  -- magnet-side) offline when the router is NOT known to be down: router_online
-  -- false means DM has told us the iR305 itself dropped, so the silence is
-  -- explained by connectivity and the dm-webhook function owns a distinct
-  -- 'router_offline' event instead. null/unknown (no DM mapping, or a missed
-  -- webhook) still falls through to the generic offline, so we never go silent.
+  -- OFFLINE open (skip maintenance). Connectivity (iR305/Tailscale) is shown as
+  -- informational chips only and does NOT suppress this — a genuinely quiet asset
+  -- still opens the offline alarm (which is the only thing that emails/pushes).
   for r in
     select a.id, a.name, a.last_seen_at, a.offline_threshold_minutes
     from assets a
     where a.maintenance = false
       and a.last_seen_at is not null
       and a.last_seen_at < now() - make_interval(mins => a.offline_threshold_minutes)
-      and coalesce(a.router_online, true) = true
   loop
-    if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind in ('offline','router_offline') and e.resolved_at is null) then
+    if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
       insert into alert_events (asset_id, kind, message)
       values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
     end if;
@@ -1104,6 +1171,21 @@ AS $function$ select value from app_settings where key = 'vapid_public'; $functi
 --   jobid 2  evaluate-alerts        '* * * * *'  select public.evaluate_alerts()
 --   jobid 3  notify-alerts          '* * * * *'  net.http_post -> notify-alerts edge fn
 --   jobid 4  send-push              '* * * * *'  net.http_post -> send-push edge fn
+--   jobid 5  tailscale-poll         '*/5 * * * *' net.http_post -> tailscale-poll edge fn
+-- tailscale-poll (added 2026-08-13) reads each collector Pi's Tailscale node
+-- liveness from the Tailscale API (OAuth client creds in app_settings keys
+-- ts_oauth_client_id / ts_oauth_secret / ts_tailnet) and stamps
+-- assets.tailscale_online. Matches only os=linux devices whose name embeds the
+-- asset code (the tailnet also holds Windows site PCs named after the same
+-- assets). Connectivity is INFORMATIONAL only — shown as a chip on the
+-- dashboard/asset page; it never opens an alert_event and never emails/pushes.
+-- Same for the iR305/DM signal (dm-webhook stamps assets.router_online).
+--   select cron.schedule('tailscale-poll', '*/5 * * * *', $$
+--     select net.http_post(
+--       url := 'https://wxygirzfxutvtfkxxcvw.supabase.co/functions/v1/tailscale-poll',
+--       headers := jsonb_build_object('Content-Type','application/json')
+--     );
+--   $$);
 -- evaluate-alerts (Phase 1) opens/resolves alert_events. notify-alerts (Phase 3,
 -- added 2026-08-12) invokes the edge function over pg_net; the function emails
 -- new open events (debounced ALERT_DEBOUNCE_MINUTES, default 5) via Resend to

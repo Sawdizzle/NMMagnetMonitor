@@ -96,10 +96,7 @@ export type Fault = {
 
 // The single severity the TV uses to color, order, and (for critical) flash a
 // card. Folds connectivity and value-faults together.
-// "link" = the iR305 cellular link is down per InHand DM. Connectivity is lost
-// but the magnet is likely fine, so it sits below warning and paints sky, not
-// red — a distinct "check the router" state rather than a magnet alarm.
-export type AlarmLevel = "critical" | "warning" | "link" | "ok" | "unknown" | "maintenance";
+export type AlarmLevel = "critical" | "warning" | "ok" | "unknown" | "maintenance";
 
 export type AssetAlarm = {
   level: AlarmLevel;
@@ -111,7 +108,6 @@ export type AssetAlarm = {
 export const ALARM_COLORS: Record<AlarmLevel, string> = {
   critical: "#f0575a",
   warning: "#fbbf24",
-  link: "#38bdf8", // sky — iR305 down (connectivity), matches STATUS_COLORS.router_offline
   ok: "#4ade80",
   unknown: "#6b7280",
   maintenance: "#5b93f7",
@@ -120,7 +116,6 @@ export const ALARM_COLORS: Record<AlarmLevel, string> = {
 export const ALARM_LABELS: Record<AlarmLevel, string> = {
   critical: "Alarm",
   warning: "Warning",
-  link: "iR305 down",
   ok: "Nominal",
   unknown: "No data",
   maintenance: "Maintenance",
@@ -226,11 +221,6 @@ export function computeAssetAlarm(asset: FleetAsset): AssetAlarm {
 
   let level: AlarmLevel;
   if (hasCritical) level = "critical";
-  // A confirmed router-down outranks a plain warning: the primary story is
-  // "no data because the iR305 dropped", not a magnet warning. A genuine
-  // critical value-fault on the last reading still wins above, so we never
-  // hide a real alarm behind a connectivity note.
-  else if (connectivity === "router_offline") level = "link";
   else if (hasWarning) level = "warning";
   else if (connectivity === "unknown") level = "unknown";
   else level = "ok";
@@ -241,9 +231,8 @@ export function computeAssetAlarm(asset: FleetAsset): AssetAlarm {
 // Ordering for the carousel: alarms lead, healthy units next, quiet/maintenance
 // units trail. Ties break by name so rotation order is stable between polls.
 const LEVEL_PRIORITY: Record<AlarmLevel, number> = {
-  critical: 5,
-  warning: 4,
-  link: 3,
+  critical: 4,
+  warning: 3,
   ok: 2,
   unknown: 1,
   maintenance: 0,
@@ -281,12 +270,9 @@ export function buildAlertItems(assets: FleetAsset[]): AlertItem[] {
   const items: AlertItem[] = [];
   for (const a of assets) {
     const alarm = computeAssetAlarm(a);
-    if (alarm.level !== "critical" && alarm.level !== "warning" && alarm.level !== "link") continue;
+    if (alarm.level !== "critical" && alarm.level !== "warning") continue;
 
-    if (alarm.connectivity === "router_offline") {
-      const m = minutesSince(a.last_seen_at);
-      items.push({ key: `${a.id}-router`, assetId: a.id, asset: a.name, label: "iR305 offline", detail: m === null ? "" : `${m} min`, severity: "warning" });
-    } else if (alarm.connectivity === "offline") {
+    if (alarm.connectivity === "offline") {
       const m = minutesSince(a.last_seen_at);
       items.push({ key: `${a.id}-offline`, assetId: a.id, asset: a.name, label: "Offline", detail: m === null ? "" : `${m} min`, severity: "critical" });
     } else if (alarm.connectivity === "stale") {

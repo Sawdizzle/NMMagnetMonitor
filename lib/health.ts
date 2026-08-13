@@ -1,17 +1,6 @@
 import type { Asset } from "./supabase";
 
-// "router_offline" is a connectivity state, not a magnet fault: InHand Device
-// Manager has told us (via the dm-webhook edge function → assets.router_online)
-// that the unit's iR305 cellular link is down, so telemetry can't reach us even
-// though the magnet itself is probably fine. It supersedes a plain stale/offline
-// so the UI can say "iR305 down — check the link" instead of flashing a red
-// magnet alarm.
-export type HealthStatus =
-  | "online"
-  | "stale"
-  | "offline"
-  | "router_offline"
-  | "unknown";
+export type HealthStatus = "online" | "stale" | "offline" | "unknown";
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 30;
 // A quiet unit turns amber ("stale") once it passes its per-asset late
@@ -21,6 +10,10 @@ const DEFAULT_STALE_THRESHOLD_MINUTES = 30;
 // as a genuine outage.
 export const OFFLINE_AFTER_MINUTES = 60;
 
+// Health answers only "is the asset reporting telemetry?" — this is what drives
+// email/push alerts. Connectivity infrastructure (iR305 / Tailscale) is tracked
+// separately (see connectivityStatuses) and shown as informational chips only;
+// it never changes the health status and never alerts.
 export function computeAssetHealth(asset: Asset): HealthStatus {
   if (!asset.last_seen_at) return "unknown";
   const staleAfter =
@@ -28,13 +21,8 @@ export function computeAssetHealth(asset: Asset): HealthStatus {
   const lastSeen = new Date(asset.last_seen_at).getTime();
   const minutesSince = (Date.now() - lastSeen) / 60000;
   if (minutesSince <= staleAfter) return "online";
-  // Once the unit is genuinely late, prefer the connectivity explanation when
-  // DM has affirmatively reported its router down (router_online === false).
-  // null/undefined (not on an iR305, or unknown) falls through to stale/offline.
-  const base: HealthStatus =
-    minutesSince > OFFLINE_AFTER_MINUTES ? "offline" : "stale";
-  if (asset.router_online === false) return "router_offline";
-  return base;
+  if (minutesSince > OFFLINE_AFTER_MINUTES) return "offline";
+  return "stale";
 }
 
 export function minutesSince(dateStr: string | null): number | null {
@@ -46,15 +34,37 @@ export const STATUS_COLORS: Record<HealthStatus, string> = {
   online: "#4ade80",
   stale: "#fbbf24", // --status-warning
   offline: "#f0575a",
-  router_offline: "#38bdf8", // sky — connectivity/infra, not a magnet alarm
   unknown: "#6b7280",
 };
 
-// Human-facing chip/label text for each status (the raw enum leaks otherwise).
+// Human-facing chip text for each status (the raw enum leaks otherwise).
 export const STATUS_LABELS: Record<HealthStatus, string> = {
   online: "online",
   stale: "stale",
   offline: "offline",
-  router_offline: "iR305 down",
   unknown: "unknown",
 };
+
+// ---- connectivity chips (informational, never alerts) --------------------
+// The iR305 cellular link (via InHand DM → assets.router_online) and the
+// collector Pi's Tailscale node (via tailscale-poll → assets.tailscale_online)
+// are shown beside the status chip so an operator can see WHY a unit is quiet —
+// without any email/push and without changing the alerting health status. Only
+// signals we actually have (column non-null) produce a chip.
+export type ConnectivityChip = { key: string; label: string; up: boolean };
+
+const ONLINE = "#4ade80";
+const DOWN = "#f0575a";
+
+export function connectivityStatuses(asset: Asset): ConnectivityChip[] {
+  const chips: ConnectivityChip[] = [];
+  if (asset.router_online != null) {
+    chips.push({ key: "ir305", label: asset.router_online ? "iR305" : "iR305 down", up: asset.router_online });
+  }
+  if (asset.tailscale_online != null) {
+    chips.push({ key: "ts", label: asset.tailscale_online ? "Tailscale" : "Tailscale down", up: asset.tailscale_online });
+  }
+  return chips;
+}
+
+export const CONNECTIVITY_COLORS = { up: ONLINE, down: DOWN };

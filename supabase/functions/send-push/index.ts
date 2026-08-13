@@ -73,6 +73,8 @@ Deno.serve(async (req) => {
     .select("id, message")
     .is("resolved_at", null)
     .is("push_notified_at", null)
+    // Connectivity (iR305/Tailscale) is informational status only — never push.
+    .not("kind", "in", "(router_offline,tailscale_offline)")
     .lte("triggered_at", cutoff)
     .order("triggered_at", { ascending: true });
   if (evErr) return json({ error: evErr.message }, 500);

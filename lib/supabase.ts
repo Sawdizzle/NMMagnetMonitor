@@ -22,11 +22,15 @@ export type Asset = {
   // (known-warm / in-service assets), showing a calm "Maintenance" state
   // instead of flashing red. Connectivity status is unaffected.
   maintenance: boolean;
-  // Last iR305 state from InHand Device Manager (via the dm-webhook edge fn).
-  // false = router reported down (connectivity, magnet likely fine); null =
-  // unknown / not on an iR305. Drives the "router_offline" health state.
+  // Connectivity signals shown as informational chips beside the status chip
+  // (never alert). router_online: iR305 state from InHand DM (dm-webhook).
+  // tailscale_online: collector Pi's Tailscale node state (tailscale-poll).
+  // false = down, true = up, null = unknown / not applicable. See
+  // connectivityStatuses() in lib/health.ts.
   router_online?: boolean | null;
   router_status_at?: string | null;
+  tailscale_online?: boolean | null;
+  tailscale_status_at?: string | null;
 };
 
 export type TelemetrySample = {

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent } from "@/lib/supabase";
 import { getDataSource } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
-import { computeAssetHealth, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
+import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -127,6 +127,16 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
               <span className="cd" aria-hidden="true" />
               {STATUS_LABELS[status]}
             </span>
+            {connectivityStatuses(asset).map((c) => (
+              <span
+                key={c.key}
+                className="status-chip"
+                style={{ ["--sc" as string]: c.up ? CONNECTIVITY_COLORS.up : CONNECTIVITY_COLORS.down }}
+              >
+                <span className="cd" aria-hidden="true" />
+                {c.label}
+              </span>
+            ))}
             <span className="text-xs text-[var(--text-dim)]">
               {mins === null ? "never reported" : `last seen ${mins} min ago`}
             </span>
@@ -280,9 +290,7 @@ function AlertRow({ e }: { e: AlertEvent }) {
   const color = isOpen
     ? e.kind === "offline"
       ? "var(--status-offline)"
-      : e.kind === "router_offline"
-        ? "#38bdf8" // sky — iR305 down, matches STATUS_COLORS.router_offline
-        : "var(--status-warning)"
+      : "var(--status-warning)"
     : "var(--text-dim)";
   return (
     <div className="alert-row" data-open={isOpen ? "true" : "false"} style={{ ["--ac" as string]: color }}>
