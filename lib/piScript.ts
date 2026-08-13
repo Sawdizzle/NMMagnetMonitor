@@ -42,8 +42,8 @@ WHAT THIS DOES
      - "legend" header, e.g. Date Time In_01 In_02 ... preceded by lines
        like "Input 01 is He_Level" that map generic column names to real
        ones.
-   This parsing logic is ported directly from Numed's existing production
-   collector scripts (magmon_collect_*.py), not reverse-engineered blind.
+   This parser was validated field-by-field against live fleet devices of
+   both generations, not reverse-engineered blind.
 3. If the HTTP path fails (after a few quick retries), falls back to pulling
    the same minute data from the daily .dat file over anonymous FTP. The FTP
    daemon is a separate service from the web interface and usually survives a
@@ -234,9 +234,9 @@ def login_magmon():
     raise RuntimeError("All login attempts failed.")
 
 def fetch_minutes_raw_socket(num_hours=1, start_day=0, start_hour=1):
-    # Some MagMon units return a response urllib3/http.client can't parse
-    # as standard HTTP (BadStatusLine). Numed's production scripts hit this
-    # too and work around it with a raw socket request instead.
+    # Some MagMon units return a response urllib3/http.client can't parse as
+    # standard HTTP (BadStatusLine). We work around it with a raw socket request
+    # that reads the body directly instead.
     path = f"/goform/showMinutesCGI?num_hours={num_hours}&start_day={start_day}&start_hour={start_hour}"
     basic = base64.b64encode(f"{MAGMON_USER}:{MAGMON_PASS}".encode("ascii")).decode("ascii")
     cookie_parts = [f"{c.name}={c.value}" for c in SESSION.cookies]
@@ -284,7 +284,7 @@ def fetch_minutes(num_hours=1, start_day=0, start_hour=1):
             raise RuntimeError("Still not logged in after login attempt.")
     return body
 
-# ========= Parser (ported from Numed's production magmon_collect_*.py) =========
+# ========= Parser (handles both MagMon on-wire header generations) =========
 LABEL_MAP_NORMALIZE = {
     "He_Level": "HeLvl", "HeLevel": "HeLvl", "Helium_Level": "HeLvl", "HeLvl": "HeLvl",
     "Water_Flow": "H20_Flow", "WaterFlow": "H20_Flow", "H20_Flow": "H20_Flow",
@@ -401,8 +401,8 @@ def parse_minutes(raw_html):
 
 # ========= FTP fallback (raw .dat file) =========
 # The daily .dat file is a fixed, whitespace-separated 34-column layout. These
-# 0-indexed positions are ground truth, taken from Numed's own NM1035mindata.py
-# and reconciled field-by-field against the HTTP values during a 2026-08 pilot
+# 0-indexed positions are ground truth, reconciled field-by-field against the
+# HTTP values during a 2026-08 pilot
 # He, He-pressure, Shield, ReconRuO, Coldhead and compressor match the HTTP
 # values directly. Water flow and temp match too but in DIFFERENT UNITS: the
 # .dat reports flow in L/min and temp in degrees C, whereas HTTP (and the rest
@@ -568,6 +568,16 @@ def build_samples(rows, hwm):
 
     if hwm is None:
         picks = [ordered[-1]]              # forward-only start: just the newest row
+    elif newest <= hwm:
+        # Device clock reset. These MagMons have no working battery-backed RTC
+        # and power on to a fixed epoch (e.g. 13-May-06), so a reboot restarts
+        # the device timeline in the "past" -- every row now reads at or behind
+        # the high-water mark. Treat it exactly like a fresh start: report the
+        # newest row and let main() re-anchor the mark to it, so we recover in
+        # ONE cycle instead of going dark for days until the device clock counts
+        # back up past the old mark.
+        print(f"[nm-magmon-gateway] device clock reset detected (newest {newest.isoformat()} <= mark {hwm.isoformat()}); re-anchoring high-water mark")
+        picks = [ordered[-1]]
     else:
         picks = [(dt, r) for dt, r in ordered if dt > hwm]
 
@@ -754,7 +764,11 @@ def main():
                     report_batch([row_to_sample(rows[-1], now_min)])
                 else:
                     report_batch(samples)
-                    if newest is not None and (hwm is None or newest > hwm):
+                    # Advance the mark on new data, AND re-anchor it downward on a
+                    # device clock reset (newest < hwm, handled in build_samples),
+                    # so a rebooted MagMon does not stay filtered out. Skip only
+                    # when nothing changed (newest == hwm).
+                    if newest is not None and newest != hwm:
                         hwm = newest
                         save_hwm(hwm)
             except Exception as e:
