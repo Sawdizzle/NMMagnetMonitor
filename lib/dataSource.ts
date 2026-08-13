@@ -54,10 +54,13 @@ const liveDataSource: DataSource = {
       supabase.from("public_assets").select("*").order("name"),
       supabase.from("latest_telemetry").select("*"),
       supabase
+        // recorded_at = true reading time (not created_at = ingest time), so the
+        // window and ordering stay correct once the collector batch-reports
+        // minute rows whose created_at is all "now" but recorded_at spans the hour.
         .from("telemetry_samples")
         .select("*")
-        .gte("created_at", historyCutoff)
-        .order("created_at", { ascending: true })
+        .gte("recorded_at", historyCutoff)
+        .order("recorded_at", { ascending: true })
         .limit(5000),
       // Per-asset overrides only; fleet-wide rows (asset_id null) stay server-side.
       supabase.from("alert_rules").select("*").not("asset_id", "is", null).eq("enabled", true),

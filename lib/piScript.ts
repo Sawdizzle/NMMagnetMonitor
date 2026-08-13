@@ -49,10 +49,17 @@ WHAT THIS DOES
    daemon is a separate service from the web interface and usually survives a
    webserver crash, so this keeps reporting through the failure that most often
    takes these units offline. FTP readings are stamped source="ftp" in the raw
-   payload; HTTP readings are stamped source="http".
-4. Takes the most recent row and reports it to Supabase via the
-   report_telemetry function, authenticated with this asset's gateway
-   token (scoped to only this asset).
+   payload; HTTP readings are stamped source="http". (FTP yields only the single
+   latest row; any minutes missed while HTTP was down self-heal once HTTP
+   returns and its hourly table backfills them.)
+4. Reports EVERY minute row that is newer than the last one already sent -- not
+   just the latest -- to Supabase via report_telemetry_batch, authenticated with
+   this asset's gateway token. The HTTP table already contains the last hour of
+   one-minute rows, so this yields full minute-resolution history WITHOUT polling
+   the MagMon any harder: the poll interval only sets how often we CONTACT the
+   device, not the stored resolution. A high-water mark (persisted on disk) and
+   an idempotent (asset_id, recorded_at) DB index mean rows are never
+   double-stored across overlapping fetches or restarts.
 
 HOW THIS RUNS -- READ THIS FIRST
 This script runs CONTINUOUSLY. It has its own internal timer and sleeps
@@ -126,7 +133,20 @@ MAGMON_PASS     = "${monitorPassword}"
 BASE_URL        = f"http://{MAGMON_HOST}:{MAGMON_PORT}"
 
 POLL_INTERVAL_SECONDS = ${intervalMinutes * 60}
-REPORT_ENDPOINT = f"{SUPABASE_URL}/rest/v1/rpc/report_telemetry"
+# report_telemetry (single row) is kept server-side for compat; this collector
+# uses the batch RPC so one cycle can store every new minute row it already
+# fetched -- full minute resolution independent of the poll interval.
+REPORT_ENDPOINT       = f"{SUPABASE_URL}/rest/v1/rpc/report_telemetry"
+BATCH_REPORT_ENDPOINT = f"{SUPABASE_URL}/rest/v1/rpc/report_telemetry_batch"
+
+# High-water mark = the newest DEVICE timestamp already reported, persisted so a
+# restart does not re-send the last hour. /var/tmp survives reboots (unlike
+# /tmp); if neither is writable we still run -- the DB's unique (asset_id,
+# recorded_at) index dedupes any re-send, this file just avoids the extra work.
+HWM_CANDIDATES = [
+    "/var/tmp/nm-magmon-gateway-${assetName}.hwm",
+    "/tmp/nm-magmon-gateway-${assetName}.hwm",
+]
 
 # These MagMon controllers run a tiny single-connection GoAhead webserver that
 # intermittently refuses connections (Errno 111) when it is briefly busy -- and
@@ -459,33 +479,120 @@ def fetch_latest_ftp_row():
                 pass
     return parse_dat(buf.decode("latin-1", errors="ignore"))
 
-# ========= Report to Supabase =========
-def report(row):
-    # Timestamp using THIS machine's clock (the Pi), not the MagMon's.
-    # The Pi is a normal Linux box with internet access and keeps
-    # accurate time via NTP; the embedded MagMon controller does not.
-    recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    payload = {
-        "p_gateway_token": GATEWAY_TOKEN,
-        "p_recorded_at": recorded_at,
-        "p_he_lvl": row.get("HeLvl"),
-        "p_he_press": row.get("HePress"),
-        "p_h2o_flow": row.get("H20_Flow"),
-        "p_h2o_temp": row.get("H2O_Temp"),
-        "p_shield": row.get("Shield"),
-        "p_cs1": row.get("CS1"),
-        "p_raw": row,
-    }
+# ========= Timestamps, high-water mark, and reporting =========
+# Device Date/Time -> naive datetime. Time is simple (HH:MM[:SS]). The Date
+# format varies across the fleet and can be ambiguous (MM/DD vs DD/MM), but that
+# does not matter here: within a one-hour fetch the date is constant, so a
+# misparse shifts EVERY row by the same amount and cancels out under the Pi-clock
+# anchoring in build_samples(). We rely only on Time (for spacing) and on the
+# date being stable within the batch. Returns None if unparseable.
+_DEV_DATE_FORMATS = ["%m/%d/%y", "%m/%d/%Y", "%Y/%m/%d", "%y/%m/%d",
+                     "%d/%m/%y", "%d/%m/%Y", "%m-%d-%y", "%Y-%m-%d", "%d-%m-%y"]
+_DEV_TIME_FORMATS = ["%H:%M:%S", "%H:%M"]
+
+def parse_dev_dt(date_str, time_str):
+    d = (date_str or "").strip()
+    t = (time_str or "").strip()
+    if not d or not t:
+        return None
+    for df in _DEV_DATE_FORMATS:
+        for tf in _DEV_TIME_FORMATS:
+            try:
+                return datetime.datetime.strptime(f"{d} {t}", f"{df} {tf}")
+            except ValueError:
+                continue
+    return None
+
+def floor_minute(dt):
+    return dt.replace(second=0, microsecond=0)
+
+def load_hwm():
+    for path in HWM_CANDIDATES:
+        try:
+            with open(path, "r") as fh:
+                raw = fh.read().strip()
+            if raw:
+                return datetime.datetime.fromisoformat(raw)
+        except (OSError, ValueError):
+            continue
+    return None
+
+def save_hwm(dev_dt):
+    for path in HWM_CANDIDATES:
+        try:
+            with open(path, "w") as fh:
+                fh.write(dev_dt.isoformat())
+            return
+        except OSError:
+            continue
+    print("[nm-magmon-gateway] WARNING: could not persist high-water mark; relying on the DB unique index to dedupe")
+
+def row_to_sample(row, recorded_at_iso):
+    # Carry the full parsed row (raw device columns + source tag) for audit and
+    # add the lowercase keys report_telemetry_batch reads out of each element.
+    s = dict(row)
+    s["recorded_at"] = recorded_at_iso
+    s["he_lvl"]   = row.get("HeLvl")
+    s["he_press"] = row.get("HePress")
+    s["h2o_flow"] = row.get("H20_Flow")
+    s["h2o_temp"] = row.get("H2O_Temp")
+    s["shield"]   = row.get("Shield")
+    s["cs1"]      = row.get("CS1")
+    return s
+
+def build_samples(rows, hwm):
+    # Turn a fetch's rows into the batch to report: only those newer than the
+    # high-water mark, each stamped with a Pi-anchored, minute-truncated
+    # recorded_at. Anchoring: the Pi keeps accurate NTP time and the embedded
+    # MagMon does not, so we trust the Pi for ABSOLUTE placement (newest row ->
+    # this minute) and use the device clock only for the RELATIVE spacing between
+    # rows. Because offset = now - newest_device_time, any constant misparse of
+    # the device date cancels. Returns (samples, newest_device_dt), or
+    # (None, None) if no row had a parseable device timestamp.
+    dated = []
+    for r in rows:
+        dt = parse_dev_dt(r.get("Date"), r.get("Time"))
+        if dt is not None:
+            dated.append((dt, r))
+    if not dated:
+        return None, None
+
+    uniq = {}
+    for dt, r in sorted(dated, key=lambda x: x[0]):
+        uniq[dt] = r                       # last write wins; dedupe same-minute rows
+    ordered = sorted(uniq.items())         # [(device_dt, row), ...] ascending
+    newest = ordered[-1][0]
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    offset = now_utc - newest.replace(tzinfo=datetime.timezone.utc)
+
+    if hwm is None:
+        picks = [ordered[-1]]              # forward-only start: just the newest row
+    else:
+        picks = [(dt, r) for dt, r in ordered if dt > hwm]
+
+    samples = []
+    for dt, r in picks:
+        recorded_at = floor_minute(dt.replace(tzinfo=datetime.timezone.utc) + offset)
+        samples.append(row_to_sample(r, recorded_at.isoformat()))
+    return samples, newest
+
+def report_batch(samples):
+    # Call this after EVERY successful device read, even when samples is empty:
+    # report_telemetry_batch stamps last_seen_at (liveness) regardless of whether
+    # there was new telemetry, so an idle-but-reachable unit never looks stale.
+    payload = {"p_gateway_token": GATEWAY_TOKEN, "p_samples": samples}
     headers = {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         "Content-Type": "application/json",
     }
-    resp = requests.post(REPORT_ENDPOINT, headers=headers, data=json.dumps(payload), timeout=10)
+    resp = requests.post(BATCH_REPORT_ENDPOINT, headers=headers, data=json.dumps(payload), timeout=15)
     if resp.status_code >= 300:
-        print(f"[nm-magmon-gateway] report failed: {resp.status_code} {resp.text}")
-    else:
-        print(f"[nm-magmon-gateway] reported OK: {row['Date']} {row['Time']}")
+        print(f"[nm-magmon-gateway] batch report failed: {resp.status_code} {resp.text}")
+        return None
+    print(f"[nm-magmon-gateway] reported {len(samples)} sample(s); {resp.text.strip()} newly stored")
+    return resp.text.strip()
 
 # ========= Single-instance guard =========
 # systemd already guarantees one copy per asset. This flock is a second,
@@ -592,19 +699,25 @@ def main():
     if not acquire_singleton_lock():
         sys.exit(0)  # Not an error: the other copy is already doing the work.
 
+    hwm = load_hwm()  # newest device timestamp already reported, or None on a fresh start
+    if hwm is not None:
+        print(f"[nm-magmon-gateway] resuming from high-water mark {hwm.isoformat()}")
+
     while _RUNNING:
         cycle_started = time.monotonic()
-        row = None
+        rows = None
 
-        # Primary path: scrape the HTTP minute table, with a few quick retries to
-        # ride through the webserver's transient connection refusals.
+        # Primary path: scrape the HTTP minute table -- the last hour of one-minute
+        # rows -- with a few quick retries to ride the webserver's transient
+        # connection refusals.
         for attempt in range(1, POLL_RETRIES + 1):
             try:
                 if not probe_tcp_connect(MAGMON_HOST, MAGMON_PORT):
                     raise RuntimeError(f"Cannot reach MagMon at {MAGMON_HOST}:{MAGMON_PORT}")
                 body = fetch_minutes(num_hours=1, start_day=0, start_hour=1)
-                row = parse_minutes(body)[-1]  # most recent row
-                row["source"] = "http"
+                rows = parse_minutes(body)  # ALL rows this cycle, not just the last
+                for r in rows:
+                    r["source"] = "http"
                 break
             except Exception as e:
                 print(f"[nm-magmon-gateway] HTTP attempt {attempt}/{POLL_RETRIES} failed: {e}")
@@ -615,20 +728,35 @@ def main():
                     sleep_interruptible(RETRY_BACKOFF_SECONDS)
 
         # Fallback path: if HTTP produced nothing (e.g. the GoAhead webserver has
-        # wedged), pull the same minute data from the daily .dat over anonymous
-        # FTP -- a separate daemon that usually survives an HTTP-server crash.
-        if row is None and _RUNNING:
+        # wedged), pull the daily .dat over anonymous FTP -- a separate daemon
+        # that usually survives an HTTP-server crash. This yields only the single
+        # latest row; minutes missed while HTTP is down backfill from the hourly
+        # table once HTTP returns.
+        if rows is None and _RUNNING:
             try:
-                row = fetch_latest_ftp_row()
-                row["source"] = "ftp"
+                ftp_row = fetch_latest_ftp_row()
+                ftp_row["source"] = "ftp"
+                rows = [ftp_row]
                 print("[nm-magmon-gateway] HTTP unavailable -- got reading via FTP fallback")
             except Exception as e:
                 print(f"[nm-magmon-gateway] FTP fallback failed: {e}")
                 traceback.print_exc()
 
-        if row is not None:
+        # Report every row newer than the high-water mark. report_batch is called
+        # even when there is nothing new (empty list) so liveness still updates.
+        if rows:
             try:
-                report(row)
+                samples, newest = build_samples(rows, hwm)
+                if samples is None:
+                    # No row carried a parseable device timestamp -- degrade to the
+                    # old behaviour: report just the latest row, stamped "now".
+                    now_min = floor_minute(datetime.datetime.now(datetime.timezone.utc)).isoformat()
+                    report_batch([row_to_sample(rows[-1], now_min)])
+                else:
+                    report_batch(samples)
+                    if newest is not None and (hwm is None or newest > hwm):
+                        hwm = newest
+                        save_hwm(hwm)
             except Exception as e:
                 print(f"[nm-magmon-gateway] report failed: {e}")
                 traceback.print_exc()
