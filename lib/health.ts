@@ -30,6 +30,33 @@ export function minutesSince(dateStr: string | null): number | null {
   return Math.round((Date.now() - new Date(dateStr).getTime()) / 60000);
 }
 
+// How long a reachable unit may go without a *new* telemetry reading before it
+// counts as silent. Kept at the offline horizon so silence and offline escalate
+// on the same clock.
+export const SILENT_AFTER_MINUTES = OFFLINE_AFTER_MINUTES;
+
+// "Reachable but silent" — the blind spot last_seen_at alone can't see.
+//
+// The collector stamps last_seen_at on EVERY successful device read, even when
+// the read produced no new rows (report_batch in lib/piScript.ts), so an
+// operator stays reassured that the Pi is up. But that means a unit whose device
+// log has stopped advancing — a parse fault, a hung readout, a clock reset —
+// keeps a fresh last_seen_at and renders green while logging nothing. This
+// catches it by comparing liveness against the newest actual sample's reading
+// time (recorded_at). We only flag it while connectivity still reads "online":
+// once last_seen_at itself goes stale/offline, the normal health status already
+// tells the story. A null latestRecordedAt on an otherwise-live unit (reachable
+// but never logged a reading) is silent by definition.
+export function isTelemetrySilent(
+  asset: Asset,
+  latestRecordedAt: string | null,
+): boolean {
+  if (computeAssetHealth(asset) !== "online") return false;
+  if (!latestRecordedAt) return true;
+  const mins = (Date.now() - new Date(latestRecordedAt).getTime()) / 60000;
+  return mins > SILENT_AFTER_MINUTES;
+}
+
 export const STATUS_COLORS: Record<HealthStatus, string> = {
   online: "#4ade80",
   stale: "#fbbf24", // --status-warning

@@ -15,7 +15,7 @@
 // "maintenance" level so the display never cries wolf over them.
 
 import type { FleetAsset } from "./dataSource";
-import { computeAssetHealth, minutesSince, type HealthStatus } from "./health";
+import { computeAssetHealth, isTelemetrySilent, minutesSince, type HealthStatus } from "./health";
 
 // ---- tunable thresholds --------------------------------------------------
 
@@ -146,6 +146,16 @@ function fmt(n: number, digits = 0): string {
   return n.toFixed(digits).replace(/\.0+$/, "");
 }
 
+// Compact age for the "No fresh telemetry" detail so a long silence reads as
+// "31 h" / "5 d" rather than a five-digit minute count. null = never reported.
+function ageLabel(mins: number | null): string {
+  if (mins === null) return "no readings";
+  if (mins < 90) return `${mins} min`;
+  const hrs = mins / 60;
+  if (hrs < 48) return `${Math.round(hrs)} h`;
+  return `${Math.round(hrs / 24)} d`;
+}
+
 // ---- fault detection -----------------------------------------------------
 
 // Every value-based fault currently tripping for an asset, worst first. Empty
@@ -213,6 +223,22 @@ export function computeAssetAlarm(asset: FleetAsset): AssetAlarm {
   // screaming. They still render, just calmly and last in the rotation.
   if (asset.maintenance) {
     return { level: "maintenance", connectivity, faults: [], maintenance: true };
+  }
+
+  // Reachable-but-silent: last_seen_at is fresh (connectivity "online") but the
+  // newest reading is stale — the unit is phoning home without logging data. Its
+  // stored values are old, so we deliberately do NOT evaluate value-faults
+  // against them (that would present a 4-year-old reading as current); a single
+  // "No fresh telemetry" warning makes the blind spot visible instead of leaving
+  // the card green. See isTelemetrySilent() in lib/health.ts.
+  if (isTelemetrySilent(asset, asset.latest?.recorded_at ?? null)) {
+    const detail = ageLabel(minutesSince(asset.latest?.recorded_at ?? null));
+    return {
+      level: "warning",
+      connectivity,
+      faults: [{ key: "silent", label: "No fresh telemetry", detail, severity: "warning" }],
+      maintenance: false,
+    };
   }
 
   const faults = computeAssetFaults(asset);
