@@ -1468,7 +1468,7 @@ function AlertEventsSection({ me }: { me: Session }) {
         {events.map((e) => {
           const isOpen = !e.resolved_at;
           const color = isOpen
-            ? e.kind === "offline"
+            ? e.kind === "offline" || e.kind === "reporting_stalled"
               ? "var(--status-offline)"
               : "var(--status-warning)"
             : "var(--text-dim)";

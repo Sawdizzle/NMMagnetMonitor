@@ -150,7 +150,7 @@ create table if not exists public.alert_events (
   id             bigint      generated always as identity primary key,
   asset_id       uuid        not null references public.assets(id) on delete cascade,
   alert_rule_id  uuid        references public.alert_rules(id) on delete set null,
-  kind           text        not null,   -- 'offline' | 'router_offline' | 'threshold'
+  kind           text        not null,   -- 'offline' | 'reporting_stalled' | 'router_offline' | 'threshold'
   message        text        not null,
   triggered_at   timestamptz not null default now(),
   resolved_at    timestamptz,
@@ -724,7 +724,9 @@ create index if not exists idx_dm_webhook_events_received
 -- service-center units (e.g. NM1034) don't raise permanent phantom alarms.
 -- Scheduled every minute by pg_cron job 'evaluate-alerts' (see end of file);
 -- sends nothing itself — notification is a separate step.
--- APPLIED to live DB 2026-08-12 via migration evaluate_alerts_exempt_maintenance.
+-- APPLIED to live DB 2026-08-12 via migration evaluate_alerts_exempt_maintenance,
+-- then 2026-08-13 via migration alerts_disambiguate_reporting_stalled (splits a
+-- stale unit into 'offline' vs 'reporting_stalled' by Tailscale reachability).
 CREATE OR REPLACE FUNCTION public.evaluate_alerts()
  RETURNS void
  LANGUAGE plpgsql
@@ -738,25 +740,49 @@ begin
   from assets a
   where e.asset_id = a.id and e.resolved_at is null and a.maintenance;
 
-  -- OFFLINE open (skip maintenance). Connectivity (iR305/Tailscale) is shown as
-  -- informational chips only and does NOT suppress this — a genuinely quiet asset
-  -- still opens the offline alarm (which is the only thing that emails/pushes).
+  -- STALE TELEMETRY -> partition by Pi reachability into two actionable kinds:
+  --   * reporting_stalled: the Pi is reachable on Tailscale (freshly polled) yet
+  --     telemetry is stale -> a gateway/DNS/egress fault on an otherwise-up Pi
+  --     (SSH in over Tailscale to fix). This is the NM1020 2026-08-13 case.
+  --   * offline: telemetry stale and the Pi is NOT confirmed reachable -> the
+  --     unit is down / the site network is down.
+  -- Exactly one kind is open per stale unit; if reachability flips, the wrong one
+  -- is resolved and the right one opened on the next run. BOTH notify -- only the
+  -- router_offline/tailscale_offline connectivity chips stay informational.
+  -- Reachability requires a FRESH Tailscale poll (status within 15 min, i.e. the
+  -- poll is actually running) so a stale 'online' is never trusted.
   for r in
-    select a.id, a.name, a.last_seen_at, a.offline_threshold_minutes
+    select a.id, a.name, a.last_seen_at,
+      (a.tailscale_online is true
+        and a.tailscale_status_at is not null
+        and a.tailscale_status_at >= now() - interval '15 minutes') as pi_reachable
     from assets a
     where a.maintenance = false
       and a.last_seen_at is not null
       and a.last_seen_at < now() - make_interval(mins => a.offline_threshold_minutes)
   loop
-    if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
-      insert into alert_events (asset_id, kind, message)
-      values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
+    if r.pi_reachable then
+      if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='reporting_stalled' and e.resolved_at is null) then
+        insert into alert_events (asset_id, kind, message)
+        values (r.id, 'reporting_stalled',
+          format('%s reachable on Tailscale but not reporting since %s — likely gateway/DNS/egress fault on the Pi', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
+      end if;
+      update alert_events e set resolved_at=now()
+        where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null;
+    else
+      if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
+        insert into alert_events (asset_id, kind, message)
+        values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
+      end if;
+      update alert_events e set resolved_at=now()
+        where e.asset_id=r.id and e.kind='reporting_stalled' and e.resolved_at is null;
     end if;
   end loop;
-  -- OFFLINE resolve
+
+  -- Resolve BOTH offline kinds once telemetry is flowing again.
   update alert_events e set resolved_at=now()
   from assets a
-  where e.asset_id=a.id and e.kind='offline' and e.resolved_at is null
+  where e.asset_id=a.id and e.kind in ('offline','reporting_stalled') and e.resolved_at is null
     and a.last_seen_at >= now() - make_interval(mins => a.offline_threshold_minutes);
 
   -- THRESHOLD / STATE with per-asset override (skip maintenance)

@@ -9,10 +9,12 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // device lastSeen from the API instead.
 //
 // WHAT IT MEANS: on Tailscale the node IS the Pi (tailscaled runs on it), so
-// node up + telemetry silent -> the collector/MagMon is the fault (SSH in over
-// Tailscale to fix it); node down -> Pi powered off / site network down. This is
-// shown as an INFORMATIONAL chip only — it never opens an alert and never
-// emails/pushes; the asset's own telemetry-offline is the sole alert.
+// node up + telemetry silent -> the collector/MagMon/egress is the fault (SSH in
+// over Tailscale to fix it); node down -> Pi powered off / site network down.
+// The chip itself is informational, but evaluate_alerts READS this reachability
+// to classify a stale unit: Tailscale-up + telemetry-stale opens the
+// 'reporting_stalled' alert (gateway/DNS/egress fault, e.g. NM1020 2026-08-13),
+// while not-reachable opens plain 'offline'. Both notify.
 //
 // MATCHING — the tailnet is MIXED. Besides the Pis it holds Windows machines
 // named after the same assets (site laptops, MRI console PCs like
