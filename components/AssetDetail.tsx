@@ -2,10 +2,11 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent } from "@/lib/supabase";
-import { getDataSource } from "@/lib/dataSource";
+import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent, type AlertRule } from "@/lib/supabase";
+import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
+import { computeAssetAlarm } from "@/lib/faults";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -31,6 +32,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   const [asset, setAsset] = useState<Asset | null>(null);
   const [latest, setLatest] = useState<TelemetrySample | null>(null);
   const [buckets, setBuckets] = useState<TelemetryBucket[]>([]);
+  const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,7 +40,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     // Pre-aggregated into 15-minute averaged buckets (at most 96 rows for a 24h
     // window in the live path) so the chart/table cost is fixed regardless of
     // how many raw readings a gateway actually sent.
-    const { asset: assetRow, latest: latestRow, buckets: bucketRows, error: err } = await getDataSource(
+    const { asset: assetRow, latest: latestRow, buckets: bucketRows, alertRules: rules, error: err } = await getDataSource(
       demo
     ).loadAssetDetail(assetId, HISTORY_HOURS);
 
@@ -51,6 +53,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     setAsset(assetRow);
     setLatest(latestRow);
     setBuckets(bucketRows);
+    setAlertRules(rules);
     setError(null);
     setLoading(false);
   }, [assetId, demo]);
@@ -106,6 +109,12 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   const mins = minutesSince(asset.last_seen_at);
   const tableRows = [...buckets].reverse(); // newest-first for the table
 
+  // Same value-fault evaluation the fleet card runs, so the pills here match the
+  // card exactly (single source of truth in lib/faults). computeAssetFaults only
+  // reads latest / latest.data / alertRules — history is unused, so [] is fine.
+  const fleetShape: FleetAsset = { ...asset, latest, history: [], alertRules };
+  const alarm = computeAssetAlarm(fleetShape);
+
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
       <Link href={basePath || "/"} className="back-link">
@@ -141,6 +150,16 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
               {mins === null ? "never reported" : `last seen ${mins} min ago`}
             </span>
           </div>
+
+          {alarm.faults.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+              {alarm.faults.map((f) => (
+                <span key={f.key} className={`fault-pill ${f.severity}`}>
+                  {f.label} <b>{f.detail}</b>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <FieldRing status={status} size={56} />
       </header>
@@ -287,8 +306,11 @@ function AlertsSection({ events }: { events: AlertEvent[] }) {
 
 function AlertRow({ e }: { e: AlertEvent }) {
   const isOpen = !e.resolved_at;
+  // offline and reporting_stalled both mean "no telemetry" -> red severity;
+  // reporting_stalled's message carries the disambiguation (Pi reachable, egress
+  // fault). threshold/other alerts stay amber.
   const color = isOpen
-    ? e.kind === "offline"
+    ? e.kind === "offline" || e.kind === "reporting_stalled"
       ? "var(--status-offline)"
       : "var(--status-warning)"
     : "var(--text-dim)";

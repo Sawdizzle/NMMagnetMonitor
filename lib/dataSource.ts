@@ -22,6 +22,11 @@ export type AssetDetailResult = {
   asset: Asset | null;
   latest: TelemetrySample | null;
   buckets: TelemetryBucket[];
+  // Per-asset overrides for this asset, carried so the detail page evaluates
+  // value-faults against the exact same thresholds as the fleet card (which
+  // loads them in loadFleet). Without this an override-asset would show a pill
+  // on the detail page that the card suppresses — a fresh card/detail mismatch.
+  alertRules: AlertRule[];
   error: string | null;
 };
 export type HeliumSeriesResult = { points: HeliumPoint[]; error: string | null };
@@ -105,19 +110,25 @@ const liveDataSource: DataSource = {
       .single();
 
     if (assetErr || !assetRow) {
-      return { asset: null, latest: null, buckets: [], error: assetErr?.message || "Asset not found" };
+      return { asset: null, latest: null, buckets: [], alertRules: [], error: assetErr?.message || "Asset not found" };
     }
 
-    const [{ data: latestRow }, { data: bucketRows, error: bucketErr }] = await Promise.all([
+    const [{ data: latestRow }, { data: bucketRows, error: bucketErr }, { data: rules }] = await Promise.all([
       supabase.from("latest_telemetry").select("*").eq("asset_id", assetId).maybeSingle(),
       supabase.rpc("asset_telemetry_15min", { p_asset_id: assetId, p_hours: historyHours }),
+      // Same per-asset override query loadFleet uses, scoped to this asset.
+      supabase.from("alert_rules").select("*").eq("asset_id", assetId).eq("enabled", true),
     ]);
 
     if (bucketErr) {
-      return { asset: null, latest: null, buckets: [], error: bucketErr.message };
+      return { asset: null, latest: null, buckets: [], alertRules: [], error: bucketErr.message };
     }
 
-    return { asset: assetRow, latest: latestRow ?? null, buckets: bucketRows ?? [], error: null };
+    // numeric thresholds can arrive as strings from PostgREST — coerce so the
+    // resolver in lib/faults compares numbers, matching loadFleet.
+    const alertRules = (rules ?? []).map((r) => ({ ...r, threshold: Number(r.threshold) }));
+
+    return { asset: assetRow, latest: latestRow ?? null, buckets: bucketRows ?? [], alertRules, error: null };
   },
 
   async loadHeliumSeries(assetId, historyHours) {
@@ -152,8 +163,9 @@ const demoDataSource: DataSource = {
   },
   async loadAssetDetail(assetId, historyHours) {
     const detail = demoAssetDetail(assetId, historyHours);
-    if (!detail) return { asset: null, latest: null, buckets: [], error: "Asset not found" };
-    return { ...detail, error: null };
+    if (!detail) return { asset: null, latest: null, buckets: [], alertRules: [], error: "Asset not found" };
+    // Demo has no per-asset overrides — value-faults evaluate against defaults.
+    return { ...detail, alertRules: [], error: null };
   },
   async loadHeliumSeries(assetId, historyHours) {
     const detail = demoAssetDetail(assetId, historyHours);
