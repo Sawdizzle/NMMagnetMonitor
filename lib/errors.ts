@@ -54,10 +54,12 @@ function duplicateValueFrom(details?: string | null): string | null {
 export function friendlyErrorMessage(error: SupabaseLikeError): string {
   const { message, code, details } = error;
 
-  // A rejected PIN is by far the most common admin error and the raw text
-  // ("not authorized") gives no hint that the PIN is what failed.
+  // "not authorized" used to mean a rejected PIN. Since Phase 3 the admin calls
+  // carry no credential at all — the server resolves the session cookie — so it
+  // now means the signed-in account is not an admin of the ACTIVE organization,
+  // which is a different thing to tell the user.
   if (/not authorized/i.test(message)) {
-    return "Your admin username or PIN was not accepted. Check both and try again.";
+    return "You are not an admin of the organization you are currently viewing. Switch organization, or ask an admin to grant you access.";
   }
 
   if (code === "23505" || /duplicate key value/i.test(message)) {

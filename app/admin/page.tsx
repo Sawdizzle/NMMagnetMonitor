@@ -8,6 +8,33 @@ import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
 import Protected from "@/components/Protected";
 import type { Session } from "@/lib/auth";
+// Admin mutations go through server actions now: the httpOnly session cookie
+// travels with the call and the server resolves both the actor and the active
+// org. The browser sends no credential, and the RPCs are org-scoped, so an
+// admin of one company cannot reach another's assets, users or alert rules.
+import {
+  adminCreateAsset,
+  adminUpdateAsset,
+  adminDeleteAsset,
+  adminGetAssetConfig,
+  adminSetAssetMaintenance,
+  adminRotateGatewayToken,
+  adminListUsers,
+  adminCreateUser,
+  adminSetTvAccess,
+  adminSetRole,
+  adminResetPin,
+  adminListAlertRules,
+  adminUpsertAlertRule,
+  adminDeleteAlertRule,
+  adminListAlertRecipients,
+  adminUpsertAlertRecipient,
+  adminDeleteAlertRecipient,
+  adminListAlertEvents,
+  adminGetAlertFrom,
+  adminSetAlertFrom,
+  adminListAuditLog,
+} from "@/lib/adminActions";
 
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "he_lvl", label: "Helium level", unit: "%" },
@@ -166,13 +193,9 @@ function AdminPanel({ me }: { me: Session }) {
   const [editServiceUser, setEditServiceUser] = useState("pi");
 
   const loadAuditLog = useCallback(async () => {
-    const { data } = await supabase.rpc("admin_list_audit_log", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_limit: 200,
-    });
+    const { data } = await adminListAuditLog(200);
     setAuditLog((data as AuditEntry[]) ?? []);
-  }, [me.username, me.pin]);
+  }, []);
 
   const load = useCallback(async () => {
     const [assetRes, { data: userRows }, { data: ruleRows }] = await Promise.all([
@@ -182,14 +205,14 @@ function AdminPanel({ me }: { me: Session }) {
       fetch("/api/assets", { cache: "no-store" })
         .then((r) => r.json())
         .catch(() => ({ assets: [] })),
-      supabase.rpc("admin_list_users", { p_actor_username: me.username, p_actor_pin: me.pin }),
-      supabase.rpc("admin_list_alert_rules", { p_actor_username: me.username, p_actor_pin: me.pin }),
+      adminListUsers(),
+      adminListAlertRules(),
     ]);
     setAssets(assetRes?.assets ?? []);
     setUsers((userRows as AppUser[]) ?? []);
     setAlertRules((ruleRows as AlertRule[]) ?? []);
     loadAuditLog();
-  }, [me.username, me.pin, loadAuditLog]);
+  }, [loadAuditLog]);
 
   useEffect(() => {
     load();
@@ -197,18 +220,16 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleAddAsset(e: React.FormEvent) {
     e.preventDefault();
-    const { data, error } = await supabase.rpc("admin_create_asset", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_name: assetName,
-      p_site_name: assetSiteName.trim() || null,
-      p_site_address: assetSiteAddress.trim() || null,
-      p_offline_threshold_minutes: offlineThreshold,
-      p_monitor_host: monitorHost,
-      p_monitor_port: monitorPort,
-      p_monitor_username: monitorUsername,
-      p_monitor_password: monitorPassword,
-      p_service_user: assetServiceUser,
+    const { data, error } = await adminCreateAsset({
+      name: assetName,
+      siteName: assetSiteName.trim() || null,
+      siteAddress: assetSiteAddress.trim() || null,
+      offlineThresholdMinutes: offlineThreshold,
+      monitorHost: monitorHost,
+      monitorPort: monitorPort,
+      monitorUsername: monitorUsername,
+      monitorPassword: monitorPassword,
+      serviceUser: assetServiceUser,
     });
     if (error) return fail(actionError("Could not add asset", error));
     notify(`Asset "${assetName}" added. Install script generated below.`);
@@ -234,13 +255,7 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleAddUser(e: React.FormEvent) {
     e.preventDefault();
-    const { error } = await supabase.rpc("admin_create_user", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_new_username: userName,
-      p_new_pin: userPin,
-      p_role: userRole,
-    });
+    const { error } = await adminCreateUser(userName, userPin, userRole);
     if (error) return fail(actionError("Could not add user", error));
     notify(`User "${userName}" created.`);
     setUserName("");
@@ -256,23 +271,13 @@ function AdminPanel({ me }: { me: Session }) {
       minLength: 4,
     });
     if (!newPin) return;
-    const { error } = await supabase.rpc("admin_reset_pin", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_target_username: u.username,
-      p_new_pin: newPin,
-    });
+    const { error } = await adminResetPin(u.username, newPin);
     if (error) return fail(actionError("Could not reset PIN", error));
     notify(`PIN reset for ${u.username}.`);
   }
 
   async function handleToggleTvAccess(u: AppUser) {
-    const { error } = await supabase.rpc("admin_set_tv_access", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_target_username: u.username,
-      p_tv_access: !u.tv_access,
-    });
+    const { error } = await adminSetTvAccess(u.username, !u.tv_access);
     if (error) return fail(actionError("Could not update TV access", error));
     notify(u.tv_access ? `TV access revoked for ${u.username}.` : `TV access granted to ${u.username}.`);
     load();
@@ -280,23 +285,14 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleToggleRole(u: AppUser) {
     const newRole = u.role === "admin" ? "viewer" : "admin";
-    const { error } = await supabase.rpc("admin_set_role", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_target_username: u.username,
-      p_new_role: newRole,
-    });
+    const { error } = await adminSetRole(u.username, newRole);
     if (error) return fail(actionError("Could not change role", error));
     notify(`${u.username} is now ${newRole}.`);
     load();
   }
 
   async function handleStartEditAsset(asset: Asset) {
-    const { data, error } = await supabase.rpc("admin_get_asset_config", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_asset_id: asset.id,
-    });
+    const { data, error } = await adminGetAssetConfig(asset.id);
     const config = data && data[0];
     if (error || !config) return fail(error ? actionError("Could not load asset", error) : "Could not load asset: not found.");
     setEditingAssetId(asset.id);
@@ -314,19 +310,17 @@ function AdminPanel({ me }: { me: Session }) {
   async function handleSaveAssetEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editingAssetId) return;
-    const { error } = await supabase.rpc("admin_update_asset", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_asset_id: editingAssetId,
-      p_name: editName,
-      p_site_name: editSiteName.trim() || null,
-      p_site_address: editSiteAddress.trim() || null,
-      p_offline_threshold_minutes: editThreshold,
-      p_monitor_host: editHost,
-      p_monitor_port: editPort,
-      p_monitor_username: editUsername,
-      p_monitor_password: editPassword,
-      p_service_user: editServiceUser,
+    const { error } = await adminUpdateAsset({
+      assetId: editingAssetId,
+      name: editName,
+      siteName: editSiteName.trim() || null,
+      siteAddress: editSiteAddress.trim() || null,
+      offlineThresholdMinutes: editThreshold,
+      monitorHost: editHost,
+      monitorPort: editPort,
+      monitorUsername: editUsername,
+      monitorPassword: editPassword,
+      serviceUser: editServiceUser,
     });
     if (error) return fail(actionError("Could not save asset", error));
     notify(`Asset "${editName}" updated.`);
@@ -336,11 +330,7 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleDeleteAsset(a: Asset) {
     if (!(await askConfirm(`Delete asset "${a.name}"? This also deletes all its telemetry history. This cannot be undone.`, true))) return;
-    const { error } = await supabase.rpc("admin_delete_asset", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_asset_id: a.id,
-    });
+    const { error } = await adminDeleteAsset(a.id);
     if (error) return fail(actionError("Could not delete asset", error));
     notify(`Asset "${a.name}" deleted.`);
     if (editingAssetId === a.id) setEditingAssetId(null);
@@ -348,12 +338,7 @@ function AdminPanel({ me }: { me: Session }) {
   }
 
   async function handleToggleMaintenance(a: Asset) {
-    const { error } = await supabase.rpc("admin_set_asset_maintenance", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_asset_id: a.id,
-      p_maintenance: !a.maintenance,
-    });
+    const { error } = await adminSetAssetMaintenance(a.id, !a.maintenance);
     if (error) return fail(actionError("Could not update maintenance mode", error));
     notify(
       a.maintenance
@@ -388,13 +373,15 @@ function AdminPanel({ me }: { me: Session }) {
   }
 
   async function handleGetScriptForExisting(asset: Asset) {
-    const { data, error } = await supabase.rpc("admin_get_asset_config", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_asset_id: asset.id,
-    });
+    const { data, error } = await adminGetAssetConfig(asset.id);
     const config = data && data[0];
     if (error || !config) return fail(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
+    // monitor_host is nullable, and the generated collector needs it to reach the
+    // MagMon. Previously a null flowed straight into the template and produced a
+    // script that could never connect; say so instead.
+    if (!config.monitor_host) {
+      return fail(`"${asset.name}" has no monitor host set. Edit the asset and add the MagMon's address before generating a script.`);
+    }
     // Default the panel's service-user field to this asset's stored value, and
     // build with it so the .py + unit come out with the right User=.
     const su = asset.service_user || "pi";
@@ -413,11 +400,7 @@ function AdminPanel({ me }: { me: Session }) {
       ))
     )
       return;
-    const { error } = await supabase.rpc("admin_rotate_gateway_token", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_asset_id: asset.id,
-    });
+    const { error } = await adminRotateGatewayToken(asset.id);
     if (error) return fail(actionError("Could not rotate token", error));
     notify(
       `Token rotated for "${asset.name}". Download the script again and deploy it — the Pi is offline until you do.`
@@ -446,15 +429,13 @@ function AdminPanel({ me }: { me: Session }) {
 
   async function handleSaveRule(e: React.FormEvent) {
     e.preventDefault();
-    const { error } = await supabase.rpc("admin_upsert_alert_rule", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_rule_id: editingRuleId,
-      p_asset_id: ruleScope || null,
-      p_field: ruleField,
-      p_comparator: ruleComparator,
-      p_threshold: ruleThreshold,
-      p_enabled: ruleEnabled,
+    const { error } = await adminUpsertAlertRule({
+      ruleId: editingRuleId,
+      assetId: ruleScope || null,
+      field: ruleField,
+      comparator: ruleComparator,
+      threshold: ruleThreshold,
+      enabled: ruleEnabled,
     });
     if (error) return fail(actionError("Could not save alert rule", error));
     notify(editingRuleId ? "Alert rule updated." : "Alert rule added.");
@@ -463,15 +444,13 @@ function AdminPanel({ me }: { me: Session }) {
   }
 
   async function handleToggleRule(r: AlertRule) {
-    const { error } = await supabase.rpc("admin_upsert_alert_rule", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_rule_id: r.id,
-      p_asset_id: r.asset_id,
-      p_field: r.field,
-      p_comparator: r.comparator,
-      p_threshold: Number(r.threshold),
-      p_enabled: !r.enabled,
+    const { error } = await adminUpsertAlertRule({
+      ruleId: r.id,
+      assetId: r.asset_id,
+      field: r.field,
+      comparator: r.comparator,
+      threshold: Number(r.threshold),
+      enabled: !r.enabled,
     });
     if (error) return fail(actionError("Could not update alert rule", error));
     load();
@@ -480,11 +459,7 @@ function AdminPanel({ me }: { me: Session }) {
   async function handleDeleteRule(r: AlertRule) {
     const metric = ALERT_METRICS.find((m) => m.key === r.field)?.label ?? r.field;
     if (!(await askConfirm(`Delete this alert rule (${metric} ${r.comparator} ${Number(r.threshold)})?`, true))) return;
-    const { error } = await supabase.rpc("admin_delete_alert_rule", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_rule_id: r.id,
-    });
+    const { error } = await adminDeleteAlertRule(r.id);
     if (error) return fail(actionError("Could not delete alert rule", error));
     notify("Alert rule deleted.");
     if (editingRuleId === r.id) resetRuleForm();
@@ -541,13 +516,11 @@ function AdminPanel({ me }: { me: Session }) {
     try {
       const built = await Promise.all(
         assets.map(async (a) => {
-          const { data, error } = await supabase.rpc("admin_get_asset_config", {
-            p_actor_username: me.username,
-            p_actor_pin: me.pin,
-            p_asset_id: a.id,
-          });
+          const { data, error } = await adminGetAssetConfig(a.id);
           const cfg = data && data[0];
-          if (error || !cfg) return { name: a.name, ok: false as const };
+          // No monitor host = the script could never reach the MagMon, so count
+          // it as a failure for this asset rather than emitting a broken file.
+          if (error || !cfg || !cfg.monitor_host) return { name: a.name, ok: false as const };
           const su = a.service_user || "pi";
           const script = generatePiScript({
             assetName: a.name,
@@ -1229,12 +1202,9 @@ function AlertRecipientsSection({
   const [testingId, setTestingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.rpc("admin_list_alert_recipients", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-    });
+    const { data } = await adminListAlertRecipients();
     setRecipients((data as AlertRecipient[]) ?? []);
-  }, [me.username, me.pin]);
+  }, []);
   useEffect(() => {
     load();
   }, [load]);
@@ -1247,13 +1217,11 @@ function AlertRecipientsSection({
   }
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    const { error } = await supabase.rpc("admin_upsert_alert_recipient", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_id: editingId,
-      p_channel: channel,
-      p_address: address,
-      p_enabled: enabled,
+    const { error } = await adminUpsertAlertRecipient({
+      id: editingId,
+      channel,
+      address,
+      enabled,
     });
     if (error) return fail(actionError("Could not save recipient", error));
     notify(editingId ? "Recipient updated." : "Recipient added.");
@@ -1267,24 +1235,18 @@ function AlertRecipientsSection({
     setEnabled(r.enabled);
   }
   async function toggle(r: AlertRecipient) {
-    const { error } = await supabase.rpc("admin_upsert_alert_recipient", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_id: r.id,
-      p_channel: r.channel,
-      p_address: r.address,
-      p_enabled: !r.enabled,
+    const { error } = await adminUpsertAlertRecipient({
+      id: r.id,
+      channel: r.channel,
+      address: r.address,
+      enabled: !r.enabled,
     });
     if (error) return fail(actionError("Could not update recipient", error));
     load();
   }
   async function remove(r: AlertRecipient) {
     if (!(await askConfirm(`Remove ${r.address} from alert recipients?`, true))) return;
-    const { error } = await supabase.rpc("admin_delete_alert_recipient", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_id: r.id,
-    });
+    const { error } = await adminDeleteAlertRecipient(r.id);
     if (error) return fail(actionError("Could not remove recipient", error));
     notify("Recipient removed.");
     if (editingId === r.id) reset();
@@ -1292,6 +1254,16 @@ function AlertRecipientsSection({
   }
   // Send a single test email to this recipient via the notify-alerts function's
   // admin-gated test mode, so a new address can be verified end-to-end.
+  //
+  // ⚠ THE LAST PLACE THE BROWSER STILL HANDLES THE PIN. Every other admin call
+  // moved to a server action; this one can't, because the notify-alerts edge
+  // function gates its test mode on is_admin(actor_username, actor_pin) and
+  // has no notion of a session token. Removing it means teaching that function
+  // to validate a token via _admin_actor and redeploying it — until then
+  // Session.pin has to stay, which is why the localStorage PIN outlives
+  // Phase 3. It does NOT hold up F-4: that is about the anon-executable
+  // admin_* RPCs, which Phase 3c closes independently.
+  // See docs/multi-tenant-plan.md.
   async function test(r: AlertRecipient) {
     if (r.channel !== "email") return fail("Test currently supports email recipients only.");
     setTestingId(r.id);
@@ -1390,24 +1362,17 @@ function AlertSenderSection({
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.rpc("admin_get_alert_from", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-    });
+    const { data } = await adminGetAlertFrom();
     setFrom((data as string | null) ?? "");
     setLoaded(true);
-  }, [me.username, me.pin]);
+  }, []);
   useEffect(() => {
     load();
   }, [load]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    const { error } = await supabase.rpc("admin_set_alert_from", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_from: from,
-    });
+    const { error } = await adminSetAlertFrom(from);
     if (error) return fail(actionError("Could not save sending address", error));
     notify(from.trim() ? "Sending address updated." : "Sending address cleared — using the default.");
     load();
@@ -1444,13 +1409,9 @@ function AlertSenderSection({
 function AlertEventsSection({ me }: { me: Session }) {
   const [events, setEvents] = useState<AlertEventRow[]>([]);
   const load = useCallback(async () => {
-    const { data } = await supabase.rpc("admin_list_alert_events", {
-      p_actor_username: me.username,
-      p_actor_pin: me.pin,
-      p_limit: 100,
-    });
+    const { data } = await adminListAlertEvents(100);
     setEvents((data as AlertEventRow[]) ?? []);
-  }, [me.username, me.pin]);
+  }, []);
   useEffect(() => {
     load();
   }, [load]);
