@@ -151,7 +151,33 @@ returning `{ user, activeOrg, role, isSuperadmin, memberships }`. Add the org
 switcher (needed now that membership is many-to-many). Retire the localStorage
 session in `lib/auth.tsx`.
 
-### Phase 2 — reads move server-side
+### Phase 2 — reads move server-side — CODE DONE 2026-08-17, cutover pending
+
+Built: `lib/fleetQueries.ts` (org-scoped server reads), `lib/apiAuth.ts`
+(`requireOrgScope` + clamped query parsing), five route handlers under
+`app/api/`, and `liveDataSource` in `lib/dataSource.ts` rewritten to fetch them.
+`app/admin/page.tsx`'s one direct `public_assets` read now goes through
+`/api/assets`. **Dashboard, AssetDetail and TvWall are unchanged**, as intended.
+Typecheck passes; `next build` compiles and then stops at the deliberate
+`SUPABASE_SERVICE_ROLE_KEY` guard.
+
+Two safety details worth keeping:
+- Per-asset routes verify the asset belongs to the caller's org before touching
+  telemetry (`assetInOrg`). `telemetry_samples`, `alert_events` and
+  `asset_telemetry_15min` carry no org of their own, so without that check a
+  known uuid would read across tenants.
+- "Another tenant's asset" and "no such asset" return the identical 404 shape, so
+  the endpoint can't be used as an existence oracle for uuids.
+
+The eager throw in `lib/supabaseServer.ts` is kept on purpose: a Vercel deploy
+missing the key fails the *build*, leaving the previous version live, which for a
+monitoring tool beats a green deploy where every request 500s.
+
+**Cutover not yet applied.** `supabase/pending/phase2_close_public_reads.sql`
+holds it (security_invoker on both views, drop the three public-read policies,
+revoke SELECT, revoke `asset_telemetry_15min` from anon). It must run only after
+the Phase 2 build is deployed and verified, or the live dashboard goes blank. The
+file carries the full sequence and a verification probe.
 
 **Found while scoping this (fixed 2026-08-17, migration `revoke_anon_write_grants`):**
 the read exposure was worse than "public-read policies". `public_assets` and
