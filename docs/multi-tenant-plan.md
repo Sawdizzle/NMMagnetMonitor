@@ -353,3 +353,51 @@ without a deploy.
   outside customer, or Numed gets paged for another company's magnet.
 - **`/demo` URL.** Keep it as a route that auto-logs-in the Demo user, or send
   prospects to the normal login with published credentials?
+
+### Phase 3 — org-scope the admin RPCs — IN PROGRESS (started 2026-08-17)
+
+Closing what's left of F-4. Sequenced around one hard constraint: **a DB
+migration hits production instantly, while code only changes on deploy.** So the
+new session-authenticated functions are added as OVERLOADS taking `p_token`, and
+the old `(p_actor_username, p_actor_pin)` signatures stay live until the new app
+ships. Parameter names differ and supabase-js calls RPCs with named arguments,
+so resolution is unambiguous. Dropping the old signatures + revoking anon is
+Phase 3c, and that is the step that actually closes F-4.
+
+**Done (DB):**
+- `_admin_actor(p_token)` — the single authorization gate replacing `is_admin()`.
+  Resolves the session, demands the admin role, returns the active org every
+  scoped statement filters by. Raises rather than returning null, so a caller
+  that forgets to check gets an exception instead of unscoped access.
+- `_record_audit` gained `p_org_id`. It previously relied on `audit_log.org_id`'s
+  column default (`default_org_id()`), so an action in *any* org was stamped
+  `numed`. The 5-arg version was dropped and recreated with a defaulted 6th
+  param — keeping both would have made every legacy 5-arg call ambiguous.
+- `alert_recipients.org_id`, backfilled to numed. Recipients were global, so
+  once a second company existed Numed would have been paged for its magnets.
+- All six asset RPCs, org-scoped. Two gained audit rows they never had:
+  `admin_delete_asset` (deleting a unit and cascading its telemetry was
+  untraceable) and `admin_rotate_gateway_token` (breaks that Pi until redeployed).
+
+Verified on the live DB with a throwaway admin in both orgs: viewer refused;
+cross-org config read returns 0 rows; cross-org update / rotate / delete /
+maintenance all refused with `Asset not found.`; and a create lands in the
+**active** org, not numed. Positive paths were exercised on a throwaway asset —
+deliberately never rotating a real unit's gateway token, which would break that
+Pi until redeployed. Fleet confirmed untouched afterwards (17 assets, ingest
+uninterrupted).
+
+**Remaining:**
+1. User RPCs — `admin_create_user` (must also create the `org_members` row),
+   `admin_list_users` (scope to the org's members), `admin_set_tv_access` /
+   `admin_set_role` (write the MEMBERSHIP, not `users`), `admin_reset_pin`,
+   `admin_set_invite_code` (write `orgs.invite_code`, not the global
+   `app_settings`). `set_role` and `reset_pin` currently write no audit row —
+   privilege and credential changes should be audited.
+2. Alert + audit RPCs — rules and recipients by `org_id`, events via the asset's
+   org, audit log by `org_id`. `alert_from` is still a global `app_settings` key;
+   per-org sending addresses probably want `orgs.alert_from`.
+3. App layer — `lib/adminActions.ts` server actions + the 25 call sites in the
+   1788-line `app/admin/page.tsx`.
+4. Drop `pin` from the client `Session`, add the org switcher UI.
+5. Phase 3c — drop the old signatures, revoke anon. **F-4 closes here.**

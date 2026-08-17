@@ -374,6 +374,53 @@ create or replace view public.latest_telemetry
 --   destroy_session(token) -> boolean
 --   cleanup_expired_sessions() -> integer   (pg_cron 'cleanup-expired-sessions', 17 3 * * *)
 
+-- --- Phase 3: session-authenticated, org-scoped admin RPCs (2026-08-17) ----
+-- Migrations: phase3a_admin_session_foundation, phase3b1_asset_admin_rpcs_session_scoped.
+--
+-- IN PROGRESS. The admin RPCs are being moved off (p_actor_username,
+-- p_actor_pin) — the F-4 surface — onto the server-side session. Because a DB
+-- migration hits production instantly while code only changes on deploy, the
+-- new versions are added as OVERLOADS taking p_token; the old signatures stay
+-- live until the new app code ships. Parameter names differ and supabase-js
+-- calls RPCs with named arguments, so resolution is unambiguous.
+--
+--   _admin_actor(p_token) -> (user_id, username, org_id, is_superadmin)
+--       The single authorization gate, replacing is_admin(). Resolves the
+--       session, demands the admin role, and returns the ACTIVE ORG every
+--       scoped statement must filter by. RAISES rather than returning null, so
+--       a caller that forgets to check gets an exception, not unscoped access.
+--       Superadmin comes free: resolve_session already reports
+--       effective_role='admin' for a superadmin in any org.
+--
+--   _record_audit(actor, action, entity_type, entity_id, detail, org_id=null)
+--       Gained p_org_id. audit_log.org_id previously relied on its column
+--       default — default_org_id() — so an action in ANY org was stamped
+--       'numed'. The 5-arg version was dropped and recreated with a 6th
+--       defaulted param (keeping a 5-arg overload would make legacy calls
+--       ambiguous); null still falls back to default_org_id().
+--
+-- DONE so far — asset group, all filtering on assets.org_id = actor's org:
+--   admin_create_asset(p_token, ...)            sets org_id EXPLICITLY (the
+--       column default would file another tenant's unit under Numed)
+--   admin_update_asset(p_token, p_asset_id, ...)
+--   admin_delete_asset(p_token, p_asset_id)     NOW AUDITED (was not — deleting
+--       a unit and cascading its telemetry used to be untraceable)
+--   admin_get_asset_config(p_token, p_asset_id) the most sensitive read in the
+--       app: gateway_token + MagMon credentials
+--   admin_set_asset_maintenance(p_token, p_asset_id, p_maintenance)
+--   admin_rotate_gateway_token(p_token, p_asset_id)  NOW AUDITED
+--
+-- A wrong-org asset id raises "Asset not found." — identical to a genuinely
+-- missing one, so these can't probe which uuids exist in other tenants.
+-- Verified: viewer refused; cross-org read returns 0 rows; cross-org update /
+-- rotate / delete / maintenance all refused; create lands in the ACTIVE org.
+--
+-- STILL TO DO: the user, alert and audit-log RPCs; the app layer
+-- (lib/adminActions.ts + app/admin/page.tsx); then Phase 3c drops the old
+-- (username, pin) signatures and revokes anon EXECUTE, which closes F-4.
+-- alert_recipients gained org_id here (it was global — Numed would have been
+-- paged for another tenant's magnet).
+
 -- --- auth / self-service ---------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.is_admin(p_username text, p_pin text)
