@@ -6,6 +6,9 @@ import {
   adminCreateUnassignedUser,
   adminSetMembership,
   adminResetPin,
+  adminSetUserActive,
+  adminRenameUser,
+  adminDeleteUser,
   type GlobalUser,
 } from "@/lib/adminActions";
 import { listSwitchableOrgs, type SwitchableOrg } from "@/lib/authActions";
@@ -103,6 +106,48 @@ export default function GlobalUsersTab({
     notify(`PIN reset for ${username}. Their existing sessions were signed out.`);
   }
 
+  async function toggleActive(u: GlobalUser) {
+    if (
+      u.is_active &&
+      !(await askConfirm(
+        `Deactivate ${u.username}? They will be signed out immediately and cannot sign in again until reactivated. Their history is kept.`,
+        true
+      ))
+    ) {
+      return;
+    }
+    const { error } = await adminSetUserActive(u.username, !u.is_active);
+    if (error) return fail(actionError("Could not change account state", error));
+    notify(u.is_active ? `${u.username} deactivated and signed out.` : `${u.username} reactivated.`);
+    load();
+  }
+
+  async function rename(u: GlobalUser) {
+    const next = await askPrompt({ title: `Rename ${u.username}`, label: "New username" });
+    if (!next || next === u.username) return;
+    const { error } = await adminRenameUser(u.username, next);
+    if (error) return fail(actionError("Could not rename", error));
+    notify(`${u.username} is now ${next}.`);
+    load();
+  }
+
+  async function remove(u: GlobalUser) {
+    // Deleting is the one irreversible action here, so say plainly what it
+    // does and what the safer alternative is.
+    if (
+      !(await askConfirm(
+        `Permanently delete ${u.username}? This removes the account and all its company access. Their audit history is kept. Deactivating instead is reversible.`,
+        true
+      ))
+    ) {
+      return;
+    }
+    const { error } = await adminDeleteUser(u.username);
+    if (error) return fail(actionError("Could not delete user", error));
+    notify(`${u.username} deleted.`);
+    load();
+  }
+
   if (loading) return <p className="text-sm text-[var(--text-dim)]">Loading users…</p>;
 
   return (
@@ -144,10 +189,25 @@ export default function GlobalUsersTab({
         {users.map((u) => {
           const grantOf = new Map(u.memberships.map((m) => [m.org_id, m]));
           return (
-            <div key={u.username} className="px-4 py-4 border-b border-[var(--border)] last:border-0">
+            <div
+              key={u.username}
+              className="px-4 py-4 border-b border-[var(--border)] last:border-0"
+              // Dimmed rather than hidden: a deactivated account still needs to
+              // be findable to reactivate or delete it.
+              style={u.is_active ? undefined : { opacity: 0.55 }}
+            >
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                 <div className="flex items-center gap-2">
                   <p className="font-medium">{u.username}</p>
+                  {!u.is_active && (
+                    <span
+                      className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border"
+                      style={{ borderColor: "var(--status-offline)", color: "var(--status-offline)" }}
+                      title="Signed out and blocked from signing in. History kept."
+                    >
+                      Inactive
+                    </span>
+                  )}
                   {u.is_superadmin && (
                     <span
                       className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-[var(--border-soft)] text-[var(--text-dim)]"
@@ -166,9 +226,24 @@ export default function GlobalUsersTab({
                     </span>
                   )}
                 </div>
-                <button onClick={() => resetPin(u.username)} className="btn-secondary">
-                  Reset PIN
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => rename(u)} className="btn-secondary">
+                    Rename
+                  </button>
+                  <button onClick={() => resetPin(u.username)} className="btn-secondary">
+                    Reset PIN
+                  </button>
+                  <button onClick={() => toggleActive(u)} className="btn-secondary">
+                    {u.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                  <button
+                    onClick={() => remove(u)}
+                    className="btn-secondary"
+                    style={{ color: "var(--status-offline)" }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
 
               <div className="grid gap-2 sm:grid-cols-2">

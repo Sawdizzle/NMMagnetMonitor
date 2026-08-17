@@ -742,3 +742,48 @@ would deliver only if the demo org were given its own recipients.
 `lib/docsInfra.ts` imported `DEMO_ASSET_IDS` from the fixtures; those are display
 labels for the docs page, now inlined so the docs render whether or not the demo
 org is seeded.
+
+### Phase 5 — company creation and the user lifecycle ✅ 2026-08-17
+
+**Companies.** `admin_create_org` / `admin_update_org` / `admin_list_orgs`
+(superadmin only), behind a new superadmin-only **Companies** tab. Creating a
+company is what makes onboarding self-serve — its own brand, assets, recipients
+and invite code, no deploy. Slugs are normalised (`"Riverside Health!!"` →
+`riverside-health`) because `default_org_id()` and the demo lookup match on them
+exactly.
+
+The slug is **not editable** after creation, for the same reason: those two
+lookups match on it, so renaming one silently re-points them.
+
+**No company delete, deliberately.** A company owns assets, telemetry, alert
+history and audit rows, and `audit_log.org_id` references it — a plain DELETE
+fails the FK (confirmed while writing the tests), and cascading it would erase
+the record of what was done. Emptying a company first is the honest path and
+should be a considered operation, not a button beside "Edit".
+
+**User lifecycle.** `users.is_active`, plus `admin_set_user_active` /
+`admin_rename_user` / `admin_delete_user` (all superadmin only), surfaced as
+Rename / Reset PIN / Deactivate / Delete per person.
+
+Deactivation is a real account state, not "strip their grants":
+- `create_session` refuses an inactive account **before** checking the PIN, so a
+  deactivated account answers the same whatever is typed and a wrong PIN on it
+  records no strike.
+- `resolve_session` filters on it too, and deactivating **deletes their
+  sessions** — access stops immediately rather than whenever a cookie expires.
+- Their audit history survives, which is the reason to prefer it over deleting.
+
+Rename also moves `push_subscriptions`, which key by username — Phase 3e scopes
+push through `username → users → org_members`, so a rename would otherwise
+orphan someone's devices and silently stop their alerts.
+
+Guards: you cannot deactivate or delete your own account, and a live company
+admin (verified explicitly with a fresh, never-deactivated token) is refused all
+six superadmin operations with `not authorized`.
+
+⚠️ **Note for future browser testing.** While clicking through the grants grid I
+managed to set a grant on the wrong row — `admin` picked up a Demo membership
+that was not intended, spotted only by diffing against an earlier screenshot and
+reverted. The grid puts many identical dropdowns close together; when driving it
+programmatically, confirm the target row by reading its username, not by
+position.

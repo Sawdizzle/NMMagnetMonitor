@@ -351,8 +351,23 @@ export type UserGrant = {
 export type GlobalUser = {
   username: string;
   is_superadmin: boolean;
+  is_active: boolean;
   created_at: string;
   memberships: UserGrant[];
+};
+
+export type OrgRow = {
+  org_id: string;
+  slug: string;
+  name: string;
+  product_name: string;
+  eyebrow: string;
+  tagline: string;
+  is_demo: boolean;
+  invite_code: string | null;
+  asset_count: number;
+  member_count: number;
+  created_at: string;
 };
 
 /** Every user with their per-company grants. Superadmin only. */
@@ -387,6 +402,88 @@ export async function adminSetMembership(
     p_tv_access: tvAccess,
   });
   // Could be the caller's own access, which the nav reads from the session.
+  revalidatePath("/", "layout");
+  return res;
+}
+
+// ---- user lifecycle -------------------------------------------------------
+
+/**
+ * Deactivate or reactivate an account.
+ *
+ * Deactivating is a real account state, not "strip their grants": it blocks
+ * login outright AND deletes their live sessions, so access stops immediately
+ * rather than whenever their cookie happens to expire. Their audit history
+ * survives, which is the reason to prefer this over deleting.
+ */
+export async function adminSetUserActive(username: string, active: boolean) {
+  const res = await call<boolean>("admin_set_user_active", {
+    p_target_username: username,
+    p_active: active,
+  });
+  revalidatePath("/", "layout");
+  return res;
+}
+
+/** Rename an account. Also moves their push devices, which key by username. */
+export async function adminRenameUser(username: string, newUsername: string) {
+  const res = await call<boolean>("admin_rename_user", {
+    p_target_username: username,
+    p_new_username: newUsername,
+  });
+  revalidatePath("/", "layout");
+  return res;
+}
+
+/**
+ * Permanently delete an account. Memberships and sessions cascade; the audit
+ * trail of what they did is deliberately kept (audit_log.actor is plain text).
+ */
+export async function adminDeleteUser(username: string) {
+  const res = await call<boolean>("admin_delete_user", { p_target_username: username });
+  revalidatePath("/", "layout");
+  return res;
+}
+
+// ---- companies ------------------------------------------------------------
+
+export async function adminListOrgs() {
+  return call<OrgRow[]>("admin_list_orgs");
+}
+
+export async function adminCreateOrg(args: {
+  name: string;
+  slug: string;
+  eyebrow?: string;
+  tagline?: string;
+  productName?: string;
+}) {
+  const res = await call<string>("admin_create_org", {
+    p_name: args.name,
+    p_slug: args.slug,
+    p_eyebrow: args.eyebrow ?? null,
+    p_tagline: args.tagline ?? null,
+    p_product_name: args.productName ?? "Magnet Monitor",
+  });
+  revalidatePath("/", "layout");
+  return res;
+}
+
+export async function adminUpdateOrg(args: {
+  orgId: string;
+  name: string;
+  eyebrow: string;
+  tagline: string;
+  productName: string;
+}) {
+  const res = await call<boolean>("admin_update_org", {
+    p_org_id: args.orgId,
+    p_name: args.name,
+    p_eyebrow: args.eyebrow,
+    p_tagline: args.tagline,
+    p_product_name: args.productName,
+  });
+  // Brand comes from the session, so an edit changes what the nav renders.
   revalidatePath("/", "layout");
   return res;
 }

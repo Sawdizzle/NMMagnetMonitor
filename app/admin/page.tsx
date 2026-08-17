@@ -38,6 +38,7 @@ import {
 } from "@/lib/adminActions";
 import { getSessionAction } from "@/lib/authActions";
 import GlobalUsersTab from "@/components/GlobalUsersTab";
+import CompaniesTab from "@/components/CompaniesTab";
 
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "he_lvl", label: "Helium level", unit: "%" },
@@ -51,11 +52,14 @@ const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
 
 const NO_LOCATION = "No location set";
 
-type TabId = "assets" | "alerts" | "users" | "activity";
-const TABS: { id: TabId; label: string }[] = [
+type TabId = "assets" | "alerts" | "users" | "companies" | "activity";
+// "Companies" is superadmin-only and filtered out below — a company admin must
+// not even learn that other tenants exist.
+const TABS: { id: TabId; label: string; superadminOnly?: boolean }[] = [
   { id: "assets", label: "Assets" },
   { id: "alerts", label: "Alerts" },
   { id: "users", label: "Users" },
+  { id: "companies", label: "Companies", superadminOnly: true },
   { id: "activity", label: "Activity" },
 ];
 
@@ -627,6 +631,9 @@ function AdminPanel({ me }: { me: Session }) {
     assets: assets.length,
     alerts: alertRules.length,
     users: users.length,
+    // CompaniesTab loads its own list, so there is no count to show here
+    // without a second fetch the header doesn't need.
+    companies: null,
     activity: null,
   };
 
@@ -643,7 +650,7 @@ function AdminPanel({ me }: { me: Session }) {
 
       {/* Tab bar */}
       <div role="tablist" aria-label="Admin sections" className="flex flex-wrap gap-1 border-b border-[var(--border)] mb-8">
-        {TABS.map((t) => {
+        {TABS.filter((t) => !t.superadminOnly || isSuperadmin).map((t) => {
           const active = activeTab === t.id;
           const count = tabCounts[t.id];
           return (
@@ -782,6 +789,10 @@ function AdminPanel({ me }: { me: Session }) {
             handleResetPin={handleResetPin}
           />
         ))}
+
+      {activeTab === "companies" && isSuperadmin && (
+        <CompaniesTab notify={notify} fail={fail} />
+      )}
 
       {activeTab === "activity" && <ActivityTab auditLog={auditLog} loadAuditLog={loadAuditLog} />}
 
