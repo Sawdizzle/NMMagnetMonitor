@@ -1443,7 +1443,21 @@ revoke insert, update, delete, truncate, references, trigger
      public.dm_webhook_events, public.public_assets, public.latest_telemetry
   from anon, authenticated;
 
--- SELECT is now revoked too — phase2_close_public_reads, applied 2026-08-17
+-- Anon can read NO table at all. phase2_close_public_reads did the fleet tables;
+-- phase6e finished the job (users, app_settings, audit_log, alert_recipients,
+-- push_subscriptions, dm_webhook_events). Those six already returned 0 rows via
+-- RLS-with-no-policy — including app_settings, which holds the VAPID private
+-- key, the DM webhook key and the Tailscale OAuth secret, so nothing was
+-- exposed. They were revoked because an empty result and a refusal look
+-- identical to a caller: a forgotten client-side read would render "no data"
+-- rather than failing, which is how a bug hides.
+--
+-- Anon's entire remaining surface is the collector RPCs (report_telemetry,
+-- report_telemetry_batch — the 17 Pis) and the self-service auth RPCs
+-- (register_user, update_own_username, save/delete_push_subscription,
+-- get_vapid_public_key).
+--
+-- SELECT on the fleet tables was revoked by phase2_close_public_reads, applied 2026-08-17
 -- after production (8cdf351) was verified serving Phase 2. Reads all go through
 -- lib/fleetQueries.ts on the server via the service role.
 revoke select on public.assets            from anon, authenticated;
