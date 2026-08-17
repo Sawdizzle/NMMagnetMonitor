@@ -521,3 +521,56 @@ still read "NUMED · REMOTE MONITORING" while viewing Demo Company. Phase 0 move
 `lib/brand.ts` constants. Wiring it means flowing the active org's brand from
 the session into the context `useDemo()` serves. Cosmetic for Numed today,
 required before showing a second tenant their own instance.
+
+### Phase 3e/3f — alerting is org-aware, and the localStorage PIN is gone ✅ 2026-08-17
+
+**The BLOCKER above is cleared.** `notify-alerts` (v7) and `send-push` (v4) are
+redeployed, both still `verify_jwt: false` as before — changing that would have
+broken the pg_cron invocation.
+
+Both now group open events by their asset's `org_id` and fan out **per org**:
+`notify-alerts` emails only that org's recipients from that org's sending
+address (`org_alert_from`, falling back to the legacy global key then the
+`ALERT_FROM` secret); `send-push` pushes only to that org's members' devices via
+`org_push_subscriptions` (`push_subscriptions -> users -> org_members`).
+Subscriptions with a NULL username can't be attributed to an org and are
+excluded — pushing one tenant's alerts to an unattributable device is the leak
+this exists to stop. An org with no recipients leaves its events *unstamped*, so
+they still send once someone is configured, matching the old behaviour.
+
+The test mode now takes a **session token** (validated with `_admin_actor`)
+instead of `actor_username`/`actor_pin`, and additionally refuses any address
+that is not already a recipient of the caller's org — without that, an admin of
+any org could use it as an email relay to arbitrary addresses. The legacy PIN
+branch is still present *only* so a browser running the old bundle doesn't break
+during rollout; it should be deleted once this deploy is live.
+
+Verified against the live functions: default mode returns `no new alerts`;
+bogus token and no-credential both `Not authorized`; a valid token sending to a
+non-recipient is refused as a relay attempt; a valid token to Numed's real
+recipient **sent successfully**; and the same admin switched to the demo org is
+refused when targeting Numed's recipient.
+
+**`Session.pin` is gone.** The stored session is now
+`{username, role, tvAccess}` — verified in the browser, with the cookie still
+invisible to JS. Two changes made that possible: the test button moved to an
+`adminSendTestAlert` server action, and `update_own_username` became
+session-authenticated (`phase3f`), dropping the old PIN-checking signature.
+
+Consequence worth knowing: there is no longer any credential cached to silently
+re-mint an expired session, so a lapsed cookie now lands on the login form. The
+"remember me" cookie is 30 days. **If a `/tv` wall display starts dropping to
+login, lengthen `REMEMBER_DAYS` — do not reintroduce a cached PIN.**
+
+Two latent bugs fixed in passing:
+- `update_own_username` never updated `push_subscriptions`, which keys devices by
+  *username*. A rename orphaned that person's devices and — after the Phase 3e
+  scoping above — would have silently stopped their alerts.
+- The old `update_own_username` had no uniqueness or empty-string check; it now
+  reports a clash as "unavailable" rather than "already exists", so it isn't a
+  cross-tenant username oracle.
+
+**Not verified:** the test button's click path in the browser. The edge function
+was exercised directly and thoroughly with curl, and the server action
+typechecks and builds, but the Browser pane stopped rendering mid-session so the
+button itself was never clicked end-to-end. Worth one manual click.

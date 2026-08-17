@@ -2,8 +2,8 @@ import webpush from "npm:web-push@3.6.7";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // Web-push companion to notify-alerts. Two modes:
-//   * default (cron): send a browser/PWA push for any OPEN, not-yet-pushed,
-//     debounced alert_event to every stored subscription, stamp push_notified_at,
+//   * default (cron): for EACH ORG, push its OPEN, not-yet-pushed, debounced
+//     alert_events to that org's members' devices only, stamp push_notified_at,
 //     and prune expired (404/410) endpoints.
 //   * { test: true, endpoint }: send one test push to a single already-subscribed
 //     device, so the Account page can confirm delivery. Only targets endpoints
@@ -66,11 +66,16 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ---- default mode: digest of new open events to all subscriptions ------
+  // ---- default mode: one push digest PER ORG -----------------------------
+  // This used to select every row in push_subscriptions and push all of them
+  // for any open alert. Invisible with a single tenant; with two it pushes one
+  // company's magnet alerts to another company's phones. Events are now grouped
+  // by their asset's org and pushed only to that org's members' devices, via
+  // org_push_subscriptions() (push_subscriptions -> users -> org_members).
   const cutoff = new Date(Date.now() - DEBOUNCE_MIN * 60_000).toISOString();
   const { data: events, error: evErr } = await supabase
     .from("alert_events")
-    .select("id, message")
+    .select("id, message, asset_id")
     .is("resolved_at", null)
     .is("push_notified_at", null)
     // Connectivity (iR305/Tailscale) is informational status only — never push.
@@ -80,45 +85,75 @@ Deno.serve(async (req) => {
   if (evErr) return json({ error: evErr.message }, 500);
   if (!events || events.length === 0) return json({ sent: 0, reason: "no new alerts" });
 
-  const { data: subs } = await supabase
-    .from("push_subscriptions")
-    .select("endpoint, p256dh, auth");
-  if (!subs || subs.length === 0) return json({ sent: 0, reason: "no subscriptions" });
+  // Resolve each event's asset to an org (separate lookup, so the row shape is
+  // unambiguous rather than depending on PostgREST embed behaviour).
+  type Ev = { id: number; message: string; asset_id: string };
+  const assetIds = [...new Set((events as Ev[]).map((e) => e.asset_id))];
+  const { data: assets, error: aErr } = await supabase
+    .from("assets")
+    .select("id, org_id")
+    .in("id", assetIds);
+  if (aErr) return json({ error: aErr.message }, 500);
+  const orgOf = new Map((assets ?? []).map((a) => [a.id as string, a.org_id as string]));
 
-  const payload = JSON.stringify({
-    title: events.length === 1 ? "MagMon alert" : `MagMon: ${events.length} new alerts`,
-    body:
-      events.slice(0, 4).map((e) => e.message).join("\n") +
-      (events.length > 4 ? `\n+${events.length - 4} more` : ""),
-    url: "/",
-  });
+  const byOrg = new Map<string, Ev[]>();
+  for (const e of events as Ev[]) {
+    const org = orgOf.get(e.asset_id);
+    // No resolvable org (asset deleted mid-run): skip, and leave
+    // push_notified_at unset rather than guessing a destination.
+    if (!org) continue;
+    const arr = byOrg.get(org) ?? [];
+    arr.push(e);
+    byOrg.set(org, arr);
+  }
 
   let sent = 0;
   let pruned = 0;
-  await Promise.all(
-    subs.map(async (s) => {
-      try {
-        await webpush.sendNotification(
-          { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
-          payload,
-        );
-        sent++;
-      } catch (err) {
-        const code = (err as { statusCode?: number }).statusCode;
-        if (code === 404 || code === 410) {
-          await supabase.from("push_subscriptions").delete().eq("endpoint", s.endpoint);
-          pruned++;
+  const pushedIds: number[] = [];
+
+  for (const [orgId, orgEvents] of byOrg) {
+    const { data: subs } = await supabase.rpc("org_push_subscriptions", { p_org_id: orgId });
+    const list = (subs ?? []) as { endpoint: string; p256dh: string; auth: string }[];
+    // Nobody in this org has push enabled — leave the events unstamped so they
+    // go out if someone subscribes later.
+    if (list.length === 0) continue;
+
+    const payload = JSON.stringify({
+      title: orgEvents.length === 1 ? "MagMon alert" : `MagMon: ${orgEvents.length} new alerts`,
+      body:
+        orgEvents.slice(0, 4).map((e) => e.message).join("\n") +
+        (orgEvents.length > 4 ? `\n+${orgEvents.length - 4} more` : ""),
+      url: "/",
+    });
+
+    await Promise.all(
+      list.map(async (s) => {
+        try {
+          await webpush.sendNotification(
+            { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+            payload,
+          );
+          sent++;
+        } catch (err) {
+          const code = (err as { statusCode?: number }).statusCode;
+          if (code === 404 || code === 410) {
+            await supabase.from("push_subscriptions").delete().eq("endpoint", s.endpoint);
+            pruned++;
+          }
         }
-      }
-    }),
-  );
+      }),
+    );
+    pushedIds.push(...orgEvents.map((e) => e.id));
+  }
 
-  await supabase
-    .from("alert_events")
-    .update({ push_notified_at: new Date().toISOString() })
-    .in("id", events.map((e) => e.id));
+  if (pushedIds.length > 0) {
+    await supabase
+      .from("alert_events")
+      .update({ push_notified_at: new Date().toISOString() })
+      .in("id", pushedIds);
+  }
 
-  return json({ sent, pruned, events: events.length });
+  return json({ sent, pruned, orgs: byOrg.size, events: pushedIds.length });
 });
 
 function json(b: unknown, s = 200) {

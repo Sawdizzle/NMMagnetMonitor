@@ -2,17 +2,16 @@
 
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { supabase } from "./supabase";
-import { loginAction, logoutAction, getSessionAction } from "./authActions";
+import { loginAction, logoutAction, getSessionAction, changeUsernameAction } from "./authActions";
 
 export type Role = "admin" | "viewer";
 
-// TRANSITIONAL SHAPE. `pin` is still here because app/admin/page.tsx passes it
-// to 25 admin RPCs as p_actor_pin. The authoritative session is now the httpOnly
-// cookie minted by loginAction — this localStorage copy exists only to keep the
-// admin panel working until Phase 3 moves those RPCs to server actions, at which
-// point `pin` comes out and the localStorage session goes away entirely.
-// See docs/multi-tenant-plan.md.
-export type Session = { username: string; pin: string; role: Role; tvAccess: boolean };
+// The authoritative session is the httpOnly cookie minted by loginAction. This
+// localStorage copy holds NO credential — it exists only so the app can paint
+// immediately on load instead of waiting on a round-trip, and is reconciled
+// against the server on mount. The plaintext PIN that used to live here was
+// removed once every call site moved to a server action (Phase 3).
+export type Session = { username: string; role: Role; tvAccess: boolean };
 
 const SESSION_KEY = "nm_session";
 
@@ -102,26 +101,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // No cookie session: it expired, or this is a browser that logged in
-        // before the cookie existed. We still hold username+pin, so re-mint
-        // silently rather than bouncing the user to the login form — losing a
-        // wall display to a cookie expiry would be a regression.
-        const result = await loginAction(parsed.username, parsed.pin);
-        if (cancelled) return;
-
-        if ("session" in result) {
-          const fresh: Session = {
-            ...parsed,
-            role: result.session.role,
-            tvAccess: result.session.tvAccess,
-          };
-          updateStoredSession(fresh);
-          setSession(fresh);
-        } else {
-          // Definitive rejection — the PIN changed or the account is gone.
-          clearStoredSession();
-          setSession(null);
-        }
+        // No cookie session: it expired, was cleared, or this browser predates
+        // the cookie. There is deliberately no credential stored to re-mint
+        // with any more, so the only correct move is to sign out and let the
+        // person log in again. Note for wall displays: the "remember me" cookie
+        // is 30 days, so this should be rare — if a /tv screen starts dropping
+        // to the login form, lengthen REMEMBER_DAYS rather than caching a PIN.
+        clearStoredSession();
+        setSession(null);
       } catch {
         // Network/transport failure — keep the optimistic session so a flaky
         // connection doesn't bounce the user to the login form.
@@ -144,7 +131,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const newSession: Session = {
       username,
-      pin,
       role: result.session.role,
       tvAccess: result.session.tvAccess,
     };
@@ -173,7 +159,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // New accounts have no TV access until an admin grants it.
     const newSession: Session = {
       username,
-      pin,
       role: result.session.role,
       tvAccess: result.session.tvAccess,
     };
@@ -199,9 +184,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         p_new_pin: newPin,
       });
       if (error) return error.message;
-      const updated: Session = { ...session, pin: newPin };
-      updateStoredSession(updated);
-      setSession(updated);
+      // Nothing to update locally — the session cookie is unaffected by a PIN
+      // change and no credential is cached.
       return null;
     },
     [session]
@@ -210,12 +194,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const changeUsername = useCallback(
     async (newUsername: string) => {
       if (!session) return "Not signed in";
-      const { error } = await supabase.rpc("update_own_username", {
-        p_username: session.username,
-        p_pin: session.pin,
-        p_new_username: newUsername,
-      });
-      if (error) return error.message;
+      const message = await changeUsernameAction(newUsername);
+      if (message) return message;
       const updated: Session = { ...session, username: newUsername };
       updateStoredSession(updated);
       setSession(updated);

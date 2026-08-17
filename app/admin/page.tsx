@@ -34,6 +34,7 @@ import {
   adminGetAlertFrom,
   adminSetAlertFrom,
   adminListAuditLog,
+  adminSendTestAlert,
 } from "@/lib/adminActions";
 
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
@@ -1255,26 +1256,16 @@ function AlertRecipientsSection({
   // Send a single test email to this recipient via the notify-alerts function's
   // admin-gated test mode, so a new address can be verified end-to-end.
   //
-  // ⚠ THE LAST PLACE THE BROWSER STILL HANDLES THE PIN. Every other admin call
-  // moved to a server action; this one can't, because the notify-alerts edge
-  // function gates its test mode on is_admin(actor_username, actor_pin) and
-  // has no notion of a session token. Removing it means teaching that function
-  // to validate a token via _admin_actor and redeploying it — until then
-  // Session.pin has to stay, which is why the localStorage PIN outlives
-  // Phase 3. It does NOT hold up F-4: that is about the anon-executable
-  // admin_* RPCs, which Phase 3c closes independently.
-  // See docs/multi-tenant-plan.md.
+  // Goes through a server action so the browser never handles a credential —
+  // the session cookie's token is forwarded server-side and validated by
+  // _admin_actor. This was the last call site keeping Session.pin alive.
   async function test(r: AlertRecipient) {
     if (r.channel !== "email") return fail("Test currently supports email recipients only.");
     setTestingId(r.id);
     try {
-      const { data, error } = await supabase.functions.invoke("notify-alerts", {
-        body: { test: true, to: r.address, actor_username: me.username, actor_pin: me.pin },
-      });
-      if (error) return fail(`Test failed: ${error.message}`);
-      const res = data as { ok?: boolean; message?: string };
-      if (res?.ok) notify(res.message ?? `Test sent to ${r.address}.`);
-      else fail(res?.message ?? "Test failed.");
+      const { data, error } = await adminSendTestAlert(r.address);
+      if (error) return fail(actionError("Test failed", error));
+      if (data?.message) notify(data.message);
     } finally {
       setTestingId(null);
     }

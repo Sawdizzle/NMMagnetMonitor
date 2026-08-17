@@ -144,3 +144,23 @@ export async function listSwitchableOrgs(): Promise<SwitchableOrg[]> {
     isDemo: o.is_demo,
   }));
 }
+
+/**
+ * Change your own username.
+ *
+ * Session-authenticated: update_own_username used to re-verify with the stored
+ * PIN, which is why lib/auth.tsx had to keep one in localStorage.
+ */
+export async function changeUsernameAction(newUsername: string): Promise<string | null> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return "Not signed in";
+
+  const { error } = await supabaseAdmin.rpc("update_own_username", {
+    p_token: token,
+    p_new_username: newUsername,
+  });
+  if (error) return error.message;
+
+  revalidatePath("/", "layout");
+  return null;
+}

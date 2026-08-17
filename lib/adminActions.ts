@@ -294,3 +294,42 @@ export async function adminListAuditLog(limit = 200) {
     }[]
   >("admin_list_audit_log", { p_limit: limit });
 }
+
+// ---- alert delivery test --------------------------------------------------
+
+/**
+ * Send a single test email to a configured recipient, via the notify-alerts
+ * edge function's admin-gated test mode.
+ *
+ * This runs server-side specifically so the browser never handles a credential:
+ * it forwards the session cookie's token, which the function validates with
+ * _admin_actor. It was the last call site holding Session.pin alive.
+ *
+ * The function additionally refuses any address that isn't already a recipient
+ * of the caller's org, so this cannot be used as an email relay.
+ */
+export async function adminSendTestAlert(address: string): Promise<AdminResult<{ message: string }>> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return { data: null, error: { message: "Not signed in" } };
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anon) return { data: null, error: { message: "Supabase URL/key not configured" } };
+
+  try {
+    const res = await fetch(`${url}/functions/v1/notify-alerts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${anon}` },
+      body: JSON.stringify({ test: true, to: address, token }),
+      cache: "no-store",
+    });
+    const body = (await res.json().catch(() => null)) as
+      | { ok?: boolean; message?: string }
+      | null;
+    if (!res.ok) return { data: null, error: { message: `Test failed (${res.status})` } };
+    if (!body?.ok) return { data: null, error: { message: body?.message ?? "Test failed." } };
+    return { data: { message: body.message ?? `Test sent to ${address}.` }, error: null };
+  } catch (e) {
+    return { data: null, error: { message: e instanceof Error ? e.message : "Network error" } };
+  }
+}
