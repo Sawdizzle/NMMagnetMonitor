@@ -114,9 +114,15 @@ Deno.serve(async (req) => {
   for (const [orgId, orgEvents] of byOrg) {
     const { data: subs } = await supabase.rpc("org_push_subscriptions", { p_org_id: orgId });
     const list = (subs ?? []) as { endpoint: string; p256dh: string; auth: string }[];
-    // Nobody in this org has push enabled — leave the events unstamped so they
-    // go out if someone subscribes later.
-    if (list.length === 0) continue;
+
+    // Nobody in this org has push enabled. Stamp anyway — same reasoning as
+    // notify-alerts: leaving them queued means the first person to ever enable
+    // push gets buzzed with the org's entire alert history.
+    if (list.length === 0) {
+      pushedIds.push(...orgEvents.map((e) => e.id));
+      console.log(`org ${orgId}: ${orgEvents.length} alert(s), no push subscriptions — closing out`);
+      continue;
+    }
 
     const payload = JSON.stringify({
       title: orgEvents.length === 1 ? "MagMon alert" : `MagMon: ${orgEvents.length} new alerts`,

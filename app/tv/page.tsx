@@ -3,6 +3,9 @@ import { Suspense } from "react";
 import TvGated from "@/components/TvGated";
 import TvWall from "@/components/TvWall";
 import { getDisplayScope } from "@/lib/session";
+import { orgBrand } from "@/lib/fleetQueries";
+import BrandProvider from "@/components/BrandProvider";
+import { realBrand } from "@/lib/brand";
 
 // Chrome-free wall display. Two ways in:
 //
@@ -31,10 +34,16 @@ export default async function TvPage({
   // A valid display cookie renders the wall directly — no auth gate, because
   // the token IS the credential and /api/fleet accepts it.
   if (display) {
+    // Resolve the brand HERE rather than leaving it to OrgBrandProvider: that
+    // reads the user session, and a display has none, so a white-labelled
+    // tenant's TV would show the built-in product name instead of theirs.
+    const brand = (await orgBrand(display.orgId)) ?? realBrand;
     return (
-      <Suspense fallback={null}>
-        <TvWall />
-      </Suspense>
+      <BrandProvider brand={brand}>
+        <Suspense fallback={null}>
+          <TvWall />
+        </Suspense>
+      </BrandProvider>
     );
   }
 

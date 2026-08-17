@@ -42,6 +42,29 @@ export async function demoOrgId(): Promise<string | null> {
 }
 
 /**
+ * One org's brand strings, by id.
+ *
+ * Needed by the wall display: a display token has no user session, so
+ * OrgBrandProvider (which reads the session) falls back to the built-in brand
+ * and a white-labelled tenant's TV would show the wrong product name.
+ */
+export async function orgBrand(
+  orgId: string
+): Promise<{ productName: string; eyebrow: string; tagline: string } | null> {
+  const { data, error } = await supabaseAdmin
+    .from("orgs")
+    .select("product_name, eyebrow, tagline")
+    .eq("id", orgId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    productName: data.product_name as string,
+    eyebrow: data.eyebrow as string,
+    tagline: (data.tagline as string) ?? "",
+  };
+}
+
+/**
  * Confirms an asset belongs to the org before any per-asset query runs.
  *
  * This is the check that makes the /api/asset/[id] routes safe: the asset id is

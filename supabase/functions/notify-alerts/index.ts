@@ -150,9 +150,19 @@ Deno.serve(async (req) => {
   for (const [orgId, orgEvents] of byOrg) {
     const { data: recips } = await supabase.rpc("org_alert_recipients", { p_org_id: orgId });
     const to = ((recips ?? []) as { address: string }[]).map((r) => r.address);
-    // No recipients for this org: leave the events un-notified so they send
-    // once someone is configured, exactly as the single-tenant version did.
+
+    // No recipients configured for this org. Mark the events as handled anyway.
+    //
+    // The obvious alternative — leave them queued so they send "once someone is
+    // configured" — sounds kinder but is worse: a company accumulates a backlog
+    // for as long as it has nobody listening, and then the first person ever
+    // added is greeted with a digest of every alert since the company was
+    // created, most of them long stale. "Nobody to tell" is a terminal outcome,
+    // not a pending one. The events remain in alert_events with their real
+    // history; only the delivery attempt is closed out.
     if (to.length === 0) {
+      notifiedIds.push(...orgEvents.map((e) => e.id));
+      console.log(`org ${orgId}: ${orgEvents.length} alert(s), no recipients configured — closing out`);
       perOrg.push({ org: orgId, recipients: 0, events: orgEvents.length });
       continue;
     }

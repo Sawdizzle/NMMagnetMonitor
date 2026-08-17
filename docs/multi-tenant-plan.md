@@ -867,3 +867,34 @@ render, and the authenticated route 401s without a session.
 Correcting an earlier overstatement of mine: this was 17 requests per *forecast*
 refresh (10 minutes), not per status poll (30s) — worth fixing, but less severe
 than I first described it.
+
+### Phase 6f — display branding, and closing out undeliverable alerts ✅ 2026-08-17
+
+**Wall displays now show their own company's brand.** `OrgBrandProvider` reads
+the *user* session, and a display authenticates with a token instead — so it fell
+back to the built-in brand. `app/tv/page.tsx` already resolves the display's org,
+so it now fetches that org's brand server-side and wraps `TvWall` in a
+`BrandProvider`. Verified by temporarily renaming the demo org's product to
+"Demo Fleet Monitor": the TV header rendered it, where before it would have said
+"Magnet Monitor". (Renamed back afterwards.)
+
+Only one string is affected — the TV is chrome-free and renders just
+`brand.productName` — but it is the string that says whose fleet you are looking
+at.
+
+**Alerts for a company with nobody to tell are now closed out** rather than
+queued forever. Both `notify-alerts` (v9) and `send-push` (v5) previously left
+events unstamped when an org had no recipients/subscriptions, on the reasoning
+that they would "send once someone is configured". That is worse than it sounds:
+a company accumulates a backlog for as long as nobody is listening, and the first
+person ever added is greeted with a digest of every alert since the company was
+created, most of them long stale.
+
+"Nobody to tell" is a terminal outcome, not a pending one. The events stay in
+`alert_events` with their real history and remain **open** — still visible on the
+dashboard and the TV — only the delivery attempt is closed, with a log line
+naming the org and count.
+
+Measured after: demo went from 7 queued to 0 (still 7 open), numed unaffected.
+This matters for any new company between creation and configuring recipients,
+not just the demo.
