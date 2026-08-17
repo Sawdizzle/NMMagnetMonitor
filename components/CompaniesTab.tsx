@@ -214,8 +214,17 @@ export default function CompaniesTab({
             <div className="min-w-0 flex items-center gap-3">
               {/* Same dark tile the nav uses, so this row is a true preview of
                   how the logo will actually look rather than a flattering one
-                  on a white background. */}
-              <span className="dash-mark" style={{ width: 34, height: 34, borderRadius: 9 }}>
+                  on a white background. Clickable, because the logo control
+                  itself lives inside the edit form: the mark you want to change
+                  is the most obvious thing to click to change it. */}
+              <button
+                type="button"
+                onClick={() => startEdit(o)}
+                className="dash-mark"
+                style={{ width: 34, height: 34, borderRadius: 9, cursor: "pointer" }}
+                title={o.logo_url ? `Change ${o.name}'s logo` : `Add a logo for ${o.name}`}
+                aria-label={o.logo_url ? `Change ${o.name}'s logo` : `Add a logo for ${o.name}`}
+              >
                 {o.logo_url ? (
                   // eslint-disable-next-line @next/next/no-img-element -- see OrgMark
                   <img
@@ -226,7 +235,7 @@ export default function CompaniesTab({
                 ) : (
                   <BrandMark size="100%" bleed />
                 )}
-              </span>
+              </button>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="font-medium truncate">{o.name}</p>
@@ -322,7 +331,12 @@ function LogoField({
   }
 
   return (
-    <div className="sm:col-span-2 flex flex-wrap items-center gap-4">
+    <div className="sm:col-span-2 flex flex-col gap-1 text-xs text-[var(--text-dim)]">
+      {/* Labelled like every sibling field. Without this the control was just a
+          loose button in the middle of the form — findable only if you already
+          knew it was there. */}
+      <span>Company logo</span>
+      <div className="flex flex-wrap items-center gap-4 mt-1">
       <span className="dash-mark" style={{ width: 48, height: 48, borderRadius: 12 }}>
         {org.logo_url ? (
           // eslint-disable-next-line @next/next/no-img-element -- see OrgMark
@@ -376,6 +390,7 @@ function LogoField({
         tabIndex={-1}
         aria-hidden="true"
       />
+      </div>
     </div>
   );
 }
