@@ -12,12 +12,15 @@
 // converting them to server components would have broken their setInterval
 // refresh. They still call getDataSource(demo).loadX() exactly as before.
 //
-// Demo mode still reads in-browser fixtures and issues no network request,
-// because /demo is unauthenticated and has no session to scope. That collapses
-// in Phase 4 when the demo becomes a real seeded org.
+// Phase 4 collapsed the last duplication: the demo used to be a SECOND
+// implementation reading in-browser fixtures, so every UI change had to work
+// twice and the demo could silently drift from the real app. The demo is now an
+// ordinary tenant with real rows, so both modes run the SAME code and differ
+// only by URL prefix — /api/* (session-scoped) vs /api/demo/* (public, always
+// the is_demo org). One data path, and the demo exercises exactly what Numed
+// uses, org scoping included.
 
 import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
-import { demoFleet, demoAssetDetail, demoAssetAlerts } from "./demoFixtures";
 import type { HeliumPoint } from "./forecast";
 
 export type FleetAsset = Asset & {
@@ -56,7 +59,7 @@ export interface DataSource {
   loadAssetAlerts(assetId: string, limit?: number): Promise<AssetAlertsResult>;
 }
 
-// ---- live: this app's org-scoped API ------------------------------------
+// ---- one implementation, two prefixes ------------------------------------
 
 // Every response already carries `error: string | null`, so a failed request is
 // shaped like a successful one and the components' existing error handling keeps
@@ -86,59 +89,44 @@ async function getJson<T extends WithError>(
   }
 }
 
-const liveDataSource: DataSource = {
-  async loadFleet(historyHours) {
-    return getJson<FleetResult>(`/api/fleet?hours=${historyHours}`, (error) => ({
-      assets: [],
-      error,
-    }));
-  },
+/**
+ * @param base "/api" for the signed-in app (scoped to the session's active org),
+ *             "/api/demo" for the public demo (always the is_demo org).
+ */
+function makeDataSource(base: string): DataSource {
+  return {
+    async loadFleet(historyHours) {
+      return getJson<FleetResult>(`${base}/fleet?hours=${historyHours}`, (error) => ({
+        assets: [],
+        error,
+      }));
+    },
 
-  async loadAssetDetail(assetId, historyHours) {
-    return getJson<AssetDetailResult>(
-      `/api/asset/${encodeURIComponent(assetId)}?hours=${historyHours}`,
-      (error) => ({ asset: null, latest: null, buckets: [], alertRules: [], error })
-    );
-  },
+    async loadAssetDetail(assetId, historyHours) {
+      return getJson<AssetDetailResult>(
+        `${base}/asset/${encodeURIComponent(assetId)}?hours=${historyHours}`,
+        (error) => ({ asset: null, latest: null, buckets: [], alertRules: [], error })
+      );
+    },
 
-  async loadHeliumSeries(assetId, historyHours) {
-    return getJson<HeliumSeriesResult>(
-      `/api/asset/${encodeURIComponent(assetId)}/helium?hours=${historyHours}`,
-      (error) => ({ points: [], error })
-    );
-  },
+    async loadHeliumSeries(assetId, historyHours) {
+      return getJson<HeliumSeriesResult>(
+        `${base}/asset/${encodeURIComponent(assetId)}/helium?hours=${historyHours}`,
+        (error) => ({ points: [], error })
+      );
+    },
 
-  async loadAssetAlerts(assetId, limit = 20) {
-    return getJson<AssetAlertsResult>(
-      `/api/asset/${encodeURIComponent(assetId)}/alerts?limit=${limit}`,
-      (error) => ({ events: [], error })
-    );
-  },
-};
-// ---- demo: in-browser fixtures ------------------------------------------
+    async loadAssetAlerts(assetId, limit = 20) {
+      return getJson<AssetAlertsResult>(
+        `${base}/asset/${encodeURIComponent(assetId)}/alerts?limit=${limit}`,
+        (error) => ({ events: [], error })
+      );
+    },
+  };
+}
 
-const demoDataSource: DataSource = {
-  async loadFleet(historyHours) {
-    return { assets: demoFleet(historyHours), error: null };
-  },
-  async loadAssetDetail(assetId, historyHours) {
-    const detail = demoAssetDetail(assetId, historyHours);
-    if (!detail) return { asset: null, latest: null, buckets: [], alertRules: [], error: "Asset not found" };
-    // Demo has no per-asset overrides — value-faults evaluate against defaults.
-    return { ...detail, alertRules: [], error: null };
-  },
-  async loadHeliumSeries(assetId, historyHours) {
-    const detail = demoAssetDetail(assetId, historyHours);
-    if (!detail) return { points: [], error: "Asset not found" };
-    const points = detail.buckets
-      .filter((b) => b.he_lvl !== null)
-      .map((b) => ({ t: new Date(b.created_at).getTime(), v: Number(b.he_lvl) }));
-    return { points, error: null };
-  },
-  async loadAssetAlerts(assetId) {
-    return { events: demoAssetAlerts(assetId), error: null };
-  },
-};
+const liveDataSource = makeDataSource("/api");
+const demoDataSource = makeDataSource("/api/demo");
 
 export function getDataSource(demo: boolean): DataSource {
   return demo ? demoDataSource : liveDataSource;

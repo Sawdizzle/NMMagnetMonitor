@@ -26,6 +26,22 @@ const PUBLIC_ASSET_COLUMNS =
 const HISTORY_ROW_LIMIT = 5000;
 
 /**
+ * The demo org's id.
+ *
+ * /demo is public — no session, no cookie — so its endpoints resolve the org
+ * from `orgs.is_demo` and NEVER from anything the caller supplies. That is what
+ * keeps a public route from being talked into returning a real tenant's fleet.
+ */
+export async function demoOrgId(): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from("orgs")
+    .select("id")
+    .eq("is_demo", true)
+    .maybeSingle();
+  return error || !data ? null : (data.id as string);
+}
+
+/**
  * Confirms an asset belongs to the org before any per-asset query runs.
  *
  * This is the check that makes the /api/asset/[id] routes safe: the asset id is

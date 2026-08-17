@@ -691,3 +691,54 @@ reconciles on mount.
 Verified in the browser: signed in against Numed the eyebrow reads
 "NUMED · REMOTE MONITORING"; switching to Demo Company it becomes
 "LIVE DEMO · REMOTE MONITORING", with the fleet correctly empty.
+
+### Phase 4 — the demo is a real org; `demoFixtures.ts` is gone ✅ 2026-08-17
+
+**The second rendering path is dead.** `lib/demoFixtures.ts` generated a
+synthetic fleet in the browser, which meant every UI change had to work twice
+and the demo could silently drift from the real app. The demo is now an ordinary
+tenant with real rows, so both modes run the **same code** and differ only by URL
+prefix: `/api/*` (session-scoped) vs `/api/demo/*` (public, always the `is_demo`
+org). `liveDataSource` and `demoDataSource` collapsed into one
+`makeDataSource(base)`.
+
+**Why public endpoints rather than an auto-minted demo session.** A prospect
+should not meet a login form, but minting a session on visit would clobber the
+session of a signed-in user who clicks "View demo" — and it means an
+unauthenticated endpoint that issues sessions. The demo routes instead resolve
+the org from `orgs.is_demo`, never from anything the caller supplies, so they
+cannot be steered at a real tenant. Verified: a Numed asset id through
+`/api/demo/asset/[id]` returns **404**.
+
+Seeded (`phase4c`) 12 assets mirroring the old roster so the demo still
+demonstrates the same things — compressor off, warm coldhead, low helium with
+real boil-off, stale, offline, never-reported, maintenance, iR305 down,
+Tailscale down. Site names are invented; the fixtures once contained a real
+hospital's name and address.
+
+`generate_demo_telemetry()` (`phase4d`, pg_cron every minute) keeps it moving:
+values are a deterministic function of (asset, metric, time) so each unit keeps
+its personality while everything drifts. Assets with `stale_minutes` write **no**
+telemetry and have their age re-pinned each run — that is what stops a "47
+minutes stale" unit healing itself on the next tick or drifting into offline
+overnight. Backfilled 24h at 15-minute spacing so the charts and the boil-off fit
+have shape immediately (~97 samples/asset, not 1440).
+
+Sizing: 8 reporting assets × 1440/day ≈ 11.5k rows/day, bounded by the existing
+7-day `cleanup_old_telemetry` purge at ~80k rows.
+
+**And it immediately validated Phase 3e.** The demo org generated 7 real alert
+events of its own. Measured right after seeding:
+
+| org | open events | unnotified | recipients |
+| --- | --- | --- | --- |
+| demo | 7 | **7** | 0 |
+| numed | 5 | 0 | 1 |
+
+Before the alerting was org-scoped, all 7 demo alerts would have emailed Numed's
+recipient — a demo magnet paging a real company. They correctly go nowhere, and
+would deliver only if the demo org were given its own recipients.
+
+`lib/docsInfra.ts` imported `DEMO_ASSET_IDS` from the fixtures; those are display
+labels for the docs page, now inlined so the docs render whether or not the demo
+org is seeded.

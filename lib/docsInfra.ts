@@ -5,8 +5,6 @@
 // the /demo docs render with demoInfra (neutral placeholders). Structure and
 // prose are identical; only these values change.
 
-import { DEMO_ASSET_IDS } from "./demoFixtures";
-
 export type DocsInfra = {
   introOwner: string; // "…the {introOwner} fleet is set up…"
   deviceScopeLabel: string; // "All {deviceScopeLabel} live on the … tailnet"
@@ -55,5 +53,9 @@ export const demoInfra: DocsInfra = {
   servicePrefix: "magmon-gateway",
   scriptBase: "/opt/magmon-gateway",
   processMatch: "magmon-gateway",
-  assets: DEMO_ASSET_IDS.slice(0, 6),
+  // Was DEMO_ASSET_IDS.slice(0, 6) from lib/demoFixtures, deleted in Phase 4
+  // when the demo became a real org. These are display labels for the docs
+  // page, not real ids, so they are inlined rather than queried — the docs
+  // should render identically whether or not the demo org has been seeded.
+  assets: ["MM-1001", "MM-1002", "MM-1003", "MM-1004", "MM-1005", "MM-1006"],
 };
