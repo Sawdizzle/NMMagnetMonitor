@@ -574,3 +574,45 @@ Two latent bugs fixed in passing:
 was exercised directly and thoroughly with curl, and the server action
 typechecks and builds, but the Browser pane stopped rendering mid-session so the
 button itself was never clicked end-to-end. Worth one manual click.
+
+### Phase 3g/3h — the last PIN checks ✅ 2026-08-17
+
+**`is_admin` is dropped.** notify-alerts v8 removed its legacy PIN branch (safe:
+production was confirmed on `a534539`, serving the token path), which left
+`is_admin` with no callers anywhere — verified across `app/`, `components/`,
+`lib/`, `supabase/functions/`, and every other function body in the database.
+It was the heart of F-4: a PIN check with no lockout returning a bare boolean,
+i.e. a perfect oracle.
+
+**And dropping it surfaced a worse one.** `reset_own_pin(p_username, p_old_pin,
+p_new_pin)` was **anon-executable** and compared the PIN with a direct `crypt`
+call instead of going through `verify_user_login` — so unlike login it applied
+**no lockout and recorded no failed attempt**. Anyone holding the publishable
+key could guess PINs against any username at full speed, and a correct guess
+didn't merely confirm the PIN, it *changed* it. Account takeover, not just
+disclosure. It survived every earlier sweep because it isn't an `admin_*`
+function and doesn't mention `is_admin`.
+
+`change_own_pin` had the same anon-callable shape. It at least routed through
+`verify_user_login` so the lockout applied, but nothing in the app called it —
+dead code that checks PINs, dropped.
+
+The replacement is session-authenticated and rate-limited. Verified:
+
+| check | result |
+| --- | --- |
+| wrong current PIN | returns false **and records a strike** (was: raise, no strike) |
+| five wrong tries | locked |
+| correct PIN while locked | refused |
+| correct PIN unlocked | changes it, new PIN logs in |
+| no session | `not authenticated` |
+
+The strike is recorded by *returning false rather than raising* — a raise would
+roll the increment back in the same transaction, which is precisely the bug the
+`fix_pin_lockout_persistence` migration fixed in `verify_user_login`.
+
+**Where PIN verification now lives, and nowhere else:** `create_session` (login,
+5-strike lockout), `reset_own_pin` (session + current PIN, same lockout), and
+`register_user` (which validates an invite code, not a PIN, and must stay
+anon-callable because signup precedes any session). `lib/auth.tsx` no longer
+touches the anon Supabase client for anything except `register_user`.

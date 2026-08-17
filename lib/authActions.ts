@@ -164,3 +164,27 @@ export async function changeUsernameAction(newUsername: string): Promise<string 
   revalidatePath("/", "layout");
   return null;
 }
+
+/**
+ * Change your own PIN.
+ *
+ * Session-authenticated. The previous reset_own_pin(username, old, new) was
+ * anon-executable and compared the PIN directly rather than through
+ * verify_user_login, so it applied NO lockout — an unrate-limited oracle where
+ * a correct guess also CHANGED the PIN. It now requires a live session, and a
+ * wrong current PIN records a strike against the same 5-try lockout as login.
+ */
+export async function changePinAction(oldPin: string, newPin: string): Promise<string | null> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return "Not signed in";
+
+  const { data, error } = await supabaseAdmin.rpc("reset_own_pin", {
+    p_token: token,
+    p_old_pin: oldPin,
+    p_new_pin: newPin,
+  });
+  if (error) return error.message;
+  // false = wrong current PIN (returned rather than raised so the strike sticks).
+  if (data === false) return "That current PIN is not correct.";
+  return null;
+}

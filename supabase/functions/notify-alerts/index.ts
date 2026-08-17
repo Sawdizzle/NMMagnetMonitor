@@ -6,7 +6,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 //     notified, debounced alert_events to that org's enabled email recipients,
 //     then stamps notified_at.
 //   * { test: true, to, token }: an admin-gated single test email so a
-//     recipient can be verified from the admin UI.
+//     recipient can be verified from the admin UI. Session-authenticated only —
+//     there is deliberately no PIN path.
 //
 // ORG SCOPING (multi-tenant Phase 3e). This function used to select
 // alert_recipients with no filter and email EVERY recipient in the database
@@ -60,33 +61,19 @@ Deno.serve(async (req) => {
     const to = String(body.to ?? "").trim();
     if (!to) return json({ ok: false, message: "No address provided." });
 
-    let actorOrg: string | null = null;
-    let actorName: string | null = null;
+    // Session-only. The legacy { actor_username, actor_pin } branch was removed
+    // once production served the token path (commit a534539): a reachable
+    // PIN-checking endpoint is exactly the F-4 pattern, and it distinguished a
+    // right PIN from a wrong one with no lockout.
+    if (!body.token) return json({ ok: false, message: "Not authorized." });
 
-    if (body.token) {
-      // Preferred path: a server-side session. No credential crosses the wire.
-      const { data, error } = await supabase.rpc("_admin_actor", { p_token: body.token });
-      const actor = Array.isArray(data) ? data[0] : data;
-      if (error || !actor) return json({ ok: false, message: "Not authorized." });
-      actorOrg = actor.org_id as string;
-      actorName = actor.username as string;
-    } else if (body.actor_username && body.actor_pin) {
-      // LEGACY, being retired. Kept only so a browser still running the old
-      // admin bundle doesn't break during rollout. Once the app deploys with
-      // the token path, this branch and its is_admin call come out — leaving a
-      // PIN-checking endpoint alive is what finding F-4 was about.
-      const { data: isAdmin, error: adminErr } = await supabase.rpc("is_admin", {
-        p_username: body.actor_username,
-        p_pin: body.actor_pin,
-      });
-      if (adminErr) return json({ ok: false, message: "Could not verify admin credentials." });
-      if (!isAdmin) return json({ ok: false, message: "Not authorized." });
-      const { data: orgId } = await supabase.rpc("default_org_id");
-      actorOrg = orgId as string;
-      actorName = String(body.actor_username);
-    } else {
-      return json({ ok: false, message: "Not authorized." });
-    }
+    const { data: actorData, error: actorErr } = await supabase.rpc("_admin_actor", {
+      p_token: body.token,
+    });
+    const actor = Array.isArray(actorData) ? actorData[0] : actorData;
+    if (actorErr || !actor) return json({ ok: false, message: "Not authorized." });
+    const actorOrg = actor.org_id as string;
+    const actorName = actor.username as string;
 
     // Only send to an address already configured for the caller's org. The
     // admin UI only offers Test on a saved recipient, so this costs nothing —
@@ -103,7 +90,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const from = await fromFor(actorOrg!);
+    const from = await fromFor(actorOrg);
     const resp = await sendEmail(
       resendKey,
       from,

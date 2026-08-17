@@ -2,7 +2,13 @@
 
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { supabase } from "./supabase";
-import { loginAction, logoutAction, getSessionAction, changeUsernameAction } from "./authActions";
+import {
+  loginAction,
+  logoutAction,
+  getSessionAction,
+  changeUsernameAction,
+  changePinAction,
+} from "./authActions";
 
 export type Role = "admin" | "viewer";
 
@@ -178,12 +184,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const changePin = useCallback(
     async (oldPin: string, newPin: string) => {
       if (!session) return "Not signed in";
-      const { error } = await supabase.rpc("reset_own_pin", {
-        p_username: session.username,
-        p_old_pin: oldPin,
-        p_new_pin: newPin,
-      });
-      if (error) return error.message;
+      const message = await changePinAction(oldPin, newPin);
+      if (message) return message;
       // Nothing to update locally — the session cookie is unaffected by a PIN
       // change and no credential is cached.
       return null;
