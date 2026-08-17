@@ -1302,10 +1302,40 @@ create policy "public read alert_events" on public.alert_events      for select 
 -- =====================================================================
 -- GRANTS
 -- =====================================================================
--- The anon / authenticated roles hold Supabase's default broad table
--- grants; RLS (above) is what actually gates access. Reproduced here as a
--- reminder that the security boundary is the POLICY set, not the GRANTs.
--- (Left as Supabase defaults; no custom GRANT statements were in use.)
+-- CORRECTION (2026-08-17, migration revoke_anon_write_grants): this section
+-- previously said "the security boundary is the POLICY set, not the GRANTs".
+-- That is FALSE for views. public_assets and latest_telemetry were created
+-- WITHOUT security_invoker, so they execute with the view owner's rights and
+-- bypass the underlying tables' RLS entirely. Measured: anon sees 0 rows in
+-- public.assets (RLS on, no policy) but 17 through public_assets.
+--
+-- public_assets is a simple single-base-table view and therefore
+-- auto-updatable — `delete from public_assets` does not raise the "cannot
+-- delete from view" error that latest_telemetry does. Combined with anon
+-- holding Supabase's default INSERT/UPDATE/DELETE grants, the publishable
+-- anon key (which ships in the JS bundle) could modify or delete assets.
+--
+-- All write grants are now revoked from anon and authenticated on every
+-- table plus both views. Verified afterwards: reads still return 17 rows and
+-- 27k samples (the live app depends on them until Phase 2), all three write
+-- probes return "permission denied", and collector ingest kept flowing.
+--
+-- Nothing in the app wrote as anon: mutations go through SECURITY DEFINER
+-- RPCs (admin_*, report_telemetry*), the Pis authenticate with a per-asset
+-- gateway_token, and the edge functions use the service role. The
+-- `authenticated` role is unused — this app has never used Supabase Auth.
+revoke insert, update, delete, truncate, references, trigger
+  on public.assets, public.telemetry_samples, public.alert_rules,
+     public.alert_events, public.users, public.app_settings,
+     public.audit_log, public.alert_recipients, public.push_subscriptions,
+     public.dm_webhook_events, public.public_assets, public.latest_telemetry
+  from anon, authenticated;
+
+-- SELECT is intentionally still granted: lib/dataSource.ts reads through the
+-- anon client until Phase 2 moves reads server-side. security_invoker on the
+-- two views is likewise NOT set yet — flipping it now would drop
+-- public_assets to 0 rows for anon and black out the live dashboard. Both
+-- close together in Phase 2. See docs/multi-tenant-plan.md.
 
 
 -- =====================================================================

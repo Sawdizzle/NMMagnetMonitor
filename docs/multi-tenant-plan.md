@@ -152,6 +152,34 @@ switcher (needed now that membership is many-to-many). Retire the localStorage
 session in `lib/auth.tsx`.
 
 ### Phase 2 — reads move server-side
+
+**Found while scoping this (fixed 2026-08-17, migration `revoke_anon_write_grants`):**
+the read exposure was worse than "public-read policies". `public_assets` and
+`latest_telemetry` were created without `security_invoker`, so they run with the
+view owner's rights and bypass the underlying RLS completely — anon sees 0 rows
+in `assets` but all 17 through `public_assets`. And `public_assets`, being a
+simple single-base-table view, is auto-updatable, while anon held Supabase's
+default INSERT/UPDATE/DELETE grants on it. The anon key ships in the JS bundle,
+so it was a live write path into Numed's assets, not just a read leak.
+
+All write grants are now revoked from anon/authenticated on every table and both
+views; reads and collector ingest verified unaffected. `security_invoker` and the
+SELECT grants are deliberately left alone — flipping them now blacks out the
+dashboard, so they close as part of this phase's cutover.
+
+**Implementation note (settled):** `lib/dataSource.ts` is already a `DataSource`
+interface consumed by three polling client components. Rather than converting
+Dashboard / AssetDetail / TvWall into server components (which would break their
+`setInterval` refresh), keep the interface and reimplement `liveDataSource` to
+`fetch` org-scoped route handlers (`/api/fleet`, `/api/asset/[id]`, …). The
+route handlers resolve the session, take `activeOrgId`, and filter. The three
+components then need **no changes at all**, and polling keeps working.
+
+`demoDataSource` stays on fixtures through this phase — `/demo` is
+unauthenticated and has no session until Phase 4 seeds the demo org and we
+settle how `/demo` logs in.
+
+Original sketch:
 Rewrite `lib/dataSource.ts` as server-only, taking `org_id` from the session and
 filtering all 6 queries by it. Dashboard / AssetDetail / TvWall receive data as
 props from server components instead of fetching. Then, and only then, drop the
