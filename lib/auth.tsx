@@ -2,8 +2,16 @@
 
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { supabase } from "./supabase";
+import { loginAction, logoutAction, getSessionAction } from "./authActions";
 
 export type Role = "admin" | "viewer";
+
+// TRANSITIONAL SHAPE. `pin` is still here because app/admin/page.tsx passes it
+// to 25 admin RPCs as p_actor_pin. The authoritative session is now the httpOnly
+// cookie minted by loginAction — this localStorage copy exists only to keep the
+// admin panel working until Phase 3 moves those RPCs to server actions, at which
+// point `pin` comes out and the localStorage session goes away entirely.
+// See docs/multi-tenant-plan.md.
 export type Session = { username: string; pin: string; role: Role; tvAccess: boolean };
 
 const SESSION_KEY = "nm_session";
@@ -69,39 +77,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     // Show the stored session immediately so the app is interactive on load
-    // instead of waiting on a network round-trip behind a full-screen spinner.
-    // Data access is governed by RLS on the server, so this client-side gate is
-    // UX only — re-verify the credentials in the background and drop the
-    // session if they're no longer valid.
+    // instead of waiting on a network round-trip behind a full-screen spinner,
+    // then reconcile against the server below.
     setSession(parsed);
     setLoading(false);
 
     let cancelled = false;
     (async () => {
       try {
-        const { data, error } = await supabase.rpc("verify_user_login", {
-          p_username: parsed.username,
-          p_pin: parsed.pin,
-        });
-        // Only sign out on a definitive rejection (valid response, no match).
-        // A transport error (offline, timeout) leaves the optimistic session in
-        // place so a flaky connection doesn't bounce the user to the login form.
-        if (!cancelled && !error && (!data || !data[0])) {
-          clearStoredSession();
-          setSession(null);
-        } else if (!cancelled && !error && data && data[0]) {
-          // Refresh role + TV access from the server so a grant/revoke (or an
-          // older stored session missing tvAccess) takes effect on reload.
+        // The cookie session is authoritative now. If it's still live, take
+        // role/tvAccess from it so a grant or revoke lands on reload.
+        const server = await getSessionAction();
+        if (cancelled) return;
+
+        if (server) {
           const fresh: Session = {
             ...parsed,
-            role: data[0].role as Role,
-            tvAccess: !!data[0].tv_access,
+            username: server.username,
+            role: server.role,
+            tvAccess: server.tvAccess,
           };
           updateStoredSession(fresh);
           setSession(fresh);
+          return;
+        }
+
+        // No cookie session: it expired, or this is a browser that logged in
+        // before the cookie existed. We still hold username+pin, so re-mint
+        // silently rather than bouncing the user to the login form — losing a
+        // wall display to a cookie expiry would be a regression.
+        const result = await loginAction(parsed.username, parsed.pin);
+        if (cancelled) return;
+
+        if ("session" in result) {
+          const fresh: Session = {
+            ...parsed,
+            role: result.session.role,
+            tvAccess: result.session.tvAccess,
+          };
+          updateStoredSession(fresh);
+          setSession(fresh);
+        } else {
+          // Definitive rejection — the PIN changed or the account is gone.
+          clearStoredSession();
+          setSession(null);
         }
       } catch {
-        // Network/transport failure — keep the optimistic session.
+        // Network/transport failure — keep the optimistic session so a flaky
+        // connection doesn't bounce the user to the login form.
       }
     })();
 
@@ -111,17 +134,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, pin: string, remember = true) => {
-    const { data, error } = await supabase.rpc("verify_user_login", { p_username: username, p_pin: pin });
-    if (error || !data || !data[0]) {
-      // Record the failed attempt (best-effort; its own transaction so it
-      // isn't rolled back with verify_user_login's raise).
-      supabase.rpc("record_login_failure", { p_username: username }).then(() => {});
-      return error?.message ?? "Invalid username or PIN";
-    }
-    const newSession: Session = { username, pin, role: data[0].role, tvAccess: !!data[0].tv_access };
+    // Single server round-trip: create_session verifies the PIN, applies the
+    // 5-strike lockout, sets the httpOnly cookie and returns the resolved
+    // context. Deliberately NOT paired with verify_user_login — running both
+    // would record two failed attempts per bad PIN and lock the account after
+    // three tries instead of five.
+    const result = await loginAction(username, pin, remember);
+    if ("error" in result) return result.error;
+
+    const newSession: Session = {
+      username,
+      pin,
+      role: result.session.role,
+      tvAccess: result.session.tvAccess,
+    };
     writeStoredSession(newSession, remember);
     setSession(newSession);
-    supabase.rpc("log_session_event", { p_username: username, p_pin: pin, p_event: "login" }).then(() => {});
+    // create_session already writes the 'login' audit row, so no
+    // log_session_event call here.
     return null;
   }, []);
 
@@ -134,24 +164,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error || !data || !data[0]) {
       return error?.message ?? "Could not create account";
     }
+    // register_user resolves the invite code to an org and creates the
+    // membership; now open a real session so the cookie exists and /api/* will
+    // answer for the new account.
+    const result = await loginAction(username, pin, remember);
+    if ("error" in result) return result.error;
+
     // New accounts have no TV access until an admin grants it.
-    const newSession: Session = { username, pin, role: data[0].role, tvAccess: false };
+    const newSession: Session = {
+      username,
+      pin,
+      role: result.session.role,
+      tvAccess: result.session.tvAccess,
+    };
     writeStoredSession(newSession, remember);
     setSession(newSession);
-    supabase.rpc("log_session_event", { p_username: username, p_pin: pin, p_event: "login" }).then(() => {});
     return null;
   }, []);
 
   const logout = useCallback(() => {
-    if (session) {
-      // Log the sign-out while we still hold valid credentials, then clear.
-      supabase
-        .rpc("log_session_event", { p_username: session.username, p_pin: session.pin, p_event: "logout" })
-        .then(() => {});
-    }
+    // destroy_session deletes the row (so the token can't be replayed) and
+    // writes the 'logout' audit entry, then clears the cookie.
+    logoutAction().catch(() => {});
     clearStoredSession();
     setSession(null);
-  }, [session]);
+  }, []);
 
   const changePin = useCallback(
     async (oldPin: string, newPin: string) => {

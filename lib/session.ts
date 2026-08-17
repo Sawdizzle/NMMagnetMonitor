@@ -54,13 +54,15 @@ type ResolveRow = {
   expires_at: string;
 };
 
-// Memoized for the duration of one render pass (React `cache`), so a layout, a
-// page and three server components asking "who is this?" cost one round-trip
-// rather than five. Per-request only — nothing is cached across requests.
-export const getSession = cache(async (): Promise<SessionContext | null> => {
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!token) return null;
-
+/**
+ * Resolve a raw token, bypassing the cookie and the per-render memo.
+ *
+ * Needed by loginAction: it has just called cookieStore.set(), but getSession()
+ * may already have been memoized as null earlier in the same request, so reading
+ * back through the cache would report "not signed in" immediately after a
+ * successful login.
+ */
+export async function resolveToken(token: string): Promise<SessionContext | null> {
   const { data, error } = await supabaseAdmin.rpc("resolve_session", { p_token: token });
   // An expired or forged token resolves to zero rows, which is indistinguishable
   // here from "no session" — both mean not signed in.
@@ -85,6 +87,15 @@ export const getSession = cache(async (): Promise<SessionContext | null> => {
     })),
     expiresAt: row.expires_at,
   };
+}
+
+// Memoized for the duration of one render pass (React `cache`), so a layout, a
+// page and three server components asking "who is this?" cost one round-trip
+// rather than five. Per-request only — nothing is cached across requests.
+export const getSession = cache(async (): Promise<SessionContext | null> => {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+  return resolveToken(token);
 });
 
 // The org every tenant-scoped query must filter by. Returns null when there is

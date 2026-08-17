@@ -3,7 +3,8 @@
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { supabaseAdmin } from "./supabaseServer";
-import { SESSION_COOKIE, getSession } from "./session";
+import { SESSION_COOKIE, getSession, resolveToken } from "./session";
+import type { SessionContext } from "./session";
 
 // "Remember me" now controls session lifetime instead of which browser store
 // gets used: a remembered login is a 30-day persistent cookie, an unremembered
@@ -40,7 +41,7 @@ export async function loginAction(
   username: string,
   pin: string,
   remember = true
-): Promise<string | null> {
+): Promise<{ error: string } | { session: SessionContext }> {
   const { data, error } = await supabaseAdmin.rpc("create_session", {
     p_username: username,
     p_pin: pin,
@@ -51,15 +52,23 @@ export async function loginAction(
     // create_session raises for a locked account and for an unknown username;
     // the lockout message is worth surfacing verbatim, the rest is not (it
     // would confirm which usernames exist).
-    return /locked/i.test(error.message) ? error.message : "Invalid username or PIN";
+    return { error: /locked/i.test(error.message) ? error.message : "Invalid username or PIN" };
   }
   // No rows = wrong PIN. The strike has already been recorded and committed.
-  if (!data || data.length === 0) return "Invalid username or PIN";
+  if (!data || data.length === 0) return { error: "Invalid username or PIN" };
 
   const { token, expires_at } = data[0] as { token: string; expires_at: string };
   await setSessionCookie(token, expires_at, remember);
+
+  // Return the resolved context so the caller gets role/tv_access without a
+  // second verify_user_login round-trip. That matters: calling both would
+  // record TWO failed attempts per bad PIN and trip the 5-strike lockout after
+  // three tries.
+  const session = await resolveToken(token);
+  if (!session) return { error: "Session could not be established" };
+
   revalidatePath("/", "layout");
-  return null;
+  return { session };
 }
 
 export async function logoutAction(): Promise<void> {

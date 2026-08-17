@@ -173,6 +173,44 @@ The eager throw in `lib/supabaseServer.ts` is kept on purpose: a Vercel deploy
 missing the key fails the *build*, leaving the previous version live, which for a
 monitoring tool beats a green deploy where every request 500s.
 
+**Sequencing correction.** Phase 2 is NOT independently deployable as first
+written: `dataSource` now needs the cookie session, but `lib/auth.tsx` logged in
+via `verify_user_login` into localStorage and never set a cookie, so `/api/fleet`
+would answer 401 and the dashboard would come up empty. Fixed with a bridge —
+`login()` now calls `loginAction` (minting the cookie) and *keeps* writing the
+localStorage copy so the admin panel's `me.pin` survives until Phase 3.
+
+The bridge deliberately calls `create_session` **instead of**, not in addition
+to, `verify_user_login`. Running both would record two failed attempts per bad
+PIN and trip the 5-strike lockout after three tries. `loginAction` therefore
+returns the resolved session context so the client still gets role/tvAccess in
+one round-trip. On mount, a live cookie is authoritative; if it has expired but
+localStorage still holds credentials, the session is silently re-minted rather
+than bouncing the user — losing a wall display to a cookie expiry would be a
+regression.
+
+**Verified end to end 2026-08-17** against the live DB (throwaway `_e2e` account,
+member of both orgs, removed afterwards):
+
+| check | result |
+| --- | --- |
+| unauthenticated `/api/fleet` | 401 `Not signed in` |
+| forged cookie | 401 |
+| authenticated fleet | 17 assets, 1000 history rows, no `*token*`/`*password*` fields |
+| asset detail (NM1035) | 96 buckets, latest he_lvl 75.062, 287 helium points |
+| **switch to demo → same numed asset** | **404 on detail, helium AND alerts** |
+| switch to demo → fleet | 0 assets |
+| browser login through the bridge | dashboard live, 17 assets / 13 sites |
+| requests to `*.supabase.co` from the browser | **zero** — all `/api/*` |
+| `document.cookie` | session not readable from JS |
+
+**Known follow-up (not a regression):** the Dashboard fires one
+`/api/asset/<id>/helium` request per asset — 17 round trips per forecast refresh.
+It was already N+1 against Supabase before, but each now also costs an
+`assetInOrg` pre-check, so ~34 DB queries per refresh. A batch
+`/api/fleet/helium` endpoint would collapse it to one request, at the cost of a
+new `DataSource` method and touching Dashboard.
+
 **Cutover not yet applied.** `supabase/pending/phase2_close_public_reads.sql`
 holds it (security_invoker on both views, drop the three public-read policies,
 revoke SELECT, revoke `asset_telemetry_15min` from anon). It must run only after
