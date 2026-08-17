@@ -211,11 +211,45 @@ It was already N+1 against Supabase before, but each now also costs an
 `/api/fleet/helium` endpoint would collapse it to one request, at the cost of a
 new `DataSource` method and touching Dashboard.
 
-**Cutover not yet applied.** `supabase/pending/phase2_close_public_reads.sql`
-holds it (security_invoker on both views, drop the three public-read policies,
-revoke SELECT, revoke `asset_telemetry_15min` from anon). It must run only after
-the Phase 2 build is deployed and verified, or the live dashboard goes blank. The
-file carries the full sequence and a verification probe.
+**Cutover APPLIED 2026-08-17 — F-1 and F-4 are closed.**
+
+Merged to `main` as `8cdf351`; production deployed and verified on
+`www.nmmagmon.com` (note: the apex 308-redirects to www, so www is canonical).
+Only then did the lockdown run, as two migrations:
+
+1. `phase2_close_public_reads` — security_invoker on both views, the three
+   public-read policies dropped, SELECT revoked from anon/authenticated.
+2. `phase2_revoke_public_execute_on_legacy_auth_rpcs` — because the first one
+   **didn't actually work** for functions.
+
+**The Postgres gotcha worth remembering:** functions grant `EXECUTE` to the
+`PUBLIC` pseudo-role by default — the ACL reads `=X/postgres`, where the bare
+`=` *is* the PUBLIC grant — and anon inherits it. So
+`revoke ... from anon` is a no-op; you must revoke from `public` too. The
+post-migration probe caught `asset_telemetry_15min -> STILL CALLABLE` while every
+table read was already BLOCKED. Any uuid holder could still have pulled that
+asset's history across tenants.
+
+Same discovery corrected an earlier claim: Phase 1a did **not** close F-4.
+`verify_user_login` stayed anon-callable, so an attacker could ignore the app
+entirely and hammer the RPC with the publishable key. Now revoked, along with
+`record_login_failure` and `log_session_event` (both unused since the bridge).
+`reset_own_pin` calls `verify_user_login` internally and is fine — it's
+`SECURITY DEFINER`, so the nested call runs as the owner.
+
+Final state, verified against production:
+
+| surface | anon |
+| --- | --- |
+| assets, public_assets, telemetry_samples, latest_telemetry, alert_rules, alert_events | BLOCKED |
+| `asset_telemetry_15min` | BLOCKED |
+| `verify_user_login`, `record_login_failure` | BLOCKED |
+| `create_session` and the session RPCs | BLOCKED |
+| **`report_telemetry`, `report_telemetry_batch`** | **granted — the 17 Pis need them** |
+
+App unaffected throughout: every page 200, fleet 17 assets / 1000 history rows,
+detail 97 buckets, helium 288 points, alerts 5 events, and ingest never paused
+(10 rows from 8 assets in the 3 minutes after the lockdown, newest 9s old).
 
 **Found while scoping this (fixed 2026-08-17, migration `revoke_anon_write_grants`):**
 the read exposure was worse than "public-read policies". `public_assets` and

@@ -18,15 +18,33 @@
 -- remains the canonical, byte-exact export — treat this as the working
 -- source of truth until then.
 --
--- SECURITY NOTE (see the architecture review, findings F-1 and F-4)
---   * The "public read" policies below grant SELECT to EVERYONE (role
---     public / anon) with no condition. Combined with the SECURITY DEFINER
---     views, all site and telemetry data is readable by anyone holding the
---     public anon key. This is intentional to change before multi-tenant.
---   * The SECURITY DEFINER views (public_assets, latest_telemetry) are
---     flagged by Supabase's linter; the F-1 fix converts them to
---     security_invoker and adds proper policies.
--- Nothing in this file has been applied to the live database.
+-- SECURITY NOTE — F-1 and F-4 are CLOSED as of 2026-08-17.
+-- What they were, and what actually fixed them:
+--   * F-1 (public read). The "public read" policies granted SELECT to
+--     everyone, and — worse than the review recorded — public_assets and
+--     latest_telemetry were created WITHOUT security_invoker, so they ran
+--     with the view owner's rights and bypassed the underlying RLS entirely.
+--     Measured before the fix: anon saw 0 rows in assets but all 17 through
+--     public_assets. public_assets is also auto-updatable, and anon held
+--     Supabase's default INSERT/UPDATE/DELETE grants on it, so the anon key
+--     shipped in the JS bundle was a WRITE path into the fleet, not just a
+--     read leak.
+--     Fixed by: revoke_anon_write_grants, then phase2_close_public_reads
+--     (security_invoker on both views, policies dropped, SELECT revoked)
+--     once reads had moved server-side into lib/fleetQueries.ts.
+--   * F-4 (PIN brute force). Moving login to create_session was NOT
+--     sufficient — verify_user_login stayed anon-callable, so an attacker
+--     could bypass the app and hammer the RPC directly with the publishable
+--     key. Fixed by phase2_revoke_public_execute_on_legacy_auth_rpcs.
+--     Note the Postgres gotcha behind the first failed attempt: functions
+--     grant EXECUTE to the PUBLIC pseudo-role by default (ACL "=X/postgres"),
+--     which anon inherits, so revoking from anon alone is a no-op.
+--
+-- Still granted to anon ON PURPOSE: report_telemetry and
+-- report_telemetry_batch. The 17 collector Pis call them with the publishable
+-- key plus a per-asset gateway_token; revoking either stops fleet ingest.
+--
+-- This file tracks the live database. Everything below has been applied.
 -- =====================================================================
 
 
@@ -254,15 +272,25 @@ create table if not exists public.alert_recipients (
 -- =====================================================================
 -- VIEWS
 -- =====================================================================
--- NOTE: both views are currently SECURITY DEFINER (they run with the
--- creator's rights and bypass RLS). This is what makes them readable via
--- the anon key. The F-1 remediation recreates them WITH (security_invoker=on).
--- Reproduced here as-is for fidelity.
+-- Both views now run WITH (security_invoker = true) — applied by
+-- phase2_close_public_reads on 2026-08-17. Before that they were effectively
+-- SECURITY DEFINER (Postgres' default), running with the view OWNER's rights
+-- and bypassing the underlying tables' RLS. That was the actual F-1 exposure:
+-- anon saw 0 rows querying assets directly but all 17 through public_assets,
+-- and since public_assets is a single-base-table view it was auto-updatable
+-- too, so anon's default write grants reached the real table.
+--
+-- With security_invoker on, each view is evaluated as the CALLER, so assets'
+-- "RLS enabled, no policy" now applies through the view as well. Keep it that
+-- way: dropping and recreating either view WITHOUT this option silently
+-- restores the bypass, because the insecure behaviour is the Postgres default.
+-- The server reads these through the service role, which is unaffected.
 
 -- public_assets: asset list WITHOUT the secret columns (gateway_token,
 -- monitor_password, monitor_host/port/username). This is the shape the
 -- dashboard reads.
-create or replace view public.public_assets as
+create or replace view public.public_assets
+  with (security_invoker = true) as
   select id, name, site_name, site_address,
          offline_threshold_minutes, status, last_seen_at, created_at, service_user,
          maintenance, router_online, router_status_at,
@@ -275,7 +303,8 @@ create or replace view public.public_assets as
 -- inserts several rows sharing one created_at -- it could return an arbitrary
 -- reading from the batch as "latest". The idx_telemetry_asset_recorded unique
 -- index serves this order-by-recorded_at-desc-limit-1.
-create or replace view public.latest_telemetry as
+create or replace view public.latest_telemetry
+  with (security_invoker = true) as
   select t.asset_id, t.id, t.recorded_at, t.created_at,
          t.he_lvl, t.he_press, t.h2o_flow, t.h2o_temp, t.shield, t.cs1, t.data
   from public.assets a
@@ -1294,10 +1323,20 @@ revoke all on public.orgs          from anon, authenticated;
 revoke all on public.org_members   from anon, authenticated;
 revoke all on public.user_sessions from anon, authenticated;
 
--- Open read policies (candidates for tightening under F-1).
-create policy "public read telemetry"    on public.telemetry_samples for select to public using (true);
-create policy "public read alert_rules"  on public.alert_rules       for select to public using (true);
-create policy "public read alert_events" on public.alert_events      for select to public using (true);
+-- The three "public read" policies that used to live here are GONE, dropped by
+-- phase2_close_public_reads (2026-08-17). For the record, they were:
+--   create policy "public read telemetry"    on telemetry_samples for select to public using (true);
+--   create policy "public read alert_rules"  on alert_rules       for select to public using (true);
+--   create policy "public read alert_events" on alert_events      for select to public using (true);
+--
+-- Nothing replaces them. telemetry_samples, alert_rules and alert_events now
+-- have RLS enabled with NO policy, exactly like assets and users: unreachable
+-- for anon, and read only by the server through lib/fleetQueries.ts, which
+-- filters every query by the session's active org.
+--
+-- Do NOT add a policy here to "restore" client reads. Tenant scoping lives in
+-- the server query layer; a permissive policy would silently reopen the
+-- cross-tenant leak that this whole migration exists to close.
 
 -- =====================================================================
 -- GRANTS
@@ -1331,11 +1370,45 @@ revoke insert, update, delete, truncate, references, trigger
      public.dm_webhook_events, public.public_assets, public.latest_telemetry
   from anon, authenticated;
 
--- SELECT is intentionally still granted: lib/dataSource.ts reads through the
--- anon client until Phase 2 moves reads server-side. security_invoker on the
--- two views is likewise NOT set yet — flipping it now would drop
--- public_assets to 0 rows for anon and black out the live dashboard. Both
--- close together in Phase 2. See docs/multi-tenant-plan.md.
+-- SELECT is now revoked too — phase2_close_public_reads, applied 2026-08-17
+-- after production (8cdf351) was verified serving Phase 2. Reads all go through
+-- lib/fleetQueries.ts on the server via the service role.
+revoke select on public.assets            from anon, authenticated;
+revoke select on public.telemetry_samples  from anon, authenticated;
+revoke select on public.alert_rules        from anon, authenticated;
+revoke select on public.alert_events       from anon, authenticated;
+revoke select on public.public_assets      from anon, authenticated;
+revoke select on public.latest_telemetry    from anon, authenticated;
+
+-- Function EXECUTE. Note the PUBLIC pseudo-role: Postgres grants EXECUTE on
+-- functions to PUBLIC by default (ACL shows as a bare "=X/postgres"), and anon
+-- INHERITS it — so "revoke ... from anon" alone is a NO-OP. The first attempt at
+-- this left asset_telemetry_15min fully callable; always revoke from `public`
+-- as well. Applied by phase2_revoke_public_execute_on_legacy_auth_rpcs.
+--
+-- asset_telemetry_15min took an asset uuid and no org context, so while it was
+-- open, any uuid holder could read that asset's history across tenants.
+revoke execute on function public.asset_telemetry_15min(uuid, integer)
+  from public, anon, authenticated;
+grant  execute on function public.asset_telemetry_15min(uuid, integer) to service_role;
+
+-- Legacy auth RPCs, unused since login moved to create_session. Leaving
+-- verify_user_login anon-callable kept F-4 (PIN brute force) open even after
+-- login moved server-side. reset_own_pin calls verify_user_login internally and
+-- is unaffected — it is SECURITY DEFINER, so the nested call runs as the owner.
+revoke execute on function public.verify_user_login(text, text)
+  from public, anon, authenticated;
+revoke execute on function public.record_login_failure(text)
+  from public, anon, authenticated;
+revoke execute on function public.log_session_event(text, text, text)
+  from public, anon, authenticated;
+grant  execute on function public.verify_user_login(text, text) to service_role;
+
+-- STILL GRANTED TO ANON, DELIBERATELY: report_telemetry and
+-- report_telemetry_batch. The 17 collector Pis call them with the publishable
+-- key plus a per-asset gateway_token. Revoking either stops fleet ingest.
+-- Verified after the lockdown: has_function_privilege('anon', ...) = true for
+-- both, and ingest continued (10 rows from 8 assets in the next 3 minutes).
 
 
 -- =====================================================================
