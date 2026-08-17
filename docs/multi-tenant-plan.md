@@ -114,8 +114,10 @@ running app keeps working untouched.
 **1a (done)** — migration `multi_tenant_phase1_session_rpcs`: `create_session`,
 `resolve_session`, `switch_active_org`, `destroy_session`,
 `cleanup_expired_sessions` (+ nightly cron). Granted to `service_role` only, so
-anon cannot reach PIN verification at all — that also closes the F-4
-brute-force surface. Self-tested end to end on a throwaway user: wrong PIN
+anon cannot reach *these* RPCs at all. ⚠ This does **not** close F-4 — an earlier
+version of this line claimed it did. F-4 is the `is_admin()` path reached through
+the 23 anon-executable `admin_*` RPCs; see the F-4 subsection under Phase 2 and
+Phase 3 below. Self-tested end to end on a throwaway user: wrong PIN
 returns no rows and records a strike, the raw token is never stored, a bogus
 token resolves empty, a destroyed session is dead, and **a numed-only member is
 refused the demo org**.
