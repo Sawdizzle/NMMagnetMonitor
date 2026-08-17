@@ -3,6 +3,7 @@ import "server-only";
 import { cache } from "react";
 import { cookies } from "next/headers";
 import { supabaseAdmin } from "./supabaseServer";
+import type { Brand } from "./brand";
 
 // Name kept from the old localStorage key so there is one concept called
 // "nm_session" in the codebase, not two. Different storage, same meaning.
@@ -33,6 +34,13 @@ export type SessionContext = {
   tvAccess: boolean;
   memberships: Membership[];
   expiresAt: string;
+  /**
+   * The ACTIVE org's brand strings. Phase 0 moved these onto `orgs` so a
+   * company can be turned up without a deploy; this is what finally carries
+   * them to the UI. Null when there is no active org — the client falls back to
+   * its built-in brand rather than rendering blanks.
+   */
+  brand: Brand | null;
 };
 
 type ResolveRow = {
@@ -52,6 +60,9 @@ type ResolveRow = {
     is_demo: boolean;
   }[];
   expires_at: string;
+  org_product_name: string | null;
+  org_eyebrow: string | null;
+  org_tagline: string | null;
 };
 
 /**
@@ -86,6 +97,14 @@ export async function resolveToken(token: string): Promise<SessionContext | null
       isDemo: m.is_demo,
     })),
     expiresAt: row.expires_at,
+    brand:
+      row.org_product_name && row.org_eyebrow
+        ? {
+            productName: row.org_product_name,
+            eyebrow: row.org_eyebrow,
+            tagline: row.org_tagline ?? "",
+          }
+        : null,
   };
 }
 

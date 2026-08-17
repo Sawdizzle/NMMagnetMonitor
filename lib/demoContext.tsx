@@ -19,7 +19,9 @@ export type DemoConfig = {
 // outside the demo tree resolves to this — live branding, no /demo prefix.
 const DEFAULT: DemoConfig = { demo: false, basePath: "", brand: realBrand };
 
-const DemoContext = createContext<DemoConfig>(DEFAULT);
+// Exported so the live app can supply the active org's brand through the same
+// context the components already read (components/OrgBrandProvider.tsx).
+export const DemoContext = createContext<DemoConfig>(DEFAULT);
 
 export function DemoProvider({ children }: { children: React.ReactNode }) {
   return (

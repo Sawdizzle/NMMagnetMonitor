@@ -661,3 +661,33 @@ repointing the target's session.
 
 Also done: the `Demo` account was moved out of Numed into the demo org and its
 live session repointed.
+
+### Phase 4b — per-org branding ✅ 2026-08-17
+
+Phase 0 moved `product_name` / `eyebrow` / `tagline` onto `orgs` so a company
+could be turned up without a deploy — then nothing ever read them. The eyebrow
+said "NUMED · REMOTE MONITORING" while viewing Demo Company.
+
+`resolve_session` now returns the active org's brand, so it rides along with the
+session rather than costing a second round-trip. That required DROP + CREATE:
+adding columns to a `RETURNS TABLE` changes the function's return type, which
+`CREATE OR REPLACE` cannot do. Its callers (`_admin_actor`,
+`list_switchable_orgs`, `reset_own_pin`, `update_own_username`) resolve at
+runtime, so recreating in one transaction is safe — verified afterwards.
+
+`components/OrgBrandProvider.tsx` feeds it into the same `DemoContext` the
+components already read, so **no component changed**. It sits inside
+`AuthProvider` (it reads the session) and outside the `/demo` tree, whose
+`DemoShell` nests its own provider — the nearer provider wins, so `/demo` keeps
+its neutral white-label identity regardless of who is signed in. Signed out, or
+with no active org, it falls back to `realBrand` so the login screen still looks
+like itself.
+
+The brand is also cached in the localStorage session copy, purely so a returning
+user paints their own company's branding on the first frame instead of flashing
+the default and correcting itself. The server session stays authoritative and
+reconciles on mount.
+
+Verified in the browser: signed in against Numed the eyebrow reads
+"NUMED · REMOTE MONITORING"; switching to Demo Company it becomes
+"LIVE DEMO · REMOTE MONITORING", with the fleet correctly empty.

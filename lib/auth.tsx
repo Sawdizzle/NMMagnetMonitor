@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import type { Brand } from "./brand";
 import { supabase } from "./supabase";
 import {
   loginAction,
@@ -17,7 +18,18 @@ export type Role = "admin" | "viewer";
 // immediately on load instead of waiting on a round-trip, and is reconciled
 // against the server on mount. The plaintext PIN that used to live here was
 // removed once every call site moved to a server action (Phase 3).
-export type Session = { username: string; role: Role; tvAccess: boolean };
+export type Session = {
+  username: string;
+  role: Role;
+  tvAccess: boolean;
+  /**
+   * The active org's brand, cached alongside the rest of the session purely so
+   * a returning user paints their own company's branding on first frame
+   * instead of flashing the built-in default and then correcting itself.
+   * Authoritative copy is the server session; this is reconciled on mount.
+   */
+  brand?: Brand | null;
+};
 
 const SESSION_KEY = "nm_session";
 
@@ -101,6 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             username: server.username,
             role: server.role,
             tvAccess: server.tvAccess,
+            brand: server.brand,
           };
           updateStoredSession(fresh);
           setSession(fresh);
@@ -139,6 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       username,
       role: result.session.role,
       tvAccess: result.session.tvAccess,
+      brand: result.session.brand,
     };
     writeStoredSession(newSession, remember);
     setSession(newSession);
@@ -167,6 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       username,
       role: result.session.role,
       tvAccess: result.session.tvAccess,
+      brand: result.session.brand,
     };
     writeStoredSession(newSession, remember);
     setSession(newSession);
