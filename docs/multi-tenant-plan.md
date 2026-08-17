@@ -787,3 +787,46 @@ that was not intended, spotted only by diffing against an earlier screenshot and
 reverted. The grid puts many identical dropdowns close together; when driving it
 programmatically, confirm the target row by reading its username, not by
 position.
+
+### Phase 6 — dead-code removal, and wall displays ✅ 2026-08-17
+
+**Deleted the dead auth surface.** `verify_user_login`, `record_login_failure`,
+`log_session_event` (all revoked, no callers since login moved to
+`create_session`), the vestigial `users.role` / `users.tv_access` columns (role
+has lived on `org_members` since Phase 3b-2), and the superseded
+`app_settings.invite_code` row. Three functions still *wrote* `users.role` and
+were updated first.
+
+Deleting beats revoking: a revoked function is one GRANT away from live, and
+unreferenced PIN-adjacent code is exactly what bit this project twice —
+`is_admin` survived two "F-4 is closed" claims, and `reset_own_pin` sat as an
+unrate-limited oracle precisely because nothing called it and nobody looked.
+
+**Wall displays.** A corridor TV used to run on a *human's* 30-day session: it
+carried that person's identity and access, and dropped to a login form when the
+session lapsed, usually with nobody watching.
+
+`display_tokens` are long-lived, revocable, **read-only** credentials bound to
+one org. Activate once at `/tv/display?token=…`, which swaps the token for a
+year-long httpOnly cookie and redirects — so the token doesn't linger in the
+address bar or browser history on a screen anyone can walk past. Stored as
+sha256 like session tokens.
+
+The boundary is enforced by keeping `requireFleetScope` (session **or** display)
+separate from `requireOrgScope` (session only), and wiring the display path into
+`/api/fleet` alone — the one route the wall actually needs.
+
+Verified over HTTP: activation sets the cookie and redirects; `/api/fleet` with
+*only* the display cookie returns 17 assets; `/tv` renders with no login; and
+`/api/assets` returns **401** to that same cookie. In SQL: a display token is
+unusable as a session or an `_admin_actor`, revoking stops it immediately, and
+`last_seen_at` is stamped so a dead screen is visible in the admin list.
+
+A revoked link redirects to `/tv?display=invalid` and says so on screen rather
+than silently becoming a login prompt — someone standing at a wall TV should not
+have to guess why it wants a PIN.
+
+**Known gap:** a display token on a non-Numed org still paints the default brand,
+because `OrgBrandProvider` reads the user session and a display has none. Low
+impact (product name is the same across orgs by default), but it means a
+white-labelled tenant's wall TV would show the generic name.

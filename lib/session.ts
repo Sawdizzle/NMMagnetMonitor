@@ -8,6 +8,10 @@ import type { Brand } from "./brand";
 // Name kept from the old localStorage key so there is one concept called
 // "nm_session" in the codebase, not two. Different storage, same meaning.
 export const SESSION_COOKIE = "nm_session";
+// Separate cookie from the human session on purpose: a wall display and a
+// signed-in person can share a browser profile without clobbering each other,
+// and clearing one never signs out the other.
+export const DISPLAY_COOKIE = "nm_display";
 
 export type Role = "admin" | "viewer";
 
@@ -129,3 +133,24 @@ export async function isAdminHere(): Promise<boolean> {
   const s = await getSession();
   return s?.role === "admin";
 }
+
+export type DisplayScope = { orgId: string; label: string };
+
+/**
+ * Resolve the wall-display cookie to an org.
+ *
+ * A display token is long-lived, revocable and READ-ONLY: it grants one org's
+ * fleet and nothing else. It deliberately does not go through _admin_actor, so
+ * a screen can never reach an admin RPC. Previously a corridor TV ran on a
+ * human's 30-day session — carrying that person's identity and access, and
+ * dropping to a login form when it lapsed.
+ */
+export const getDisplayScope = cache(async (): Promise<DisplayScope | null> => {
+  const token = (await cookies()).get(DISPLAY_COOKIE)?.value;
+  if (!token) return null;
+
+  const { data, error } = await supabaseAdmin.rpc("resolve_display_token", { p_token: token });
+  const row = Array.isArray(data) ? data[0] : data;
+  if (error || !row) return null;
+  return { orgId: row.org_id as string, label: row.label as string };
+});

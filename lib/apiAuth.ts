@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getSession } from "./session";
+import { getSession, getDisplayScope } from "./session";
 import type { SessionContext } from "./session";
 
 export type OrgScope = { session: SessionContext; orgId: string };
@@ -41,4 +41,27 @@ export function parseLimit(url: string, fallback: number, max = 200): number {
   const raw = Number(new URL(url).searchParams.get("limit"));
   if (!Number.isFinite(raw) || raw <= 0) return fallback;
   return Math.min(Math.round(raw), max);
+}
+
+/**
+ * Org scope for READ-ONLY fleet data, accepting either a human session or a
+ * wall-display token.
+ *
+ * Kept separate from requireOrgScope so display tokens can only ever reach the
+ * fleet read — never the admin routes. A screen in a corridor should be able to
+ * show magnets and nothing else.
+ */
+export async function requireFleetScope(): Promise<
+  { orgId: string; isDisplay: boolean } | { response: Response }
+> {
+  const session = await getSession();
+  if (session?.activeOrgId) return { orgId: session.activeOrgId, isDisplay: false };
+
+  const display = await getDisplayScope();
+  if (display) return { orgId: display.orgId, isDisplay: true };
+
+  if (session) {
+    return { response: Response.json({ error: "No active organization" }, { status: 403 }) };
+  }
+  return { response: Response.json({ error: "Not signed in" }, { status: 401 }) };
 }

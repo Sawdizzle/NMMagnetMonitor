@@ -39,6 +39,7 @@ import {
 import { getSessionAction } from "@/lib/authActions";
 import GlobalUsersTab from "@/components/GlobalUsersTab";
 import CompaniesTab from "@/components/CompaniesTab";
+import DisplaysSection from "@/components/DisplaysSection";
 
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "he_lvl", label: "Helium level", unit: "%" },
@@ -52,13 +53,15 @@ const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
 
 const NO_LOCATION = "No location set";
 
-type TabId = "assets" | "alerts" | "users" | "companies" | "activity";
+type TabId = "assets" | "alerts" | "users" | "displays" | "companies" | "activity";
 // "Companies" is superadmin-only and filtered out below — a company admin must
 // not even learn that other tenants exist.
 const TABS: { id: TabId; label: string; superadminOnly?: boolean }[] = [
   { id: "assets", label: "Assets" },
   { id: "alerts", label: "Alerts" },
   { id: "users", label: "Users" },
+  // Not superadmin-only: a company admin manages their own screens.
+  { id: "displays", label: "Displays" },
   { id: "companies", label: "Companies", superadminOnly: true },
   { id: "activity", label: "Activity" },
 ];
@@ -633,6 +636,7 @@ function AdminPanel({ me }: { me: Session }) {
     users: users.length,
     // CompaniesTab loads its own list, so there is no count to show here
     // without a second fetch the header doesn't need.
+    displays: null,
     companies: null,
     activity: null,
   };
@@ -792,6 +796,10 @@ function AdminPanel({ me }: { me: Session }) {
 
       {activeTab === "companies" && isSuperadmin && (
         <CompaniesTab notify={notify} fail={fail} />
+      )}
+
+      {activeTab === "displays" && (
+        <DisplaysSection notify={notify} fail={fail} askConfirm={askConfirm} />
       )}
 
       {activeTab === "activity" && <ActivityTab auditLog={auditLog} loadAuditLog={loadAuditLog} />}

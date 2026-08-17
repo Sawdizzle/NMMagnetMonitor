@@ -487,3 +487,39 @@ export async function adminUpdateOrg(args: {
   revalidatePath("/", "layout");
   return res;
 }
+
+// ---- wall displays --------------------------------------------------------
+
+export type DisplayToken = {
+  id: string;
+  org_id: string;
+  org_name: string;
+  label: string;
+  created_by: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+  revoked_at: string | null;
+};
+
+export async function adminListDisplayTokens() {
+  return call<DisplayToken[]>("admin_list_display_tokens");
+}
+
+/**
+ * Mint a display token. The raw value comes back ONCE — only its hash is
+ * stored — so the UI must show it immediately and say so.
+ */
+export async function adminCreateDisplayToken(label: string, orgId?: string) {
+  const res = await call<{ display_token: string; id: string }[]>("admin_create_display_token", {
+    p_label: label,
+    p_org_id: orgId ?? null,
+  });
+  revalidatePath("/admin");
+  return res;
+}
+
+export async function adminRevokeDisplayToken(id: string) {
+  const res = await call<boolean>("admin_revoke_display_token", { p_id: id });
+  revalidatePath("/admin");
+  return res;
+}
