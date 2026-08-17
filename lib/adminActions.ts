@@ -333,3 +333,60 @@ export async function adminSendTestAlert(address: string): Promise<AdminResult<{
     return { data: null, error: { message: e instanceof Error ? e.message : "Network error" } };
   }
 }
+
+// ---- superadmin: users as people, companies as explicit grants ------------
+//
+// Creating a user used to put them in whatever org the switcher was on, which
+// is how the Demo account ended up able to read Numed's real fleet. These treat
+// a person and their company access as two separate decisions.
+
+export type UserGrant = {
+  org_id: string;
+  slug: string;
+  name: string;
+  role: "admin" | "viewer";
+  tv_access: boolean;
+};
+
+export type GlobalUser = {
+  username: string;
+  is_superadmin: boolean;
+  created_at: string;
+  memberships: UserGrant[];
+};
+
+/** Every user with their per-company grants. Superadmin only. */
+export async function adminListAllUsers() {
+  return call<GlobalUser[]>("admin_list_all_users");
+}
+
+/** Create a person with NO company access; grants come after, explicitly. */
+export async function adminCreateUnassignedUser(username: string, pin: string) {
+  const res = await call<boolean>("admin_create_unassigned_user", {
+    p_new_username: username,
+    p_new_pin: pin,
+  });
+  revalidatePath("/admin");
+  return res;
+}
+
+/**
+ * Grant, adjust, or revoke one company's access for one person.
+ * Pass role = null to revoke.
+ */
+export async function adminSetMembership(
+  username: string,
+  orgId: string,
+  role: "admin" | "viewer" | null,
+  tvAccess = false
+) {
+  const res = await call<boolean>("admin_set_membership", {
+    p_target_username: username,
+    p_org_id: orgId,
+    p_role: role,
+    p_tv_access: tvAccess,
+  });
+  // Could be the caller's own access, which the nav reads from the session.
+  revalidatePath("/", "layout");
+  return res;
+}

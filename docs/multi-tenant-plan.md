@@ -616,3 +616,48 @@ roll the increment back in the same transaction, which is precisely the bug the
 `register_user` (which validates an invite code, not a PIN, and must stay
 anon-callable because signup precedes any session). `lib/auth.tsx` no longer
 touches the anon Supabase client for anything except `register_user`.
+
+### Phase 4a — users are people; companies are explicit grants ✅ 2026-08-17
+
+**Why this changed.** `admin_create_user` puts the new person into whatever org
+the switcher happens to be on. That is how the `Demo` account ended up a member
+of **Numed** and able to read all 17 real magnets — the dangerous outcome was
+the *default*, produced by doing nothing wrong. Creating a person and deciding
+which companies they may see are now two separate, deliberate steps.
+
+Scope, as chosen: **only the Users tab** leaves the switcher. Assets and Alerts
+stay org-scoped, because a magnet or a threshold genuinely belongs to one
+company. And it is **superadmin-only** — an ordinary company admin keeps the
+org-scoped tab and still cannot learn that other tenants exist.
+
+New (all service_role, superadmin-gated where noted):
+- `admin_list_all_users(p_token)` — every user with their grants. Superadmin
+  only; a company admin is refused outright.
+- `admin_create_unassigned_user(p_token, username, pin)` — creates a person with
+  **no** company access. They can sign in and see nothing until granted.
+- `admin_set_membership(p_token, username, org_id, role, tv_access)` — grant,
+  adjust, or (role = null) revoke. A superadmin may target any company; a
+  company admin only the one they are currently administering, so an admin of
+  one tenant cannot hand out access to another.
+
+Two safeguards worth keeping:
+- Revoking someone's access also **repoints any live session** off that org, so
+  an existing cookie cannot keep reading the company they just lost.
+- An admin cannot revoke their own access (superadmins exempt, since they keep
+  admin everywhere regardless) — otherwise a single click locks you out of the
+  org you were administering with no way back.
+
+`components/GlobalUsersTab.tsx` renders it: an "Add person" form with no role
+and no company, then one row per person with a per-company `No access / Viewer /
+Admin` control and a TV checkbox. A person with no grants gets a "No access"
+badge so the state is visible rather than silent.
+
+Verified end to end in the browser: creating a person produced **0 memberships**
+and the audit line *Created "_grantee" with no company access yet*; granting
+Demo through the dropdown produced *Granted "_grantee" viewer access to Demo
+Company*. Backed by 8 SQL assertions including a company admin refused the
+global list, refused a foreign org, self-revoke refused, and revocation
+repointing the target's session.
+
+Also done: the `Demo` account was moved out of Numed into the demo org and its
+live session repointed.

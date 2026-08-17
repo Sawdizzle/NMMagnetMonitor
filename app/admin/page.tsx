@@ -36,6 +36,8 @@ import {
   adminListAuditLog,
   adminSendTestAlert,
 } from "@/lib/adminActions";
+import { getSessionAction } from "@/lib/authActions";
+import GlobalUsersTab from "@/components/GlobalUsersTab";
 
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "he_lvl", label: "Helium level", unit: "%" },
@@ -113,6 +115,9 @@ function AdminPanel({ me }: { me: Session }) {
 
   const [assets, setAssets] = useState<Asset[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
+  // Not on the client Session type — read from the server session, which is the
+  // only authority on it.
+  const [isSuperadmin, setIsSuperadmin] = useState(false);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
 
   // Toast + dialog state (replaces the old top-of-page status string and the
@@ -218,6 +223,12 @@ function AdminPanel({ me }: { me: Session }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    getSessionAction()
+      .then((s) => setIsSuperadmin(!!s?.isSuperadmin))
+      .catch(() => {});
+  }, []);
 
   async function handleAddAsset(e: React.FormEvent) {
     e.preventDefault();
@@ -750,21 +761,27 @@ function AdminPanel({ me }: { me: Session }) {
         </>
       )}
 
-      {activeTab === "users" && (
-        <UsersTab
-          users={users}
-          userName={userName}
-          setUserName={setUserName}
-          userPin={userPin}
-          setUserPin={setUserPin}
-          userRole={userRole}
-          setUserRole={setUserRole}
-          handleAddUser={handleAddUser}
-          handleToggleRole={handleToggleRole}
-          handleToggleTvAccess={handleToggleTvAccess}
-          handleResetPin={handleResetPin}
-        />
-      )}
+      {activeTab === "users" &&
+        // A superadmin manages people globally and grants each company
+        // explicitly; a company admin manages only their own org's members and
+        // never learns that other tenants exist.
+        (isSuperadmin ? (
+          <GlobalUsersTab notify={notify} fail={fail} askPrompt={askPrompt} askConfirm={askConfirm} />
+        ) : (
+          <UsersTab
+            users={users}
+            userName={userName}
+            setUserName={setUserName}
+            userPin={userPin}
+            setUserPin={setUserPin}
+            userRole={userRole}
+            setUserRole={setUserRole}
+            handleAddUser={handleAddUser}
+            handleToggleRole={handleToggleRole}
+            handleToggleTvAccess={handleToggleTvAccess}
+            handleResetPin={handleResetPin}
+          />
+        ))}
 
       {activeTab === "activity" && <ActivityTab auditLog={auditLog} loadAuditLog={loadAuditLog} />}
 
