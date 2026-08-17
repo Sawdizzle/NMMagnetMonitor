@@ -211,7 +211,10 @@ It was already N+1 against Supabase before, but each now also costs an
 `/api/fleet/helium` endpoint would collapse it to one request, at the cost of a
 new `DataSource` method and touching Dashboard.
 
-**Cutover APPLIED 2026-08-17 — F-1 and F-4 are closed.**
+**Cutover APPLIED 2026-08-17 — F-1 closed. F-4 only PARTIALLY mitigated.**
+
+⚠ Correction: an earlier commit message on this branch claimed F-4 was closed.
+It is not. See the F-4 subsection below before relying on that.
 
 Merged to `main` as `8cdf351`; production deployed and verified on
 `www.nmmagmon.com` (note: the apex 308-redirects to www, so www is canonical).
@@ -230,12 +233,35 @@ post-migration probe caught `asset_telemetry_15min -> STILL CALLABLE` while ever
 table read was already BLOCKED. Any uuid holder could still have pulled that
 asset's history across tenants.
 
-Same discovery corrected an earlier claim: Phase 1a did **not** close F-4.
+#### F-4 is still open — read this before trusting the commit messages
+
+Two claims on this branch were wrong and are corrected here.
+
+Phase 1a did **not** close F-4 by moving login to `create_session`:
 `verify_user_login` stayed anon-callable, so an attacker could ignore the app
-entirely and hammer the RPC with the publishable key. Now revoked, along with
-`record_login_failure` and `log_session_event` (both unused since the bridge).
+and hammer the RPC with the publishable key. Now revoked, along with
+`record_login_failure` and `log_session_event` (unused since the bridge).
 `reset_own_pin` calls `verify_user_login` internally and is fine — it's
 `SECURITY DEFINER`, so the nested call runs as the owner.
+
+But that was never F-4's main surface. As the architecture review recorded it,
+F-4 is **`is_admin(username, pin)` applying no lockout while being reachable by
+anon through all 23 `admin_*` RPCs**. Measured after the lockdown: all 23 plus
+`is_admin` itself were still anon-callable.
+
+Mitigated so far (`revoke_public_execute_on_is_admin`): `is_admin` is revoked
+from PUBLIC. It was the cleanest oracle — a plain boolean return, so
+`select is_admin('admin','0000')` was a direct PIN check with no rate limit, no
+lockout and no audit trail. Safe to revoke because no client code calls it and
+all 23 SQL callers are `SECURITY DEFINER`. Verified afterwards: the oracle is
+BLOCKED, and `admin_list_users` still works with a wrong PIN correctly rejected.
+
+**Still open.** The 23 `admin_*` RPCs remain anon-executable and each
+distinguishes a right PIN from a wrong one via its `not authorized` exception, so
+a slower oracle survives — still no lockout on that path. **Phase 3 is the real
+fix**: replace the `(p_actor_username, p_actor_pin)` pair with the session
+cookie, then revoke the grants outright. Until then, treat the admin PIN as
+brute-forceable and make it long.
 
 Final state, verified against production:
 

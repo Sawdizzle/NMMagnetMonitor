@@ -18,7 +18,7 @@
 -- remains the canonical, byte-exact export — treat this as the working
 -- source of truth until then.
 --
--- SECURITY NOTE — F-1 and F-4 are CLOSED as of 2026-08-17.
+-- SECURITY NOTE — F-1 is CLOSED as of 2026-08-17. F-4 is NOT (see below).
 -- What they were, and what actually fixed them:
 --   * F-1 (public read). The "public read" policies granted SELECT to
 --     everyone, and — worse than the review recorded — public_assets and
@@ -32,13 +32,29 @@
 --     Fixed by: revoke_anon_write_grants, then phase2_close_public_reads
 --     (security_invoker on both views, policies dropped, SELECT revoked)
 --     once reads had moved server-side into lib/fleetQueries.ts.
---   * F-4 (PIN brute force). Moving login to create_session was NOT
---     sufficient — verify_user_login stayed anon-callable, so an attacker
---     could bypass the app and hammer the RPC directly with the publishable
---     key. Fixed by phase2_revoke_public_execute_on_legacy_auth_rpcs.
---     Note the Postgres gotcha behind the first failed attempt: functions
---     grant EXECUTE to the PUBLIC pseudo-role by default (ACL "=X/postgres"),
---     which anon inherits, so revoking from anon alone is a no-op.
+--   * F-4 (PIN brute force) — STILL OPEN, only partially mitigated.
+--     Two corrections to earlier claims in this repo's history:
+--       (a) Moving login to create_session was NOT sufficient:
+--           verify_user_login stayed anon-callable, so an attacker could
+--           bypass the app and hammer the RPC with the publishable key. That
+--           path is now revoked (phase2_revoke_public_execute_on_legacy_auth_rpcs).
+--       (b) That was never F-4's main surface. F-4 is is_admin(username, pin)
+--           applying NO lockout while reachable by anon through all 23
+--           admin_* RPCs. is_admin is now revoked from PUBLIC
+--           (revoke_public_execute_on_is_admin) — it was the cleanest oracle,
+--           returning a bare boolean with no lockout or audit trail. Safe to
+--           revoke: nothing client-side calls it and all 23 SQL callers are
+--           SECURITY DEFINER, so their nested calls run as the owner.
+--     WHAT REMAINS: the 23 admin_* RPCs are still anon-executable and each
+--     distinguishes a right PIN from a wrong one through its "not authorized"
+--     exception, with no lockout on that path. Phase 3 is the real fix —
+--     swap (p_actor_username, p_actor_pin) for the session cookie, then
+--     revoke the grants. Until then the admin PIN is brute-forceable; use a
+--     long one.
+--     Postgres gotcha behind the first failed attempt at all of this:
+--     functions grant EXECUTE to the PUBLIC pseudo-role by default (ACL shows
+--     as a bare "=X/postgres"), which anon inherits, so revoking from anon
+--     alone is a NO-OP. Always revoke from `public` too.
 --
 -- Still granted to anon ON PURPOSE: report_telemetry and
 -- report_telemetry_batch. The 17 collector Pis call them with the publishable
