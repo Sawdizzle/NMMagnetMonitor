@@ -486,3 +486,38 @@ repeats easily:
   (`switch_active_org`) and is exercised by tests, but nothing in the UI calls it,
   so a multi-org user is stuck in whichever org `create_session` picked.
 - The alerting edge functions are still not org-aware — see the BLOCKER section.
+
+### Phase 3d — org switcher UI ✅ DONE 2026-08-17
+
+`components/OrgSwitcher.tsx` in the nav, backed by a new
+`list_switchable_orgs(p_token)` RPC and a `listSwitchableOrgs()` server action.
+
+It **renders nothing when the caller can reach only one org** — the normal case
+for a single-company deployment. Numed's users should not see tenancy chrome
+that means nothing to them; it appears only for genuinely multi-org users and
+superadmins.
+
+The list comes from its own RPC rather than `session.memberships`, because a
+superadmin can switch into an org they hold no membership in (`switch_active_org`
+exempts them) and those orgs would otherwise be missing. The RPC mirrors
+`switch_active_org`'s rule exactly, so the switcher never offers an org the
+switch would then refuse.
+
+**A bug caught in testing, worth keeping in mind for anything similar:** the
+first version finished with `router.refresh()`. That re-renders the *server*
+tree, but Dashboard, AssetDetail and TvWall are client components polling
+`/api/*` on their own `setInterval` — so the org label flipped to "Demo Company"
+while the fleet kept showing Numed's 17 assets until the next poll. One
+company's data under another company's name is exactly what this control exists
+to prevent. It now does a full `window.location.reload()`.
+
+Verified in the browser: a two-org user sees the switcher, switching to Demo
+shows 0 assets and the empty state, switching back shows all 17 immediately with
+label and data in sync; a single-org user sees no switcher at all.
+
+**Gap found while testing — per-org branding is not wired up.** The eyebrow
+still read "NUMED · REMOTE MONITORING" while viewing Demo Company. Phase 0 moved
+`product_name` / `eyebrow` / `tagline` onto `orgs`, but the UI still reads the
+`lib/brand.ts` constants. Wiring it means flowing the active org's brand from
+the session into the context `useDemo()` serves. Cosmetic for Numed today,
+required before showing a second tenant their own instance.

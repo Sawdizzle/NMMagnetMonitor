@@ -107,3 +107,40 @@ export async function switchOrgAction(orgId: string): Promise<string | null> {
 export async function getSessionAction() {
   return getSession();
 }
+
+export type SwitchableOrg = {
+  orgId: string;
+  slug: string;
+  name: string;
+  role: "admin" | "viewer";
+  isActive: boolean;
+  isDemo: boolean;
+};
+
+/**
+ * Orgs the caller may switch into, for the nav switcher.
+ *
+ * Deliberately NOT derived from session.memberships: a superadmin can switch
+ * into an org they hold no membership in, so that list would be short. The RPC
+ * mirrors switch_active_org's rule, so the switcher never offers an org the
+ * switch would then refuse.
+ */
+export async function listSwitchableOrgs(): Promise<SwitchableOrg[]> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return [];
+
+  const { data, error } = await supabaseAdmin.rpc("list_switchable_orgs", { p_token: token });
+  if (error || !data) return [];
+
+  return (data as {
+    org_id: string; slug: string; name: string;
+    role: "admin" | "viewer"; is_active: boolean; is_demo: boolean;
+  }[]).map((o) => ({
+    orgId: o.org_id,
+    slug: o.slug,
+    name: o.name,
+    role: o.role,
+    isActive: o.is_active,
+    isDemo: o.is_demo,
+  }));
+}

@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { Session } from "@/lib/auth";
 import { useDemo } from "@/lib/demoContext";
 import BrandMark from "@/components/BrandMark";
+import OrgSwitcher from "@/components/OrgSwitcher";
 
 type NavItem = {
   href: string;
@@ -134,6 +135,9 @@ export default function AppNav({ session }: { session?: Session | null }) {
                     <path d="M7 17L17 7M17 7H8M17 7v9" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </Link>
+                {/* Renders nothing unless the user can reach more than one org,
+                    so a single-company deployment shows no tenancy chrome. */}
+                <OrgSwitcher />
                 <span>{session?.username}</span>
               </span>
             )}
