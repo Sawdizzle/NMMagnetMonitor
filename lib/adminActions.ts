@@ -175,8 +175,18 @@ export async function adminResetPin(username: string, newPin: string) {
   return res;
 }
 
-export async function adminSetInviteCode(code: string) {
-  const res = await call<boolean>("admin_set_invite_code", { p_new_code: code });
+/**
+ * Set (or clear) a company's self-registration code.
+ *
+ * Kept separate from adminUpdateOrg on purpose: an org edit that didn't touch
+ * the code would otherwise clear it — which is exactly how Numed's code was
+ * lost. Passing an empty string closes self-registration for that company.
+ */
+export async function adminSetInviteCode(code: string, orgId?: string) {
+  const res = await call<boolean>("admin_set_invite_code", {
+    p_new_code: code,
+    p_org_id: orgId ?? null,
+  });
   revalidatePath("/admin");
   return res;
 }

@@ -830,3 +830,40 @@ have to guess why it wants a PIN.
 because `OrgBrandProvider` reads the user session and a display has none. Low
 impact (product name is the same across orgs by default), but it means a
 white-labelled tenant's wall TV would show the generic name.
+
+### Phase 6c/6d — invite codes, the org-less message, and the helium fan-out ✅ 2026-08-17
+
+**⚠️ Numed's invite code was lost, by me.** A cleanup test set it to a throwaway
+value and then reset it to NULL instead of restoring the original — and the
+original came from `app_settings.invite_code`, which the same migration deleted.
+**Self-registration for Numed is closed until a new code is set, and the old one
+is unrecoverable.** Set one in Admin → Companies → Edit.
+
+That it went unnoticed is itself the finding: `admin_set_invite_code` existed but
+**nothing in the UI ever called it** — the audit label `set_invite_code` was
+there, the editor never was. So the code was only ever settable by editing the
+database by hand, and nobody would have seen it go missing.
+
+Fixed both: `admin_set_invite_code` now takes an optional `p_org_id` (a
+superadmin may target any company; a company admin only their own), and the
+Companies edit form has the missing field. It is a **separate call** from
+`admin_update_org` on purpose — folding `invite_code` into the org update would
+mean any edit that didn't touch the field would clear it, which is precisely the
+accident above.
+
+**The org-less message** now reads "Your account isn't linked to a company yet.
+Ask an administrator to grant you access." rather than a bare
+`No active organization`. Directly reachable now that "create the person, then
+grant a company" is the flow.
+
+**The helium fan-out is one request.** `useFleetForecasts` fetched a week of
+he_lvl *per asset* — 17 HTTP round trips for Numed, each with its own ownership
+check, every 10 minutes for every open dashboard and wall display. New
+`org_helium_15min(org, hours)` returns the whole fleet in one query, exposed at
+`/api/fleet/helium` (session **or** display token) and `/api/demo/fleet/helium`
+(public). Verified: 7 assets / 700 points in a single call, refill chips still
+render, and the authenticated route 401s without a session.
+
+Correcting an earlier overstatement of mine: this was 17 requests per *forecast*
+refresh (10 minutes), not per status poll (30s) — worth fixing, but less severe
+than I first described it.

@@ -206,6 +206,30 @@ export async function loadHeliumSeriesForOrg(
   return { points, error: null };
 }
 
+/**
+ * A week of he_lvl for EVERY asset in one org, in one query.
+ *
+ * Replaces a per-asset fan-out: useFleetForecasts was making one HTTP request
+ * per asset (17 for Numed), each with its own ownership check, every 10 minutes
+ * for every open dashboard and wall display.
+ */
+export async function loadFleetHeliumForOrg(
+  orgId: string,
+  historyHours: number
+): Promise<{ series: Record<string, { t: number; v: number }[]>; error: string | null }> {
+  const { data, error } = await supabaseAdmin.rpc("org_helium_15min", {
+    p_org_id: orgId,
+    p_hours: historyHours,
+  });
+  if (error) return { series: {}, error: error.message };
+
+  const series: Record<string, { t: number; v: number }[]> = {};
+  for (const row of (data ?? []) as { asset_id: string; bucket: string; he_lvl: number }[]) {
+    (series[row.asset_id] ??= []).push({ t: new Date(row.bucket).getTime(), v: Number(row.he_lvl) });
+  }
+  return { series, error: null };
+}
+
 export async function loadAssetAlertsForOrg(
   assetId: string,
   orgId: string,

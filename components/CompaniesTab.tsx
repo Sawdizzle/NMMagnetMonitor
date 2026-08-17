@@ -5,6 +5,7 @@ import {
   adminListOrgs,
   adminCreateOrg,
   adminUpdateOrg,
+  adminSetInviteCode,
   type OrgRow,
 } from "@/lib/adminActions";
 import { actionError } from "@/lib/errors";
@@ -34,6 +35,7 @@ export default function CompaniesTab({
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  const [inviteCode, setInviteCode] = useState("");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [eyebrow, setEyebrow] = useState("");
@@ -57,6 +59,7 @@ export default function CompaniesTab({
     setEyebrow("");
     setTagline("");
     setProductName("Magnet Monitor");
+    setInviteCode("");
     setShowAdd(false);
     setEditingId(null);
   }
@@ -72,6 +75,7 @@ export default function CompaniesTab({
 
   function startEdit(o: OrgRow) {
     setEditingId(o.org_id);
+    setInviteCode(o.invite_code ?? "");
     setName(o.name);
     setEyebrow(o.eyebrow);
     setTagline(o.tagline);
@@ -84,6 +88,13 @@ export default function CompaniesTab({
     if (!editingId) return;
     const { error } = await adminUpdateOrg({ orgId: editingId, name, eyebrow, tagline, productName });
     if (error) return fail(actionError("Could not save company", error));
+
+    // Separate call so a company edit can never silently clear the code.
+    const original = orgs.find((o) => o.org_id === editingId)?.invite_code ?? "";
+    if (inviteCode !== original) {
+      const { error: codeErr } = await adminSetInviteCode(inviteCode, editingId);
+      if (codeErr) return fail(actionError("Saved, but the invite code did not change", codeErr));
+    }
     notify(`"${name}" updated.`);
     resetForm();
     load();
@@ -160,6 +171,19 @@ export default function CompaniesTab({
             Tagline (docs + metadata)
             <input value={tagline} onChange={(e) => setTagline(e.target.value)} className="input" />
           </label>
+
+          {editing && (
+            <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)] sm:col-span-2">
+              Invite code — anyone with it can self-register into this company. Leave empty to close
+              self-registration.
+              <input
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+                placeholder="(self-registration closed)"
+                className="input font-mono-data"
+              />
+            </label>
+          )}
 
           <div className="sm:col-span-2 flex items-center gap-3">
             <button type="submit" className="btn-primary">

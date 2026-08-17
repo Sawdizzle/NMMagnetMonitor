@@ -22,7 +22,18 @@ export async function requireOrgScope(): Promise<OrgScope | { response: Response
     return { response: Response.json({ error: "Not signed in" }, { status: 401 }) };
   }
   if (!session.activeOrgId) {
-    return { response: Response.json({ error: "No active organization" }, { status: 403 }) };
+    // Reachable by design now that "create the person, then grant a company" is
+    // the flow — a new account genuinely has no company until someone grants
+    // one. Say what to do about it rather than showing a bare error code.
+    return {
+      response: Response.json(
+        {
+          error:
+            "Your account isn't linked to a company yet. Ask an administrator to grant you access.",
+        },
+        { status: 403 },
+      ),
+    };
   }
   return { session, orgId: session.activeOrgId };
 }
@@ -61,7 +72,15 @@ export async function requireFleetScope(): Promise<
   if (display) return { orgId: display.orgId, isDisplay: true };
 
   if (session) {
-    return { response: Response.json({ error: "No active organization" }, { status: 403 }) };
+    return {
+      response: Response.json(
+        {
+          error:
+            "Your account isn't linked to a company yet. Ask an administrator to grant you access.",
+        },
+        { status: 403 },
+      ),
+    };
   }
   return { response: Response.json({ error: "Not signed in" }, { status: 401 }) };
 }

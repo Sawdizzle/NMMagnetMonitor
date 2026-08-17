@@ -45,6 +45,8 @@ export type AssetDetailResult = {
   error: string | null;
 };
 export type HeliumSeriesResult = { points: HeliumPoint[]; error: string | null };
+/** Whole-fleet helium history, keyed by asset id. One request, not one per asset. */
+export type FleetHeliumResult = { series: Record<string, HeliumPoint[]>; error: string | null };
 export type AssetAlertsResult = { events: AlertEvent[]; error: string | null };
 
 export interface DataSource {
@@ -54,6 +56,10 @@ export interface DataSource {
   // boil-off forecast. Uses the same pre-aggregation as the detail charts so a
   // multi-day window stays a few hundred rows, not tens of thousands of raw ones.
   loadHeliumSeries(assetId: string, historyHours: number): Promise<HeliumSeriesResult>;
+  // Fleet-wide equivalent for the glance surfaces (dashboard + TV), which need
+  // every asset's trend at once. Fetching them one at a time was 17 round trips
+  // per refresh; this is one.
+  loadFleetHelium(historyHours: number): Promise<FleetHeliumResult>;
   // Persisted alert_events for one asset (open + recent resolved), newest first.
   // The system-of-record view that evaluate_alerts() maintains on its cron.
   loadAssetAlerts(assetId: string, limit?: number): Promise<AssetAlertsResult>;
@@ -114,6 +120,13 @@ function makeDataSource(base: string): DataSource {
         `${base}/asset/${encodeURIComponent(assetId)}/helium?hours=${historyHours}`,
         (error) => ({ points: [], error })
       );
+    },
+
+    async loadFleetHelium(historyHours) {
+      return getJson<FleetHeliumResult>(`${base}/fleet/helium?hours=${historyHours}`, (error) => ({
+        series: {},
+        error,
+      }));
     },
 
     async loadAssetAlerts(assetId, limit = 20) {

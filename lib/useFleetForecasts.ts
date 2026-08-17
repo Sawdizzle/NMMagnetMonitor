@@ -2,10 +2,14 @@
 
 // Fleet-wide helium forecasts for the glance surfaces (dashboard + TV).
 //
-// Loads a week-long he_lvl series per asset and fits a boil-off forecast, on a
-// slow cadence that's independent of the 30s status poll — the trend changes by
-// the day, not the second, and ten extra RPC calls shouldn't ride every refresh.
-// Keyed by asset id so a card can look up its own forecast in O(1).
+// Loads a week of he_lvl for the WHOLE fleet in one request and fits a boil-off
+// forecast per asset, on a slow cadence independent of the 30s status poll — the
+// trend changes by the day, not the second. Keyed by asset id so a card can look
+// up its own forecast in O(1).
+//
+// This used to fan out one request per asset: 17 round trips for Numed, each
+// with its own ownership check, every 10 minutes for every open dashboard and
+// wall display. Now it is one call to loadFleetHelium.
 
 import { useEffect, useMemo, useState } from "react";
 import { getDataSource } from "./dataSource";
@@ -30,14 +34,11 @@ export function useFleetForecasts(
     const ids = idsKey.split(",");
     let alive = true;
     const run = async () => {
-      const entries = await Promise.all(
-        ids.map(async (id) => {
-          const { points } = await getDataSource(demo).loadHeliumSeries(id, FLEET_FORECAST_HOURS);
-          return [id, heliumForecast(points)] as const;
-        })
-      );
+      const { series } = await getDataSource(demo).loadFleetHelium(FLEET_FORECAST_HOURS);
       if (!alive) return;
-      setForecasts(Object.fromEntries(entries));
+      // Fit per asset from the one payload. An asset with no helium history
+      // simply has no entry, and heliumForecast handles the empty case.
+      setForecasts(Object.fromEntries(ids.map((id) => [id, heliumForecast(series[id] ?? [])])));
     };
     run();
     const t = setInterval(run, FLEET_FORECAST_POLL_MS);
