@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 import OrgBrandProvider from "@/components/OrgBrandProvider";
+import DemoTenantBanner from "@/components/DemoTenantBanner";
 
 export const metadata: Metadata = {
   title: "Magnet Monitor Dashboard | Numed",
@@ -40,6 +41,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
+        {/* Outside AuthProvider because it does not use the client session at
+            all — it reads the httpOnly cookie server-side, which is the only
+            copy that can't be stale. First element in the body so a demo tenant
+            announces itself above the nav, on every route including /tv.
+            Renders null for real tenants, so production sees no change. */}
+        <DemoTenantBanner />
         {/* OrgBrandProvider sits inside AuthProvider (it reads the session) and
             outside the /demo tree, whose DemoShell nests its own provider — the
             nearer one wins, so /demo keeps its neutral identity. */}

@@ -125,6 +125,9 @@ function AdminPanel({ me }: { me: Session }) {
   // Not on the client Session type — read from the server session, which is the
   // only authority on it.
   const [isSuperadmin, setIsSuperadmin] = useState(false);
+  // Whether the org being administered is a demo tenant. Read from the server
+  // session, not the client one — see lib/session.ts.
+  const [isDemoOrg, setIsDemoOrg] = useState(false);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
 
   // Toast + dialog state (replaces the old top-of-page status string and the
@@ -233,7 +236,10 @@ function AdminPanel({ me }: { me: Session }) {
 
   useEffect(() => {
     getSessionAction()
-      .then((s) => setIsSuperadmin(!!s?.isSuperadmin))
+      .then((s) => {
+        setIsSuperadmin(!!s?.isSuperadmin);
+        setIsDemoOrg(!!s?.activeOrgIsDemo);
+      })
       .catch(() => {});
   }, []);
 
@@ -766,7 +772,13 @@ function AdminPanel({ me }: { me: Session }) {
             handleEditRule={handleEditRule}
             handleDeleteRule={handleDeleteRule}
           />
-          <AlertRecipientsSection me={me} notify={notify} fail={fail} askConfirm={askConfirm} />
+          <AlertRecipientsSection
+            me={me}
+            isDemoOrg={isDemoOrg}
+            notify={notify}
+            fail={fail}
+            askConfirm={askConfirm}
+          />
           <AlertSenderSection me={me} notify={notify} fail={fail} />
           <AlertEventsSection me={me} />
         </>
@@ -1222,11 +1234,13 @@ function AlertsTab(props: {
 
 function AlertRecipientsSection({
   me,
+  isDemoOrg,
   notify,
   fail,
   askConfirm,
 }: {
   me: Session;
+  isDemoOrg: boolean;
   notify: (msg: string) => void;
   fail: (msg: string) => void;
   askConfirm: (message: string, danger?: boolean) => Promise<boolean>;
@@ -1314,6 +1328,15 @@ function AlertRecipientsSection({
         Who gets notified when an alert opens. Email is delivered via Resend once the notifier is enabled; the SMS
         channel is stored but not yet wired.
       </p>
+      {/* Recipients stay editable here — the block is in the notifier, which is
+          the only place it can't be worked around — but saying so up front beats
+          letting someone add an address and wait for mail that never comes. */}
+      {isDemoOrg && (
+        <p className="text-xs mb-3 rounded-lg px-3 py-2 border border-[var(--border-soft)] text-[var(--text-dim)]">
+          This is a demo company. Its alerts are <strong>never emailed or pushed</strong>, whatever is
+          listed here — the units behind them are simulated.
+        </p>
+      )}
       <form onSubmit={save} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
         <Field label="Channel">
           <select value={channel} onChange={(e) => setChannel(e.target.value as "email" | "sms")} className="input">

@@ -34,6 +34,15 @@ export type SessionContext = {
   isSuperadmin: boolean;
   activeOrgId: string | null;
   activeOrgSlug: string | null;
+  /**
+   * True when the active org is a demo tenant (orgs.is_demo) — a sales
+   * showcase running on synthetic telemetry, not a production fleet.
+   *
+   * NOT derivable from `memberships`: a superadmin can switch into an org they
+   * hold no membership in, so the active org may be absent from that array
+   * entirely. Read it from here, never by searching the memberships list.
+   */
+  activeOrgIsDemo: boolean;
   role: Role;
   tvAccess: boolean;
   memberships: Membership[];
@@ -53,6 +62,7 @@ type ResolveRow = {
   is_superadmin: boolean;
   active_org: string | null;
   active_org_slug: string | null;
+  active_org_is_demo: boolean;
   effective_role: Role;
   tv_access: boolean;
   memberships: {
@@ -90,6 +100,7 @@ export async function resolveToken(token: string): Promise<SessionContext | null
     isSuperadmin: row.is_superadmin,
     activeOrgId: row.active_org,
     activeOrgSlug: row.active_org_slug,
+    activeOrgIsDemo: row.active_org_is_demo ?? false,
     role: row.effective_role,
     tvAccess: row.tv_access,
     memberships: (row.memberships ?? []).map((m) => ({
@@ -153,4 +164,30 @@ export const getDisplayScope = cache(async (): Promise<DisplayScope | null> => {
   const row = Array.isArray(data) ? data[0] : data;
   if (error || !row) return null;
   return { orgId: row.org_id as string, label: row.label as string };
+});
+
+/**
+ * Is the tenant this browser is currently looking at a demo one?
+ *
+ * Answers for BOTH ways a page gets its org — a person's session and a wall
+ * display's token — because both can point at the demo company and a corridor
+ * TV showing invented magnets is exactly the screen that most needs to say so.
+ * Either one being demo is enough: a browser holding both cookies is ambiguous,
+ * and the safe reading of an ambiguous case is "flag it".
+ *
+ * Deliberately server-side. The client session in lib/auth.tsx is an optimistic
+ * localStorage copy that lags an org switch by a round-trip, and a stale "not
+ * demo" is precisely the wrong answer to be briefly showing over demo data.
+ */
+export const viewingDemoTenant = cache(async (): Promise<boolean> => {
+  const [session, display] = await Promise.all([getSession(), getDisplayScope()]);
+  if (session?.activeOrgIsDemo) return true;
+  if (!display) return false;
+
+  const { data } = await supabaseAdmin
+    .from("orgs")
+    .select("is_demo")
+    .eq("id", display.orgId)
+    .maybeSingle();
+  return data?.is_demo === true;
 });

@@ -16,6 +16,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // their asset's org and each digest goes only to that org's recipients, from
 // that org's sending address.
 //
+// DEMO TENANTS (orgs.is_demo) are excluded outright: their assets are invented,
+// so their alerts must never reach a human inbox no matter how the org is
+// configured. See the suppression block below.
+//
 // The From address per org: orgs.alert_from, else the legacy global
 // app_settings 'alert_from' (both via org_alert_from()), else the ALERT_FROM
 // secret, else Resend's test sender.
@@ -133,18 +137,43 @@ Deno.serve(async (req) => {
   if (aErr) return json({ error: aErr.message }, 500);
   const orgOf = new Map((assets ?? []).map((a) => [a.id as string, a.org_id as string]));
 
+  // Demo tenants never email. Their alerts are real rows on purpose — the demo
+  // has to look alive, so evaluate_alerts still opens and resolves them — but
+  // the units behind them are invented, so every one of these is a page about a
+  // magnet that does not exist. Today the demo org happens to have no
+  // recipients and the block below would close them out anyway; that is an
+  // accident of configuration, one "add recipient" away from paging a real
+  // person about MM-1004. This makes it a property of being a demo instead.
+  const { data: demoOrgs, error: dErr } = await supabase
+    .from("orgs")
+    .select("id")
+    .eq("is_demo", true);
+  if (dErr) return json({ error: dErr.message }, 500);
+  const demoOrgIds = new Set((demoOrgs ?? []).map((o) => o.id as string));
+
   const byOrg = new Map<string, EventRow[]>();
+  const demoIds: number[] = [];
   for (const e of events as EventRow[]) {
     const org = orgOf.get(e.asset_id);
     // An event whose asset vanished mid-run has no org to route to. Skip it
     // rather than guessing — and leave notified_at unset so it isn't lost.
     if (!org) continue;
+    // Stamped as handled, same as the no-recipients case: "there is nobody this
+    // may be sent to" is a terminal outcome, and leaving them queued would
+    // re-examine every demo alert every minute forever.
+    if (demoOrgIds.has(org)) {
+      demoIds.push(e.id);
+      continue;
+    }
     const arr = byOrg.get(org) ?? [];
     arr.push(e);
     byOrg.set(org, arr);
   }
+  if (demoIds.length > 0) {
+    console.log(`${demoIds.length} demo-tenant alert(s) suppressed — demo companies never email`);
+  }
 
-  const notifiedIds: number[] = [];
+  const notifiedIds: number[] = [...demoIds];
   const perOrg: { org: string; recipients: number; events: number }[] = [];
 
   for (const [orgId, orgEvents] of byOrg) {
@@ -191,7 +220,7 @@ Deno.serve(async (req) => {
     if (uErr) return json({ error: uErr.message }, 500);
   }
 
-  return json({ orgs: perOrg, notified: notifiedIds.length });
+  return json({ orgs: perOrg, notified: notifiedIds.length, demoSuppressed: demoIds.length });
 });
 
 function sendEmail(key: string, from: string, to: string[], subject: string, text: string) {

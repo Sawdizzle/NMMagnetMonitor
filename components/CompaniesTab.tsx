@@ -207,18 +207,20 @@ export default function CompaniesTab({
                 <p className="font-medium truncate">{o.name}</p>
                 {o.is_demo && (
                   <span
-                    className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-[var(--border-soft)] text-[var(--text-dim)]"
-                    title="The public demo tenant. /demo reads this company."
+                    className="demo-badge"
+                    title="Demonstration only. /demo reads this company, its assets are simulated, and its alerts are never emailed or pushed."
                   >
-                    Demo
+                    <span className="cd" aria-hidden="true" />
+                    Demo only
                   </span>
                 )}
               </div>
               <p className="text-xs text-[var(--text-dim)] font-mono-data">{o.slug}</p>
             </div>
             <div className="flex items-center gap-4 text-xs text-[var(--text-dim)]">
-              <span>
-                {o.asset_count} asset{o.asset_count === 1 ? "" : "s"}
+              <span title={o.is_demo ? "Simulated units — not production assets." : undefined}>
+                {o.asset_count} {o.is_demo ? "simulated " : ""}asset
+                {o.asset_count === 1 ? "" : "s"}
               </span>
               <span>
                 {o.member_count} member{o.member_count === 1 ? "" : "s"}

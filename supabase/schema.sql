@@ -124,6 +124,18 @@ create table if not exists public.orgs (
   eyebrow      text        not null,
   tagline      text        not null,
   invite_code  text,
+  -- Demonstration tenant, not a production one. Its assets are invented and
+  -- its telemetry is synthesized every minute by generate_demo_telemetry()
+  -- (pg_cron 'generate-demo-telemetry'), so nothing under it may be treated as
+  -- a real magnet. What this flag switches off, all keyed off is_demo:
+  --   * notify-alerts / send-push  never email or push a demo org's alerts,
+  --     regardless of recipients or subscriptions being configured.
+  --   * tailscale-poll / dm-webhook  never match a demo asset to real hardware
+  --     (both match on name substrings, so a collision is possible).
+  --   * the app  renders a persistent demo banner (components/DemoTenantBanner)
+  --     whenever the active org — or a wall display's token — points here.
+  -- evaluate_alerts DOES still run on demo assets: the demo is meant to look
+  -- alive, and blocking delivery is what keeps that contained.
   is_demo      boolean     not null default false,
   created_at   timestamptz not null default now()
 );
@@ -370,11 +382,18 @@ create or replace view public.latest_telemetry
 --
 --   resolve_session(token)
 --       -> table(user_id, username, is_superadmin, active_org,
---                active_org_slug, effective_role, tv_access, memberships,
---                expires_at)
+--                active_org_slug, active_org_is_demo, effective_role,
+--                tv_access, memberships, expires_at)
 --       The per-request read path. effective_role collapses the superadmin
 --       rule — a superadmin is admin in EVERY org, including ones they hold
 --       no membership in, hence the left join to org_members.
+--       active_org_is_demo (migration resolve_session_active_org_is_demo,
+--       2026-08-17) exists for the same reason as that left join: the active
+--       org can be one the caller holds no membership in, so memberships[]
+--       cannot answer "am I looking at demo data?". Callers must read this
+--       field, not search the array. Recreating the function to widen its
+--       OUT columns resets the ACL, so a follow-up migration re-revokes
+--       anon/authenticated — it is service_role-only, like its siblings.
 --
 --   switch_active_org(token, org_id) -> boolean
 --       Refuses an org the caller has no membership in unless superadmin.

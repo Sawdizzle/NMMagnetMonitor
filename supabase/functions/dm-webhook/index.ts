@@ -78,17 +78,29 @@ Deno.serve(async (req) => {
   let matched: { id: string; name: string } | null = null;
   let matchMode = "none";
   if (haystack) {
+    // Demo units are never behind an iR305 — there is no router to report on.
+    // Excluded from BOTH match paths so a real gateway can't be bound to a
+    // simulated asset by a name collision, which would then persist as a
+    // router_device_id mapping and keep stamping it on every later webhook.
+    type AssetRow = { id: string; name: string; org_id: string };
+    const { data: demoOrgs } = await supabase.from("orgs").select("id").eq("is_demo", true);
+    const demoOrgIds = new Set(((demoOrgs ?? []) as { id: string }[]).map((o) => o.id));
+    const notDemo = (rows: unknown): AssetRow[] =>
+      ((rows ?? []) as AssetRow[]).filter((r) => !demoOrgIds.has(r.org_id));
+
     const candidates = [deviceId, deviceName].filter(Boolean) as string[];
+    // No limit(1): router_device_id is not unique, and taking one row before
+    // the demo filter could hand back a demo asset and hide a real match.
     const { data: exactRows } = candidates.length
-      ? await supabase.from("assets").select("id, name").in("router_device_id", candidates).limit(1)
+      ? await supabase.from("assets").select("id, name, org_id").in("router_device_id", candidates)
       : { data: null };
-    const exact = exactRows?.[0] ?? null;
+    const exact = notDemo(exactRows)[0] ?? null;
     if (exact) {
       matched = exact;
       matchMode = "exact";
     } else {
-      const { data: all } = await supabase.from("assets").select("id, name");
-      matched = (all ?? []).find((a) => nameInHaystack(a.name, haystack)) ?? null;
+      const { data: all } = await supabase.from("assets").select("id, name, org_id");
+      matched = notDemo(all).find((a) => nameInHaystack(a.name, haystack)) ?? null;
       if (matched) {
         matchMode = "fuzzy";
         if (authed && matchKey) {

@@ -68,10 +68,19 @@ Deno.serve(async () => {
   const devices = ((await devResp.json()).devices ?? []) as TsDevice[];
 
   const nowMs = Date.now();
-  const { data: assets } = await supabase
+  const { data: allAssets } = await supabase
     .from("assets")
-    .select("id, name, tailscale_device_id");
-  if (!assets) return json({ error: "could not load assets" }, 500);
+    .select("id, name, tailscale_device_id, org_id");
+  if (!allAssets) return json({ error: "could not load assets" }, 500);
+
+  // Demo units have no Pi. Their names are matched against the real tailnet by
+  // nameEmbedsAsset() below, which is a substring test — an unlucky collision
+  // between an invented unit code and a real node would stamp a simulated asset
+  // with a real machine's liveness, and the demo would start reporting a
+  // connectivity state it has no hardware to have. Drop them before matching.
+  const { data: demoOrgs } = await supabase.from("orgs").select("id").eq("is_demo", true);
+  const demoOrgIds = new Set((demoOrgs ?? []).map((o) => o.id as string));
+  const assets = allAssets.filter((a) => !demoOrgIds.has(a.org_id as string));
 
   // ---- resolve each asset to at most one linux Pi ------------------------
   // Prefer an exact device-id match; else the most-recently-seen linux device

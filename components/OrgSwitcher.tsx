@@ -91,7 +91,10 @@ export default function OrgSwitcher() {
         {orgs.map((o) => (
           <option key={o.orgId} value={o.orgId}>
             {o.name}
-            {o.isDemo ? " (demo)" : ""}
+            {/* Spelled out rather than "(demo)": this is the moment someone
+                chooses to look at simulated data, and an abbreviation is easy
+                to skim past. */}
+            {o.isDemo ? " — demo only, simulated data" : ""}
           </option>
         ))}
       </select>
