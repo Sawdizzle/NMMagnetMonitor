@@ -56,11 +56,73 @@ create table if not exists public.users (
   -- Grants access to TV/Display mode (/tv). Admin-toggled; admins always have
   -- access regardless. Returned by verify_user_login into the client session.
   tv_access        boolean     not null default false,
+  -- Cross-org operator access: a superadmin sees and switches between every
+  -- org, where org_members.role only grants rights within one org. Applied
+  -- 2026-08-17 (migration multi_tenant_phase0_orgs_and_backfill).
+  is_superadmin    boolean     not null default false,
   failed_attempts  integer     not null default 0,
   locked_until     timestamptz,
   created_at       timestamptz not null default now(),
   constraint users_username_key unique (username)
 );
+
+-- --- orgs (tenants) ---------------------------------------------------
+-- One row per company. product_name/eyebrow/tagline were lib/brand.ts's
+-- realBrand/demoBrand constants, moved into data so a new company can be
+-- turned up without a deploy. invite_code is per-org self-registration and
+-- supersedes the single global app_settings.invite_code.
+-- See docs/multi-tenant-plan.md.
+create table if not exists public.orgs (
+  id           uuid        primary key default gen_random_uuid(),
+  slug         text        not null unique,
+  name         text        not null,
+  product_name text        not null default 'Magnet Monitor',
+  eyebrow      text        not null,
+  tagline      text        not null,
+  invite_code  text,
+  is_demo      boolean     not null default false,
+  created_at   timestamptz not null default now()
+);
+
+-- --- org_members (user <-> org, many-to-many) -------------------------
+-- role and tv_access are properties of the MEMBERSHIP, not the user: one
+-- person can be admin of one company and viewer of another (e.g. a
+-- contractor covering two client sites). users.role / users.tv_access are
+-- still present and still read by verify_user_login; they are dropped in
+-- Phase 2 once nothing reads them.
+create table if not exists public.org_members (
+  user_id    uuid        not null references public.users(id) on delete cascade,
+  org_id     uuid        not null references public.orgs(id)  on delete cascade,
+  role       text        not null default 'viewer'
+               check (role = any (array['admin','viewer'])),
+  tv_access  boolean     not null default false,
+  created_at timestamptz not null default now(),
+  primary key (user_id, org_id)
+);
+
+-- --- user_sessions (server-side session, Phase 1) --------------------
+-- token_hash is the sha256 of the httpOnly cookie value; the raw token is
+-- never stored. active_org is where the org switcher currently points.
+create table if not exists public.user_sessions (
+  token_hash text        primary key,
+  user_id    uuid        not null references public.users(id) on delete cascade,
+  active_org uuid        references public.orgs(id) on delete set null,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+-- Resolves the 'numed' org. Exists so the org_id columns added below can
+-- carry a DEFAULT: admin_create_asset, admin_upsert_alert_rule and
+-- _record_audit all insert without an org_id, so without this default they
+-- would break the moment org_id went NOT NULL. Phase 3 passes org_id
+-- explicitly and drops the defaults.
+create or replace function public.default_org_id()
+  returns uuid
+  language sql
+  stable
+  security definer
+  set search_path to 'public'
+as $$ select id from public.orgs where slug = 'numed' $$;
 
 -- --- app_settings (key/value; holds e.g. the invite_code) ------------
 create table if not exists public.app_settings (
@@ -80,7 +142,16 @@ create table if not exists public.assets (
   gateway_token              text        not null default encode(extensions.gen_random_bytes(24), 'hex'),
   offline_threshold_minutes  integer     not null default 30,
   status                     text        not null default 'unknown',
+  -- last_seen_at = reachability: the collector phoned home. Stamped on EVERY
+  -- device contact (report_telemetry*), even an empty or all-duplicate report.
   last_seen_at               timestamptz,
+  -- last_sample_at = data freshness: a genuinely NEW telemetry row actually
+  -- stored (report_telemetry* bump this only on a real insert). Immune to a
+  -- wrong device clock and to duplicate/empty reports, so it — not last_seen_at —
+  -- is what health + evaluate_alerts key off. A hung or reachable-but-silent unit
+  -- lets this age into stale/offline instead of reading a permanent green.
+  -- Applied to live DB 2026-08-13 (migration add_last_sample_at).
+  last_sample_at             timestamptz,
   created_at                 timestamptz not null default now(),
   monitor_host               text,
   monitor_port               integer     not null default 80,
@@ -108,8 +179,14 @@ create table if not exists public.assets (
   tailscale_device_id        text,
   tailscale_online           boolean,
   tailscale_status_at        timestamptz,
+  -- Owning tenant. Every unit belongs to exactly one company, so this is NOT
+  -- NULL; the default keeps pre-Phase-3 RPCs (which don't pass it) working.
+  -- Applied 2026-08-17 (multi_tenant_phase0_orgs_and_backfill).
+  org_id                     uuid        not null default public.default_org_id()
+                               references public.orgs(id),
   constraint assets_name_unique unique (name)
 );
+create index if not exists assets_org_id_idx on public.assets (org_id);
 
 -- --- telemetry_samples (one reading) ---------------------------------
 create table if not exists public.telemetry_samples (
@@ -142,8 +219,14 @@ create table if not exists public.alert_rules (
   comparator  text        not null,   -- e.g. '<', '>', '<=', '>='
   threshold   numeric     not null,
   enabled     boolean     not null default true,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- NOT NULL because a fleet-wide rule (asset_id IS NULL) means "all assets
+  -- in THIS org" — without it, one tenant's thresholds would apply to every
+  -- other tenant's units. 6 of the 7 live rules are fleet-wide.
+  org_id      uuid        not null default public.default_org_id()
+                references public.orgs(id)
 );
+create index if not exists alert_rules_org_id_idx on public.alert_rules (org_id);
 
 -- --- alert_events (fired alerts; opened/resolved by evaluate_alerts) --
 create table if not exists public.alert_events (
@@ -183,7 +266,8 @@ create or replace view public.public_assets as
   select id, name, site_name, site_address,
          offline_threshold_minutes, status, last_seen_at, created_at, service_user,
          maintenance, router_online, router_status_at,
-         tailscale_online, tailscale_status_at
+         tailscale_online, tailscale_status_at,
+         last_sample_at
   from public.assets;
 
 -- latest_telemetry: newest reading per asset, by recorded_at (true reading
@@ -208,6 +292,42 @@ create or replace view public.latest_telemetry as
 -- =====================================================================
 -- FUNCTIONS (RPCs) — all SECURITY DEFINER with pinned search_path
 -- =====================================================================
+
+-- --- server-side sessions (multi-tenant Phase 1a, 2026-08-17) --------
+-- Granted to service_role ONLY: the Next server holds the service key and is
+-- the sole caller. anon/authenticated cannot reach these at all, which takes
+-- PIN verification off the public API surface (anon-callable verify_user_login
+-- is what allowed PIN brute-forcing) and lets the app rate-limit login itself.
+-- Applied as migration multi_tenant_phase1_session_rpcs. Full bodies live in
+-- that migration; signatures and contracts recorded here:
+--
+--   _session_token_hash(token) -> text
+--       sha256 hex. The raw token is returned once at creation and never
+--       stored, so a leaked user_sessions dump cannot be replayed as a login.
+--
+--   create_session(username, pin, ttl_days default 30)
+--       -> table(token, expires_at)
+--       Same lockout semantics as verify_user_login (5 strikes -> 15 min),
+--       and returns NO ROWS on a bad PIN rather than raising — a raise would
+--       roll back the strike (the fix_pin_lockout_persistence bug). Points
+--       active_org at the first membership, preferring 'numed'; falls back to
+--       numed for a superadmin holding no membership.
+--
+--   resolve_session(token)
+--       -> table(user_id, username, is_superadmin, active_org,
+--                active_org_slug, effective_role, tv_access, memberships,
+--                expires_at)
+--       The per-request read path. effective_role collapses the superadmin
+--       rule — a superadmin is admin in EVERY org, including ones they hold
+--       no membership in, hence the left join to org_members.
+--
+--   switch_active_org(token, org_id) -> boolean
+--       Refuses an org the caller has no membership in unless superadmin.
+--       This is the check that stops a multi-org user reaching a tenant they
+--       were never granted.
+--
+--   destroy_session(token) -> boolean
+--   cleanup_expired_sessions() -> integer   (pg_cron 'cleanup-expired-sessions', 17 3 * * *)
 
 -- --- auth / self-service ---------------------------------------------
 
@@ -263,15 +383,34 @@ CREATE OR REPLACE FUNCTION public.register_user(p_invite_code text, p_username t
  SECURITY DEFINER
  SET search_path TO 'public', 'extensions'
 AS $function$
+-- Resolves the invite code to an ORG and creates the membership. Before this
+-- (migration multi_tenant_register_user_joins_org, 2026-08-17) it inserted into
+-- users only, which after Phase 0 meant a successful signup followed by an
+-- empty app. Per-org codes are what make onboarding a new company self-serve.
+-- Numed's org invite_code was copied from app_settings.invite_code in Phase 0,
+-- so the code already in circulation keeps working.
 declare
-  v_code text;
+  v_org_id  uuid;
+  v_user_id uuid;
 begin
-  select value into v_code from app_settings where key = 'invite_code';
-  if v_code is null or v_code <> p_invite_code then
+  select id into v_org_id
+    from orgs
+   where invite_code is not null
+     and invite_code = p_invite_code;
+
+  if v_org_id is null then
     raise exception 'invalid invite code';
   end if;
+
+  -- users.role is still written because verify_user_login reads it until the
+  -- Phase 1c cutover; org_members.role is the real grant.
   insert into users (username, pin_hash, role)
-  values (p_username, extensions.crypt(p_pin, extensions.gen_salt('bf')), 'viewer');
+  values (p_username, extensions.crypt(p_pin, extensions.gen_salt('bf')), 'viewer')
+  returning id into v_user_id;
+
+  insert into org_members (user_id, org_id, role, tv_access)
+  values (v_user_id, v_org_id, 'viewer', false);
+
   return query select p_username, 'viewer'::text;
 end;
 $function$;
@@ -558,6 +697,7 @@ declare
   v_asset_id uuid;
   v_last_seen timestamptz;
   v_recent_count int;
+  v_rec timestamptz;
 begin
   select id, last_seen_at into v_asset_id, v_last_seen
   from assets where gateway_token = p_gateway_token;
@@ -570,13 +710,25 @@ begin
     update assets set last_seen_at = now(), status = 'online' where id = v_asset_id;
   end if;
 
+  -- Clock-skew safety net (see report_telemetry_batch): a grossly-wrong device
+  -- clock (> 2 days off, e.g. a pre-anchoring collector on a Pi whose RTC is
+  -- stuck in the past) rebases to the current minute; otherwise the reading time
+  -- is kept as-is.
+  if p_recorded_at is not null and abs(extract(epoch from (now() - p_recorded_at))) > 172800 then
+    v_rec := date_trunc('minute', now());
+  else
+    v_rec := p_recorded_at;
+  end if;
+
   select count(*) into v_recent_count
   from telemetry_samples
   where asset_id = v_asset_id and created_at >= now() - interval '60 seconds';
 
   if v_recent_count = 0 then
     insert into telemetry_samples (asset_id, recorded_at, he_lvl, he_press, h2o_flow, h2o_temp, shield, cs1, data)
-    values (v_asset_id, p_recorded_at, p_he_lvl, p_he_press, p_h2o_flow, p_h2o_temp, p_shield, p_cs1, p_raw);
+    values (v_asset_id, v_rec, p_he_lvl, p_he_press, p_h2o_flow, p_h2o_temp, p_shield, p_cs1, p_raw);
+    -- A genuinely new sample stored: bump the data-freshness clock.
+    update assets set last_sample_at = now() where id = v_asset_id;
   end if;
 
   return true;
@@ -601,6 +753,8 @@ AS $function$
 declare
   v_asset_id uuid;
   v_inserted int;
+  v_max_rec timestamptz;
+  v_offset interval := interval '0';
 begin
   select id into v_asset_id from assets where gateway_token = p_gateway_token;
   if v_asset_id is null then
@@ -612,9 +766,28 @@ begin
   -- it is. Mirrors the single-row report_telemetry.
   update assets set last_seen_at = now(), status = 'online' where id = v_asset_id;
 
+  -- Clock-skew safety net: rebase the whole batch by offset = now() - newest when
+  -- the newest reading is grossly skewed (> 2 days) — a Pi still on the
+  -- pre-anchoring collector whose device RTC is wrong (e.g. NM1008 stuck in 2022).
+  -- offset is ~constant for a wrong-but-running clock, so a given device minute
+  -- maps to a stable wall minute across overlapping re-sends and dedups cleanly;
+  -- minute-floor keeps that stable. offset ~ 0 (correctly clocked / genuine
+  -- backfill / already-anchored collector) leaves recorded_at untouched. The raw
+  -- device timestamp is preserved in `data`. Applied to live DB 2026-08-13
+  -- (migration report_telemetry_clock_skew_safety_net).
+  select max((s->>'recorded_at')::timestamptz) into v_max_rec
+  from jsonb_array_elements(p_samples) s
+  where (s->>'recorded_at') is not null;
+
+  if v_max_rec is not null and abs(extract(epoch from (now() - v_max_rec))) > 172800 then
+    v_offset := now() - v_max_rec;
+  end if;
+
   insert into telemetry_samples (asset_id, recorded_at, he_lvl, he_press, h2o_flow, h2o_temp, shield, cs1, data)
   select v_asset_id,
-         (s->>'recorded_at')::timestamptz,
+         case when v_offset = interval '0'
+              then (s->>'recorded_at')::timestamptz
+              else date_trunc('minute', (s->>'recorded_at')::timestamptz + v_offset) end,
          (s->>'he_lvl')::numeric,
          (s->>'he_press')::numeric,
          (s->>'h2o_flow')::numeric,
@@ -627,6 +800,13 @@ begin
   on conflict (asset_id, recorded_at) do nothing;
 
   get diagnostics v_inserted = row_count;
+
+  -- Only a real insert refreshes data-freshness. An all-duplicate batch (a hung
+  -- device re-serving the same rows) leaves last_sample_at to age -> stale.
+  if v_inserted > 0 then
+    update assets set last_sample_at = now() where id = v_asset_id;
+  end if;
+
   return v_inserted;
 end;
 $function$;
@@ -726,7 +906,11 @@ create index if not exists idx_dm_webhook_events_received
 -- sends nothing itself — notification is a separate step.
 -- APPLIED to live DB 2026-08-12 via migration evaluate_alerts_exempt_maintenance,
 -- then 2026-08-13 via migration alerts_disambiguate_reporting_stalled (splits a
--- stale unit into 'offline' vs 'reporting_stalled' by Tailscale reachability).
+-- stale unit into 'offline' vs 'reporting_stalled' by Tailscale reachability),
+-- then 2026-08-13 via migration evaluate_alerts_key_off_last_sample_at (staleness
+-- keys off last_sample_at = fresh-data, not last_seen_at = reachability, closing
+-- the reachable-but-silent blind spot; reachability now also accepts a fresh
+-- last_seen_at, not just a Tailscale poll).
 CREATE OR REPLACE FUNCTION public.evaluate_alerts()
  RETURNS void
  LANGUAGE plpgsql
@@ -740,50 +924,55 @@ begin
   from assets a
   where e.asset_id = a.id and e.resolved_at is null and a.maintenance;
 
-  -- STALE TELEMETRY -> partition by Pi reachability into two actionable kinds:
-  --   * reporting_stalled: the Pi is reachable on Tailscale (freshly polled) yet
-  --     telemetry is stale -> a gateway/DNS/egress fault on an otherwise-up Pi
-  --     (SSH in over Tailscale to fix). This is the NM1020 2026-08-13 case.
-  --   * offline: telemetry stale and the Pi is NOT confirmed reachable -> the
-  --     unit is down / the site network is down.
+  -- STALE TELEMETRY (no NEW data within the unit's threshold, by last_sample_at)
+  -- -> partition by Pi reachability into two actionable kinds:
+  --   * reporting_stalled: the Pi is reachable (fresh Tailscale poll, or still
+  --     phoning home via last_seen_at) yet no fresh telemetry -> a
+  --     gateway/device/clock fault on an otherwise-up Pi. Covers both the NM1020
+  --     2026-08-13 DNS case and a hung MagMon that stops advancing its log.
+  --   * offline: no fresh data and the Pi is NOT confirmed reachable -> the unit
+  --     is down / the site network is down.
   -- Exactly one kind is open per stale unit; if reachability flips, the wrong one
   -- is resolved and the right one opened on the next run. BOTH notify -- only the
   -- router_offline/tailscale_offline connectivity chips stay informational.
-  -- Reachability requires a FRESH Tailscale poll (status within 15 min, i.e. the
-  -- poll is actually running) so a stale 'online' is never trusted.
+  -- Reachability requires a FRESH Tailscale poll (status within 15 min) OR a
+  -- fresh last_seen_at, so a stale signal is never trusted.
   for r in
-    select a.id, a.name, a.last_seen_at,
-      (a.tailscale_online is true
-        and a.tailscale_status_at is not null
-        and a.tailscale_status_at >= now() - interval '15 minutes') as pi_reachable
+    select a.id, a.name, a.last_sample_at,
+      ((a.tailscale_online is true
+         and a.tailscale_status_at is not null
+         and a.tailscale_status_at >= now() - interval '15 minutes')
+       or (a.last_seen_at is not null
+         and a.last_seen_at >= now() - make_interval(mins => a.offline_threshold_minutes))
+      ) as pi_reachable
     from assets a
     where a.maintenance = false
-      and a.last_seen_at is not null
-      and a.last_seen_at < now() - make_interval(mins => a.offline_threshold_minutes)
+      and a.last_sample_at is not null
+      and a.last_sample_at < now() - make_interval(mins => a.offline_threshold_minutes)
   loop
     if r.pi_reachable then
       if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='reporting_stalled' and e.resolved_at is null) then
         insert into alert_events (asset_id, kind, message)
         values (r.id, 'reporting_stalled',
-          format('%s reachable on Tailscale but not reporting since %s — likely gateway/DNS/egress fault on the Pi', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
+          format('%s reachable but no fresh telemetry since %s — likely gateway/device/clock fault on the Pi', r.name, to_char(r.last_sample_at,'YYYY-MM-DD HH24:MI UTC')));
       end if;
       update alert_events e set resolved_at=now()
         where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null;
     else
       if not exists (select 1 from alert_events e where e.asset_id=r.id and e.kind='offline' and e.resolved_at is null) then
         insert into alert_events (asset_id, kind, message)
-        values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_seen_at,'YYYY-MM-DD HH24:MI UTC')));
+        values (r.id, 'offline', format('%s offline — no report since %s', r.name, to_char(r.last_sample_at,'YYYY-MM-DD HH24:MI UTC')));
       end if;
       update alert_events e set resolved_at=now()
         where e.asset_id=r.id and e.kind='reporting_stalled' and e.resolved_at is null;
     end if;
   end loop;
 
-  -- Resolve BOTH offline kinds once telemetry is flowing again.
+  -- Resolve BOTH offline kinds once fresh telemetry is flowing again.
   update alert_events e set resolved_at=now()
   from assets a
   where e.asset_id=a.id and e.kind in ('offline','reporting_stalled') and e.resolved_at is null
-    and a.last_seen_at >= now() - make_interval(mins => a.offline_threshold_minutes);
+    and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes);
 
   -- THRESHOLD / STATE with per-asset override (skip maintenance)
   for r in
@@ -992,9 +1181,13 @@ create table if not exists public.audit_log (
   entity_type text,                          -- 'auth','site','asset','user','alert_rule','app'
   entity_id   text,                          -- uuid/name of the affected row, when applicable
   detail      text,                          -- human-readable summary
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- Nullable, unlike assets/alert_rules: historical rows predate orgs. New
+  -- rows get the default so admin_list_audit_log can scope per tenant.
+  org_id      uuid        default public.default_org_id() references public.orgs(id)
 );
 create index if not exists idx_audit_log_created_at on public.audit_log using btree (created_at desc);
+create index if not exists audit_log_org_id_idx on public.audit_log (org_id);
 
 -- Internal writer. Execute is revoked from the API roles so it cannot be called
 -- directly to forge rows; the SECURITY DEFINER callers reach it as the owner.
@@ -1089,6 +1282,18 @@ alter table public.alert_events      enable row level security;
 alter table public.alert_recipients  enable row level security;  -- no policy: SECURITY DEFINER / service_role only
 alter table public.audit_log         enable row level security;  -- no policy: SECURITY DEFINER only (written by _record_audit, read by admin_list_audit_log)
 
+-- Multi-tenant tables: RLS on, deliberately NO policy, and the API roles are
+-- revoked outright. user_sessions must never be anon-readable (it would hand
+-- out session tokens), and orgs / org_members would otherwise let anyone
+-- enumerate every tenant and its members. Reached only via SECURITY DEFINER
+-- RPCs and the server-side service-role client.
+alter table public.orgs              enable row level security;
+alter table public.org_members       enable row level security;
+alter table public.user_sessions     enable row level security;
+revoke all on public.orgs          from anon, authenticated;
+revoke all on public.org_members   from anon, authenticated;
+revoke all on public.user_sessions from anon, authenticated;
+
 -- Open read policies (candidates for tightening under F-1).
 create policy "public read telemetry"    on public.telemetry_samples for select to public using (true);
 create policy "public read alert_rules"  on public.alert_rules       for select to public using (true);
@@ -1097,10 +1302,40 @@ create policy "public read alert_events" on public.alert_events      for select 
 -- =====================================================================
 -- GRANTS
 -- =====================================================================
--- The anon / authenticated roles hold Supabase's default broad table
--- grants; RLS (above) is what actually gates access. Reproduced here as a
--- reminder that the security boundary is the POLICY set, not the GRANTs.
--- (Left as Supabase defaults; no custom GRANT statements were in use.)
+-- CORRECTION (2026-08-17, migration revoke_anon_write_grants): this section
+-- previously said "the security boundary is the POLICY set, not the GRANTs".
+-- That is FALSE for views. public_assets and latest_telemetry were created
+-- WITHOUT security_invoker, so they execute with the view owner's rights and
+-- bypass the underlying tables' RLS entirely. Measured: anon sees 0 rows in
+-- public.assets (RLS on, no policy) but 17 through public_assets.
+--
+-- public_assets is a simple single-base-table view and therefore
+-- auto-updatable — `delete from public_assets` does not raise the "cannot
+-- delete from view" error that latest_telemetry does. Combined with anon
+-- holding Supabase's default INSERT/UPDATE/DELETE grants, the publishable
+-- anon key (which ships in the JS bundle) could modify or delete assets.
+--
+-- All write grants are now revoked from anon and authenticated on every
+-- table plus both views. Verified afterwards: reads still return 17 rows and
+-- 27k samples (the live app depends on them until Phase 2), all three write
+-- probes return "permission denied", and collector ingest kept flowing.
+--
+-- Nothing in the app wrote as anon: mutations go through SECURITY DEFINER
+-- RPCs (admin_*, report_telemetry*), the Pis authenticate with a per-asset
+-- gateway_token, and the edge functions use the service role. The
+-- `authenticated` role is unused — this app has never used Supabase Auth.
+revoke insert, update, delete, truncate, references, trigger
+  on public.assets, public.telemetry_samples, public.alert_rules,
+     public.alert_events, public.users, public.app_settings,
+     public.audit_log, public.alert_recipients, public.push_subscriptions,
+     public.dm_webhook_events, public.public_assets, public.latest_telemetry
+  from anon, authenticated;
+
+-- SELECT is intentionally still granted: lib/dataSource.ts reads through the
+-- anon client until Phase 2 moves reads server-side. security_invoker on the
+-- two views is likewise NOT set yet — flipping it now would drop
+-- public_assets to 0 rows for anon and black out the live dashboard. Both
+-- close together in Phase 2. See docs/multi-tenant-plan.md.
 
 
 -- =====================================================================

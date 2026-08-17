@@ -157,7 +157,7 @@ const ROSTER: AssetSpec[] = [
   { id: "MM-1008", name: "MM-1008", site_name: "Pinehurst Health", site_address: "9 Pinehurst Way, Millbrook", lastSeenMinAgo: 9, boilOffPerDay: -1.3, seed: hashSeed("MM-1008") },
   { id: "MM-1009", name: "MM-1009", site_name: "Fairmont Mobile MRI", site_address: "Mobile unit · region 4", lastSeenMinAgo: null, seed: hashSeed("MM-1009") },
   { id: "MM-1010", name: "MM-1010", site_name: "Westland Imaging", site_address: "620 Westland Ave, Crestline", lastSeenMinAgo: 5, seed: hashSeed("MM-1010") },
-  { id: "MM-1011", name: "MM-1011", site_name: "Union Hospital", site_address: "1606 N 7th St, Terre Haute · iR305", lastSeenMinAgo: 88, routerOffline: true, seed: hashSeed("MM-1011") },
+  { id: "MM-1011", name: "MM-1011", site_name: "Glenmore Regional Hospital", site_address: "875 Ridgeway Ave, Glenmore · iR305", lastSeenMinAgo: 88, routerOffline: true, seed: hashSeed("MM-1011") },
   { id: "MM-1012", name: "MM-1012", site_name: "Cedar Falls Imaging", site_address: "300 Cedar Falls Rd, Parkview · Pi", lastSeenMinAgo: 132, tailscaleOffline: true, seed: hashSeed("MM-1012") },
 ];
 
@@ -175,6 +175,9 @@ function specToAsset(spec: AssetSpec, now: number): Asset {
     offline_threshold_minutes: null,
     status: null,
     last_seen_at: lastSeen,
+    // Demo units' data freshness mirrors last-seen, so health (which now keys off
+    // last_sample_at) matches each spec's lastSeenMinAgo exactly as before.
+    last_sample_at: lastSeen,
     created_at: new Date(now - 400 * 24 * 60 * 60 * 1000).toISOString(),
     service_user: "gateway",
     maintenance: spec.maintenance ?? false,

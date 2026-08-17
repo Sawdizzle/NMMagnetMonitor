@@ -175,12 +175,17 @@ function AdminPanel({ me }: { me: Session }) {
   }, [me.username, me.pin]);
 
   const load = useCallback(async () => {
-    const [{ data: assetRows }, { data: userRows }, { data: ruleRows }] = await Promise.all([
-      supabase.from("public_assets").select("*").order("name"),
+    const [assetRes, { data: userRows }, { data: ruleRows }] = await Promise.all([
+      // Org-scoped through our own API rather than a direct public_assets read:
+      // the anon client can no longer see the table, and this list must show
+      // only the active org's units. See lib/fleetQueries.ts.
+      fetch("/api/assets", { cache: "no-store" })
+        .then((r) => r.json())
+        .catch(() => ({ assets: [] })),
       supabase.rpc("admin_list_users", { p_actor_username: me.username, p_actor_pin: me.pin }),
       supabase.rpc("admin_list_alert_rules", { p_actor_username: me.username, p_actor_pin: me.pin }),
     ]);
-    setAssets(assetRows ?? []);
+    setAssets(assetRes?.assets ?? []);
     setUsers((userRows as AppUser[]) ?? []);
     setAlertRules((ruleRows as AlertRule[]) ?? []);
     loadAuditLog();

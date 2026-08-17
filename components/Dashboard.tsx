@@ -372,7 +372,10 @@ function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: st
   const router = useRouter();
   const alarm = computeAssetAlarm(asset);
   const status = computeAssetHealth(asset);
-  const mins = minutesSince(asset.last_seen_at);
+  // Age of the last genuinely-new reading (data freshness), so it always agrees
+  // with the status chip — a reachable-but-silent unit reads its true data age,
+  // not the misleadingly-fresh last_seen_at.
+  const mins = minutesSince(asset.last_sample_at);
   const href = `${basePath}/asset/${asset.id}`;
 
   // Colored edge = the single folded alarm level (matches the TV card rail),
@@ -487,7 +490,7 @@ function AssetCard({
 }) {
   const status = computeAssetHealth(asset);
   const alarm = computeAssetAlarm(asset);
-  const mins = minutesSince(asset.last_seen_at);
+  const mins = minutesSince(asset.last_sample_at);
   const refillLabel = refillChipLabel(forecast);
   const refillColor = forecast && refillUrgency(forecast) === "soon" ? "var(--status-warning)" : "#38bdf8";
 

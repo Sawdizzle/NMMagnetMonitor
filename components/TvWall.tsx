@@ -596,7 +596,7 @@ function TvCard({
 }) {
   const alarm = computeAssetAlarm(asset);
   const color = ALARM_COLORS[alarm.level];
-  const mins = minutesSince(asset.last_seen_at);
+  const mins = minutesSince(asset.last_sample_at);
   const t = asset.latest;
   const cold = readColdheadK(asset);
   const refillLabel = refillChipLabel(forecast);

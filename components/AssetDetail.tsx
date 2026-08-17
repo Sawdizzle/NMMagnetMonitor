@@ -106,7 +106,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     return <div className="p-10 text-[var(--status-offline)] font-mono-data">Error: {error}</div>;
 
   const status = computeAssetHealth(asset);
-  const mins = minutesSince(asset.last_seen_at);
+  const mins = minutesSince(asset.last_sample_at);
   const tableRows = [...buckets].reverse(); // newest-first for the table
 
   // Same value-fault evaluation the fleet card runs, so the pills here match the
