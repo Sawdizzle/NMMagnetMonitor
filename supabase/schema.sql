@@ -18,7 +18,7 @@
 -- remains the canonical, byte-exact export — treat this as the working
 -- source of truth until then.
 --
--- SECURITY NOTE — F-1 is CLOSED as of 2026-08-17. F-4 is NOT (see below).
+-- SECURITY NOTE — F-1 and F-4 are both CLOSED as of 2026-08-17.
 -- What they were, and what actually fixed them:
 --   * F-1 (public read). The "public read" policies granted SELECT to
 --     everyone, and — worse than the review recorded — public_assets and
@@ -32,8 +32,14 @@
 --     Fixed by: revoke_anon_write_grants, then phase2_close_public_reads
 --     (security_invoker on both views, policies dropped, SELECT revoked)
 --     once reads had moved server-side into lib/fleetQueries.ts.
---   * F-4 (PIN brute force) — STILL OPEN, only partially mitigated.
---     Two corrections to earlier claims in this repo's history:
+--   * F-4 (PIN brute force) — CLOSED 2026-08-17 by
+--     phase3c_drop_pin_authenticated_admin_rpcs, which DROPPED all 22 admin_*
+--     functions that took (p_actor_username, p_actor_pin). Nothing
+--     admin-related is executable by anon any more; the panel calls
+--     p_token overloads through server actions using the service role. It took
+--     three attempts, and the two failed ones are recorded below because each
+--     failure mode is easy to repeat.
+--     History of the two earlier, WRONG "F-4 is closed" claims:
 --       (a) Moving login to create_session was NOT sufficient:
 --           verify_user_login stayed anon-callable, so an attacker could
 --           bypass the app and hammer the RPC with the publishable key. That
@@ -45,12 +51,16 @@
 --           returning a bare boolean with no lockout or audit trail. Safe to
 --           revoke: nothing client-side calls it and all 23 SQL callers are
 --           SECURITY DEFINER, so their nested calls run as the owner.
---     WHAT REMAINS: the 23 admin_* RPCs are still anon-executable and each
---     distinguishes a right PIN from a wrong one through its "not authorized"
---     exception, with no lockout on that path. Phase 3 is the real fix —
---     swap (p_actor_username, p_actor_pin) for the session cookie, then
---     revoke the grants. Until then the admin PIN is brute-forceable; use a
---     long one.
+--     (c) FINALLY CLOSED by dropping the functions outright rather than
+--         revoking them: as long as a PIN-checking function existed and was
+--         reachable, its "not authorized" exception distinguished a right PIN
+--         from a wrong one, with no lockout on that path. Verified after:
+--         0 functions with a p_actor_pin parameter remain, 22 p_token
+--         versions are present, and no admin_* function (nor is_admin) is
+--         executable by anon.
+--     is_admin() is deliberately NOT dropped — notify-alerts still uses it for
+--     its admin-gated test mode, authenticating with the SERVICE ROLE key, so
+--     anon cannot reach it.
 --     Postgres gotcha behind the first failed attempt at all of this:
 --     functions grant EXECUTE to the PUBLIC pseudo-role by default (ACL shows
 --     as a bare "=X/postgres"), which anon inherits, so revoking from anon

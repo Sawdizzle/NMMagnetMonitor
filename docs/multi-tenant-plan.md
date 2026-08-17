@@ -440,3 +440,49 @@ Three concrete gaps:
 None of this is on the Phase 3 critical path, but **it must land before onboarding
 a real second company** — ahead of Phase 4's demo seeding, since a demo org with
 its own recipients would already trip gap 1.
+
+### Phase 3c — DROP the PIN-authenticated admin RPCs ✅ F-4 CLOSED 2026-08-17
+
+Applied as `phase3c_drop_pin_authenticated_admin_rpcs`, after production
+(deployment `108d2af`, live on `www.nmmagmon.com`) was confirmed serving the
+admin panel through server actions.
+
+Dropped all 22 `admin_*` functions taking `(p_actor_username, p_actor_pin)`,
+selected by having a `p_actor_pin` **parameter** rather than by hand-written
+signatures — 22 hand-typed signatures is 22 chances to silently miss one.
+
+Verified immediately after:
+
+| check | result |
+| --- | --- |
+| functions with a `p_actor_pin` parameter | **0** |
+| `p_token` admin functions present | 22 |
+| `admin_*` or `is_admin` executable by anon | **none** |
+| `is_admin` still available to `service_role` | true (notify-alerts needs it) |
+| `report_telemetry_batch` still granted to anon | true (the 17 Pis need it) |
+
+Production re-verified afterwards: admin panel loads 17 assets / 7 alerts /
+4 users, every page returns 200, no console errors, ingest uninterrupted.
+
+**Why it took three attempts** — worth remembering, because each failure mode
+repeats easily:
+
+1. Granting the session RPCs to `service_role` only was claimed as the fix. It
+   wasn't: `verify_user_login` stayed anon-callable.
+2. Revoking `verify_user_login` was claimed as the fix. It wasn't either — that
+   was never F-4's main surface, which is `is_admin()` reached through the
+   `admin_*` RPCs. And `revoke ... from anon` on a function is a **no-op**
+   while `PUBLIC` still holds EXECUTE (the default, ACL `=X/postgres`).
+3. Only dropping the functions actually closed it. Revoking would have left the
+   PIN-checking code reachable by anything that regained EXECUTE; while such a
+   function exists, its `not authorized` exception is an oracle.
+
+**What is still open** (tracked, not forgotten):
+- `Session.pin` still exists for the notify-alerts "Send test" button, whose
+  edge function gates on `is_admin(actor_username, actor_pin)` and has no
+  session-token path. Teaching it `_admin_actor` + redeploying retires the
+  localStorage PIN for good.
+- The org switcher UI is not built. Switching works at the DB level
+  (`switch_active_org`) and is exercised by tests, but nothing in the UI calls it,
+  so a multi-org user is stuck in whichever org `create_session` picked.
+- The alerting edge functions are still not org-aware — see the BLOCKER section.
