@@ -15,7 +15,7 @@
 // "maintenance" level so the display never cries wolf over them.
 
 import type { FleetAsset } from "./dataSource";
-import { computeAssetHealth, isTelemetrySilent, minutesSince, type HealthStatus } from "./health";
+import { computeAssetHealth, isReachable, minutesSince, type HealthStatus } from "./health";
 
 // ---- tunable thresholds --------------------------------------------------
 
@@ -217,6 +217,8 @@ function severityRank(s: FaultSeverity): number {
 // The one call the TV uses per asset: connectivity + value-faults + maintenance,
 // resolved to a single level.
 export function computeAssetAlarm(asset: FleetAsset): AssetAlarm {
+  // connectivity now reflects DATA freshness (last_sample_at), so "online" means
+  // the stored reading is genuinely current — safe to evaluate value-faults.
   const connectivity = computeAssetHealth(asset);
 
   // Maintenance units are intentionally quiet — no value alarms, no offline
@@ -225,30 +227,39 @@ export function computeAssetAlarm(asset: FleetAsset): AssetAlarm {
     return { level: "maintenance", connectivity, faults: [], maintenance: true };
   }
 
-  // Reachable-but-silent: last_seen_at is fresh (connectivity "online") but the
-  // newest reading is stale — the unit is phoning home without logging data. Its
-  // stored values are old, so we deliberately do NOT evaluate value-faults
-  // against them (that would present a 4-year-old reading as current); a single
-  // "No fresh telemetry" warning makes the blind spot visible instead of leaving
-  // the card green. See isTelemetrySilent() in lib/health.ts.
-  if (isTelemetrySilent(asset, asset.latest?.recorded_at ?? null)) {
-    const detail = ageLabel(minutesSince(asset.latest?.recorded_at ?? null));
+  // No FRESH telemetry (stale / offline / unknown): the stored values are old, so
+  // we deliberately do NOT evaluate value-faults against them (that would present
+  // an ancient reading as current). Surface the connectivity state itself. If the
+  // Pi is still reachable (phoning home) but data has stopped, that's a "reporting
+  // stalled" gateway/device fault rather than a true outage — mirrors the
+  // reporting_stalled vs offline split in evaluate_alerts (schema.sql).
+  if (connectivity !== "online") {
+    if (connectivity === "unknown") {
+      return { level: "unknown", connectivity, faults: [], maintenance: false };
+    }
+    const detail = ageLabel(minutesSince(asset.last_sample_at));
+    const reachable = isReachable(asset);
+    const label = reachable
+      ? "Reporting stalled"
+      : connectivity === "offline"
+        ? "Offline"
+        : "No recent data";
+    const severity: FaultSeverity = connectivity === "offline" ? "critical" : "warning";
     return {
-      level: "warning",
+      level: severity,
       connectivity,
-      faults: [{ key: "silent", label: "No fresh telemetry", detail, severity: "warning" }],
+      faults: [{ key: "silent", label, detail, severity }],
       maintenance: false,
     };
   }
 
   const faults = computeAssetFaults(asset);
-  const hasCritical = faults.some((f) => f.severity === "critical") || connectivity === "offline";
-  const hasWarning = faults.some((f) => f.severity === "warning") || connectivity === "stale";
+  const hasCritical = faults.some((f) => f.severity === "critical");
+  const hasWarning = faults.some((f) => f.severity === "warning");
 
   let level: AlarmLevel;
   if (hasCritical) level = "critical";
   else if (hasWarning) level = "warning";
-  else if (connectivity === "unknown") level = "unknown";
   else level = "ok";
 
   return { level, connectivity, faults, maintenance: false };
@@ -298,13 +309,9 @@ export function buildAlertItems(assets: FleetAsset[]): AlertItem[] {
     const alarm = computeAssetAlarm(a);
     if (alarm.level !== "critical" && alarm.level !== "warning") continue;
 
-    if (alarm.connectivity === "offline") {
-      const m = minutesSince(a.last_seen_at);
-      items.push({ key: `${a.id}-offline`, assetId: a.id, asset: a.name, label: "Offline", detail: m === null ? "" : `${m} min`, severity: "critical" });
-    } else if (alarm.connectivity === "stale") {
-      const m = minutesSince(a.last_seen_at);
-      items.push({ key: `${a.id}-stale`, assetId: a.id, asset: a.name, label: "No recent data", detail: m === null ? "" : `${m} min`, severity: "warning" });
-    }
+    // alarm.faults already carries the connectivity state for non-online units
+    // (the "silent" fault: Offline / Reporting stalled / No recent data) as well
+    // as value-faults for online units — one unified source, no double-counting.
     for (const f of alarm.faults) {
       items.push({ key: `${a.id}-${f.key}`, assetId: a.id, asset: a.name, label: f.label, detail: f.detail, severity: f.severity });
     }

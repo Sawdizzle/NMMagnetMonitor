@@ -10,19 +10,37 @@ const DEFAULT_STALE_THRESHOLD_MINUTES = 30;
 // as a genuine outage.
 export const OFFLINE_AFTER_MINUTES = 60;
 
-// Health answers only "is the asset reporting telemetry?" — this is what drives
-// email/push alerts. Connectivity infrastructure (iR305 / Tailscale) is tracked
-// separately (see connectivityStatuses) and shown as informational chips only;
-// it never changes the health status and never alerts.
+// Health answers only "is the asset reporting FRESH telemetry?" — this is what
+// drives email/push alerts. It keys off last_sample_at (a genuinely new reading
+// actually stored), NOT last_seen_at (mere reachability — the Pi phones home on
+// every cycle, even an empty or duplicate report, so it stays fresh while a hung
+// or wrong-clock device logs nothing new). Using last_sample_at is what makes a
+// reachable-but-silent unit read honestly instead of a permanent green. A null
+// last_sample_at means the unit has never stored a reading -> "unknown".
+// Connectivity infrastructure (iR305 / Tailscale) is tracked separately (see
+// connectivityStatuses) and shown as informational chips only; it never changes
+// the health status and never alerts.
 export function computeAssetHealth(asset: Asset): HealthStatus {
-  if (!asset.last_seen_at) return "unknown";
+  if (!asset.last_sample_at) return "unknown";
   const staleAfter =
     asset.offline_threshold_minutes ?? DEFAULT_STALE_THRESHOLD_MINUTES;
-  const lastSeen = new Date(asset.last_seen_at).getTime();
-  const minutesSince = (Date.now() - lastSeen) / 60000;
+  const lastSample = new Date(asset.last_sample_at).getTime();
+  const minutesSince = (Date.now() - lastSample) / 60000;
   if (minutesSince <= staleAfter) return "online";
   if (minutesSince > OFFLINE_AFTER_MINUTES) return "offline";
   return "stale";
+}
+
+// Reachability: the collector Pi is still phoning home (fresh last_seen_at) even
+// if its data has gone stale. Distinguishes "reporting stalled" (Pi up, telemetry
+// dead — a gateway/device/clock fault) from a true "offline". Mirrors the
+// reachability test in evaluate_alerts (schema.sql); the server also folds in a
+// fresh Tailscale poll, which the client doesn't have here.
+export function isReachable(asset: Asset): boolean {
+  if (!asset.last_seen_at) return false;
+  const staleAfter =
+    asset.offline_threshold_minutes ?? DEFAULT_STALE_THRESHOLD_MINUTES;
+  return (Date.now() - new Date(asset.last_seen_at).getTime()) / 60000 <= staleAfter;
 }
 
 export function minutesSince(dateStr: string | null): number | null {
@@ -30,32 +48,12 @@ export function minutesSince(dateStr: string | null): number | null {
   return Math.round((Date.now() - new Date(dateStr).getTime()) / 60000);
 }
 
-// How long a reachable unit may go without a *new* telemetry reading before it
-// counts as silent. Kept at the offline horizon so silence and offline escalate
-// on the same clock.
-export const SILENT_AFTER_MINUTES = OFFLINE_AFTER_MINUTES;
-
-// "Reachable but silent" — the blind spot last_seen_at alone can't see.
-//
-// The collector stamps last_seen_at on EVERY successful device read, even when
-// the read produced no new rows (report_batch in lib/piScript.ts), so an
-// operator stays reassured that the Pi is up. But that means a unit whose device
-// log has stopped advancing — a parse fault, a hung readout, a clock reset —
-// keeps a fresh last_seen_at and renders green while logging nothing. This
-// catches it by comparing liveness against the newest actual sample's reading
-// time (recorded_at). We only flag it while connectivity still reads "online":
-// once last_seen_at itself goes stale/offline, the normal health status already
-// tells the story. A null latestRecordedAt on an otherwise-live unit (reachable
-// but never logged a reading) is silent by definition.
-export function isTelemetrySilent(
-  asset: Asset,
-  latestRecordedAt: string | null,
-): boolean {
-  if (computeAssetHealth(asset) !== "online") return false;
-  if (!latestRecordedAt) return true;
-  const mins = (Date.now() - new Date(latestRecordedAt).getTime()) / 60000;
-  return mins > SILENT_AFTER_MINUTES;
-}
+// NOTE: the old isTelemetrySilent() heuristic (compare last_seen_at against the
+// newest sample's recorded_at) is gone. It was fooled by a wrong device clock —
+// NM1008 reports fresh data every minute but stamps it 2022, so recorded_at read
+// as "silent" when it wasn't. computeAssetHealth now keys off last_sample_at
+// (ingest-side), which is immune to the device clock, so "reachable but silent"
+// is just health !== "online" while isReachable() stays true.
 
 export const STATUS_COLORS: Record<HealthStatus, string> = {
   online: "#4ade80",

@@ -15,7 +15,14 @@ export type Asset = {
   site_address: string | null;
   offline_threshold_minutes: number | null;
   status: string | null;
+  // last_seen_at = reachability: the collector Pi phoned home (stamped on every
+  // device contact, even an empty/duplicate report). last_sample_at = data
+  // freshness: a genuinely NEW telemetry row actually stored. Health keys off
+  // last_sample_at so a reachable-but-silent or wrong-clock unit reads honestly;
+  // last_seen_at only distinguishes "reporting stalled" from "offline". null
+  // last_sample_at = the unit has never stored a reading. See lib/health.ts.
   last_seen_at: string | null;
+  last_sample_at: string | null;
   created_at: string;
   service_user: string;
   // When true, TV/Display mode suppresses value-based alarms for this unit
