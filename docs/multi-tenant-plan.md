@@ -403,3 +403,40 @@ uninterrupted).
    1788-line `app/admin/page.tsx`.
 4. Drop `pin` from the client `Session`, add the org switcher UI.
 5. Phase 3c — drop the old signatures, revoke anon. **F-4 closes here.**
+
+---
+
+## ⚠ BLOCKER before any second tenant goes live: the alerting pipeline is not org-aware
+
+Found while org-scoping the alert RPCs (2026-08-17). The admin RPCs are now
+correctly per-org, but the **edge functions that actually send** are not. Today
+this is harmless — only Numed has assets, recipients and push subscriptions — so
+nothing is misrouted right now. The moment a second org has either, it breaks,
+and it breaks in the worst possible way: one company's staff paged about another
+company's magnet.
+
+Three concrete gaps:
+
+1. **`notify-alerts` emails every recipient in the database.**
+   `supabase/functions/notify-alerts/index.ts:90` selects `alert_recipients`
+   with no org filter. It must resolve the alert's asset → that asset's `org_id`
+   → only that org's recipients. `alert_recipients.org_id` now exists for this.
+
+2. **`notify-alerts` reads the wrong sending address.** It reads
+   `app_settings.alert_from` (index.ts:36-38), while `admin_set_alert_from` now
+   writes `orgs.alert_from`. So a per-org sender set in the admin UI is silently
+   ignored. It should read `orgs.alert_from` for the alert's org and fall back to
+   the global key, then the `ALERT_FROM` secret — the same precedence
+   `admin_get_alert_from` implements. Note `app_settings` currently has **no**
+   `alert_from` row, so the live behaviour is the secret and nothing regressed.
+
+3. **`send-push` pushes to every subscription in the database.**
+   `supabase/functions/send-push/index.ts:84-85` selects all of
+   `push_subscriptions`. Subscriptions are per-device rows keyed to a user, so
+   the fix is to push only to devices of users who are members of the asset's
+   org (join `push_subscriptions` → `users` → `org_members`), rather than adding
+   an `org_id` to the table.
+
+None of this is on the Phase 3 critical path, but **it must land before onboarding
+a real second company** — ahead of Phase 4's demo seeding, since a demo org with
+its own recipients would already trip gap 1.
