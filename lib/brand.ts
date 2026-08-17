@@ -12,6 +12,14 @@ export type Brand = {
   eyebrow: string;
   // One-line description used in docs intro copy and metadata.
   tagline: string;
+  // Absolute URL of the company's own logo in the public 'org-logos' bucket, or
+  // null/undefined for none. When set it REPLACES the built-in BrandMark on the
+  // app's chrome (see components/OrgMark.tsx); when absent every surface falls
+  // back to the MRI mark, so a company that never uploads one is unchanged.
+  //
+  // Not part of the two constants below on purpose: Numed and the demo both use
+  // the built-in mark, and a logo is per-tenant data, not a compiled-in default.
+  logoUrl?: string | null;
 };
 
 export const realBrand: Brand = {

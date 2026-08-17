@@ -124,6 +124,19 @@ create table if not exists public.orgs (
   eyebrow      text        not null,
   tagline      text        not null,
   invite_code  text,
+  -- The company's own logo, as a URL into the PUBLIC 'org-logos' storage
+  -- bucket (migration org_logos_storage_bucket). The fourth brand field
+  -- alongside product_name/eyebrow/tagline: when set it REPLACES the built-in
+  -- BrandMark on that tenant's nav, dashboard heading and wall display
+  -- (components/OrgMark.tsx); null falls back to the MRI mark, so a company
+  -- that never uploads one is untouched.
+  --
+  -- A URL, not bytes: the image stays out of Postgres and therefore out of
+  -- every resolve_session round-trip. Uploads go through the admin-only server
+  -- action adminUploadOrgLogo (service-role key, superadmin-gated) — the
+  -- bucket has NO write policy, so nothing else can put objects there.
+  -- Applied 2026-08-17 (migration org_logo_url_column_and_rpcs).
+  logo_url     text,
   -- Demonstration tenant, not a production one. Its assets are invented and
   -- its telemetry is synthesized every minute by generate_demo_telemetry()
   -- (pg_cron 'generate-demo-telemetry'), so nothing under it may be treated as
@@ -383,7 +396,8 @@ create or replace view public.latest_telemetry
 --   resolve_session(token)
 --       -> table(user_id, username, is_superadmin, active_org,
 --                active_org_slug, active_org_is_demo, effective_role,
---                tv_access, memberships, expires_at)
+--                tv_access, memberships, expires_at, org_product_name,
+--                org_eyebrow, org_tagline, org_logo_url)
 --       The per-request read path. effective_role collapses the superadmin
 --       rule — a superadmin is admin in EVERY org, including ones they hold
 --       no membership in, hence the left join to org_members.
@@ -394,6 +408,28 @@ create or replace view public.latest_telemetry
 --       field, not search the array. Recreating the function to widen its
 --       OUT columns resets the ACL, so a follow-up migration re-revokes
 --       anon/authenticated — it is service_role-only, like its siblings.
+--       org_logo_url joined it the same way (migration
+--       resolve_session_active_org_logo_url) so the nav/dashboard mark can be
+--       a tenant's own logo with no extra round-trip.
+--
+-- --- Company logos (2026-08-17) ---------------------------------------
+--   admin_set_org_logo(p_token, p_org_id, p_logo_url) -> boolean
+--       Superadmin-only; sets or (with NULL) clears orgs.logo_url, audited as
+--       'set_org_logo'. Kept SEPARATE from admin_update_org because the logo
+--       is saved by a file upload that has already reached storage, on its own
+--       button — folding it in would mean an upload could only be kept by also
+--       re-submitting name/eyebrow/tagline. Rejects any URL outside the
+--       org-logos bucket, so a caller other than the upload action cannot
+--       point a company's mark at an arbitrary host.
+--
+--   Storage: bucket 'org-logos' (migration org_logos_storage_bucket) —
+--       PUBLIC READ, because the logo has to paint on surfaces with no user
+--       session (login screen, long-lived wall displays) and signed URLs would
+--       expire under a TV that has been up for a month. NO write policy
+--       exists, so anon/authenticated can write nothing; uploads go through
+--       the service-role key in adminUploadOrgLogo, which checks superadmin
+--       BEFORE the bytes land. PNG/JPEG/WebP only, 2 MB — no SVG, whose
+--       embedded script would run on direct navigation to the storage host.
 --
 --   switch_active_org(token, org_id) -> boolean
 --       Refuses an org the caller has no membership in unless superadmin.

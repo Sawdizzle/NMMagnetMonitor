@@ -32,7 +32,7 @@ import {
 } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
-import BrandMark from "./BrandMark";
+import OrgMark from "./OrgMark";
 import MiniLineChart from "./MiniLineChart";
 
 const POLL_MS = 30_000;
@@ -288,7 +288,7 @@ export default function TvWall() {
     <div className="tv-root" role="main">
       <header className="tv-header">
         <div className="tv-brand">
-          <BrandMark size={30} />
+          <OrgMark size={30} />
           <div>
             <p className="tv-brand-name">{brand.productName ?? "Magnet Monitor"}</p>
             <p className="tv-brand-sub">Fleet Status</p>

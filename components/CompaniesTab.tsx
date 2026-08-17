@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   adminListOrgs,
   adminCreateOrg,
   adminUpdateOrg,
   adminSetInviteCode,
+  adminUploadOrgLogo,
+  adminRemoveOrgLogo,
   type OrgRow,
 } from "@/lib/adminActions";
 import { actionError } from "@/lib/errors";
+import BrandMark from "@/components/BrandMark";
 
 /**
  * Company (tenant) administration. Superadmin only.
@@ -172,6 +175,12 @@ export default function CompaniesTab({
             <input value={tagline} onChange={(e) => setTagline(e.target.value)} className="input" />
           </label>
 
+          {/* Only when editing: an upload needs an org id to key the storage
+              object by, and a company being created does not have one yet. */}
+          {editing && (
+            <LogoField org={editing} notify={notify} fail={fail} onChange={load} />
+          )}
+
           {editing && (
             <label className="flex flex-col gap-1 text-xs text-[var(--text-dim)] sm:col-span-2">
               Invite code — anyone with it can self-register into this company. Leave empty to close
@@ -202,20 +211,37 @@ export default function CompaniesTab({
             key={o.org_id}
             className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border)] last:border-0"
           >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="font-medium truncate">{o.name}</p>
-                {o.is_demo && (
-                  <span
-                    className="demo-badge"
-                    title="Demonstration only. /demo reads this company, its assets are simulated, and its alerts are never emailed or pushed."
-                  >
-                    <span className="cd" aria-hidden="true" />
-                    Demo only
-                  </span>
+            <div className="min-w-0 flex items-center gap-3">
+              {/* Same dark tile the nav uses, so this row is a true preview of
+                  how the logo will actually look rather than a flattering one
+                  on a white background. */}
+              <span className="dash-mark" style={{ width: 34, height: 34, borderRadius: 9 }}>
+                {o.logo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- see OrgMark
+                  <img
+                    src={o.logo_url}
+                    alt=""
+                    style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                  />
+                ) : (
+                  <BrandMark size="100%" bleed />
                 )}
+              </span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="font-medium truncate">{o.name}</p>
+                  {o.is_demo && (
+                    <span
+                      className="demo-badge"
+                      title="Demonstration only. /demo reads this company, its assets are simulated, and its alerts are never emailed or pushed."
+                    >
+                      <span className="cd" aria-hidden="true" />
+                      Demo only
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-[var(--text-dim)] font-mono-data">{o.slug}</p>
               </div>
-              <p className="text-xs text-[var(--text-dim)] font-mono-data">{o.slug}</p>
             </div>
             <div className="flex items-center gap-4 text-xs text-[var(--text-dim)]">
               <span title={o.is_demo ? "Simulated units — not production assets." : undefined}>
@@ -236,5 +262,120 @@ export default function CompaniesTab({
         ))}
       </div>
     </section>
+  );
+}
+
+/* ------------------------------------------------- Company logo upload */
+
+/**
+ * Upload / replace / remove one company's logo.
+ *
+ * The logo REPLACES the built-in MRI brand mark for this tenant across their
+ * nav, dashboard heading and wall display (components/OrgMark.tsx). It is not
+ * part of the surrounding edit form: it saves the moment a file is chosen, on
+ * its own, because the upload has to reach storage before there is a URL to
+ * store — folding it into the form would mean an upload could only be kept by
+ * also re-submitting name/eyebrow/tagline.
+ *
+ * The preview sits on the same dark tile the nav uses, so a logo that vanishes
+ * against the app's dark chrome is visibly wrong HERE, before it ships to a
+ * customer's wall display. That is why there is no white plate behind it.
+ */
+function LogoField({
+  org,
+  notify,
+  fail,
+  onChange,
+}: {
+  org: OrgRow;
+  notify: (m: string) => void;
+  fail: (m: string) => void;
+  onChange: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function pick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset immediately so re-picking the SAME file after a failure still fires
+    // a change event — otherwise a retry looks like a dead button.
+    e.target.value = "";
+    if (!file) return;
+
+    setBusy(true);
+    const body = new FormData();
+    body.set("logo", file);
+    const { error } = await adminUploadOrgLogo(org.org_id, body);
+    setBusy(false);
+    if (error) return fail(actionError("Could not upload the logo", error));
+    notify(`Logo updated for "${org.name}".`);
+    onChange();
+  }
+
+  async function remove() {
+    setBusy(true);
+    const { error } = await adminRemoveOrgLogo(org.org_id);
+    setBusy(false);
+    if (error) return fail(actionError("Could not remove the logo", error));
+    notify(`Logo removed — "${org.name}" is back to the default mark.`);
+    onChange();
+  }
+
+  return (
+    <div className="sm:col-span-2 flex flex-wrap items-center gap-4">
+      <span className="dash-mark" style={{ width: 48, height: 48, borderRadius: 12 }}>
+        {org.logo_url ? (
+          // eslint-disable-next-line @next/next/no-img-element -- see OrgMark
+          <img
+            src={org.logo_url}
+            alt={`${org.name} logo`}
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          />
+        ) : (
+          <BrandMark size="100%" bleed />
+        )}
+      </span>
+
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+          >
+            {busy ? "Uploading…" : org.logo_url ? "Replace logo" : "Upload logo"}
+          </button>
+          {org.logo_url && (
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={busy}
+              onClick={remove}
+              style={{ color: "var(--status-offline)" }}
+            >
+              Remove
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-[var(--text-dim)]">
+          PNG, JPEG or WebP, up to 2 MB. Replaces the default mark in this company&rsquo;s nav,
+          dashboard and wall display. A light or transparent logo reads best on the dark tile.
+        </p>
+      </div>
+
+      {/* type=file cannot be styled to match btn-secondary, so it is driven by
+          the button above rather than shown. Not a form field: it uploads on
+          change and never submits with the surrounding form. */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="sr-only"
+        onChange={pick}
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+    </div>
   );
 }

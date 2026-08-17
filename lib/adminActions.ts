@@ -375,6 +375,7 @@ export type OrgRow = {
   tagline: string;
   is_demo: boolean;
   invite_code: string | null;
+  logo_url: string | null;
   asset_count: number;
   member_count: number;
   created_at: string;
@@ -494,6 +495,121 @@ export async function adminUpdateOrg(args: {
     p_product_name: args.productName,
   });
   // Brand comes from the session, so an edit changes what the nav renders.
+  revalidatePath("/", "layout");
+  return res;
+}
+
+// ---- company logos --------------------------------------------------------
+
+// Kept in step with the org-logos bucket's own allowed_mime_types /
+// file_size_limit (migration org_logos_storage_bucket). Storage enforces both
+// server-side regardless; checking here too turns a raw storage rejection into
+// a sentence an admin can act on.
+const LOGO_BUCKET = "org-logos";
+const LOGO_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Upload one company's logo and point orgs.logo_url at it.
+ *
+ * Takes FormData because that is how a File crosses the server-action boundary.
+ * The file is validated HERE, on the server: the browser-side `accept` and size
+ * check in CompaniesTab are a courtesy to the person picking a file, not a
+ * control — this action is directly callable.
+ *
+ * Uploads under a path keyed by org id with `upsert`, so replacing a logo
+ * overwrites in place instead of accumulating one object per attempt. The
+ * extension varies by type, so a PNG replacing a JPG leaves the old object
+ * behind; the delete below handles that.
+ */
+export async function adminUploadOrgLogo(
+  orgId: string,
+  formData: FormData
+): Promise<AdminResult<{ logoUrl: string }>> {
+  const file = formData.get("logo");
+  if (!(file instanceof File) || file.size === 0) {
+    return { data: null, error: { message: "No image was selected." } };
+  }
+  const ext = LOGO_MIME[file.type];
+  if (!ext) {
+    return {
+      data: null,
+      error: { message: "Logos must be a PNG, JPEG or WebP image." },
+    };
+  }
+  if (file.size > LOGO_MAX_BYTES) {
+    return {
+      data: null,
+      error: {
+        message: `That image is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 2 MB.`,
+      },
+    };
+  }
+
+  // Authorize BEFORE touching storage. supabaseAdmin holds the service-role key
+  // and bypasses RLS, so without this any signed-in user could write into the
+  // bucket. admin_set_org_logo re-checks superadmin, but that would run after
+  // the bytes had already landed.
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return { data: null, error: { message: "Not signed in" } };
+  const { data: actorRows, error: actorErr } = await supabaseAdmin.rpc("_admin_actor", {
+    p_token: token,
+  });
+  const actor = Array.isArray(actorRows) ? actorRows[0] : actorRows;
+  if (actorErr || !actor) return { data: null, error: actorErr ?? { message: "Not authorized" } };
+  if (!actor.is_superadmin) {
+    return { data: null, error: { message: "Only a superadmin can change company logos." } };
+  }
+
+  const path = `${orgId}.${ext}`;
+  const { error: upErr } = await supabaseAdmin.storage
+    .from(LOGO_BUCKET)
+    .upload(path, file, { contentType: file.type, upsert: true });
+  if (upErr) return { data: null, error: { message: upErr.message } };
+
+  // A different extension than last time means the previous object is now
+  // orphaned AND still public. Remove the others rather than leaving a
+  // superseded logo fetchable at a guessable URL.
+  const stale = Object.values(LOGO_MIME)
+    .filter((e) => e !== ext)
+    .map((e) => `${orgId}.${e}`);
+  if (stale.length) await supabaseAdmin.storage.from(LOGO_BUCKET).remove(stale);
+
+  const { data: pub } = supabaseAdmin.storage.from(LOGO_BUCKET).getPublicUrl(path);
+  // Cache-bust: the path is stable across replacements, so without this a
+  // browser (and any CDN in front) keeps serving the logo it already has.
+  const logoUrl = `${pub.publicUrl}?v=${Date.now()}`;
+
+  const res = await call<boolean>("admin_set_org_logo", {
+    p_org_id: orgId,
+    p_logo_url: logoUrl,
+  });
+  if (res.error) return { data: null, error: res.error };
+
+  // Brand rides the session, so the nav/dashboard mark changes on next render.
+  revalidatePath("/", "layout");
+  return { data: { logoUrl }, error: null };
+}
+
+/** Clear a company's logo and delete the stored object. Falls back to BrandMark. */
+export async function adminRemoveOrgLogo(orgId: string) {
+  // Clear the column FIRST: it is the thing the app reads, and it is the call
+  // that enforces superadmin. If the object delete then fails, the result is an
+  // unreferenced file, not a company still showing a logo it just removed.
+  const res = await call<boolean>("admin_set_org_logo", {
+    p_org_id: orgId,
+    p_logo_url: null,
+  });
+  if (res.error) return res;
+
+  await supabaseAdmin.storage
+    .from(LOGO_BUCKET)
+    .remove(Object.values(LOGO_MIME).map((e) => `${orgId}.${e}`));
+
   revalidatePath("/", "layout");
   return res;
 }

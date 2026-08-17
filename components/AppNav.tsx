@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import type { Session } from "@/lib/auth";
 import { useDemo } from "@/lib/demoContext";
-import BrandMark from "@/components/BrandMark";
+import OrgMark from "@/components/OrgMark";
 import OrgSwitcher from "@/components/OrgSwitcher";
 
 type NavItem = {
@@ -103,7 +103,7 @@ export default function AppNav({ session }: { session?: Session | null }) {
       <header className="app-topbar hidden md:flex">
         <Link href={homeHref} className="flex items-center gap-2.5" aria-label={`${brand.productName} home`}>
           <span className="dash-mark" aria-hidden="true" style={{ width: 32, height: 32, borderRadius: 9 }}>
-            <BrandMark size="100%" bleed />
+            <OrgMark size="100%" bleed />
           </span>
           <span className="text-sm font-semibold tracking-tight">{brand.productName}</span>
         </Link>

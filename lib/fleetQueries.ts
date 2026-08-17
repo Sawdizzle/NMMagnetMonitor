@@ -50,10 +50,10 @@ export async function demoOrgId(): Promise<string | null> {
  */
 export async function orgBrand(
   orgId: string
-): Promise<{ productName: string; eyebrow: string; tagline: string } | null> {
+): Promise<{ productName: string; eyebrow: string; tagline: string; logoUrl: string | null } | null> {
   const { data, error } = await supabaseAdmin
     .from("orgs")
-    .select("product_name, eyebrow, tagline")
+    .select("product_name, eyebrow, tagline, logo_url")
     .eq("id", orgId)
     .maybeSingle();
   if (error || !data) return null;
@@ -61,6 +61,9 @@ export async function orgBrand(
     productName: data.product_name as string,
     eyebrow: data.eyebrow as string,
     tagline: (data.tagline as string) ?? "",
+    // Carried here as well as on the session because a wall display has no user
+    // session to read it from — this is the only path that brands a TV.
+    logoUrl: (data.logo_url as string | null) ?? null,
   };
 }
 

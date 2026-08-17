@@ -77,6 +77,7 @@ type ResolveRow = {
   org_product_name: string | null;
   org_eyebrow: string | null;
   org_tagline: string | null;
+  org_logo_url: string | null;
 };
 
 /**
@@ -118,6 +119,7 @@ export async function resolveToken(token: string): Promise<SessionContext | null
             productName: row.org_product_name,
             eyebrow: row.org_eyebrow,
             tagline: row.org_tagline ?? "",
+            logoUrl: row.org_logo_url ?? null,
           }
         : null,
   };

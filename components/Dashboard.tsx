@@ -12,7 +12,7 @@ import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "./FieldRing";
 import MiniLineChart from "./MiniLineChart";
-import BrandMark from "./BrandMark";
+import OrgMark from "./OrgMark";
 
 type AssetWithTelemetry = FleetAsset;
 
@@ -113,7 +113,7 @@ export default function Dashboard() {
         <div className="flex items-center gap-3 justify-between">
           <div className="flex items-center gap-3">
             <span className="dash-mark" aria-hidden="true">
-              <BrandMark size="100%" bleed />
+              <OrgMark size="100%" bleed />
             </span>
             <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Magnet Monitor Dashboard</h1>
           </div>
