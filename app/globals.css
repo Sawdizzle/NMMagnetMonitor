@@ -943,6 +943,17 @@ button {
 .doc-section {
   scroll-margin-top: 84px;
 }
+/* Opens each of the three runbook parts. The rule sits above it so the page
+   reads as phases (stand up → network → troubleshoot), not a flat topic list. */
+.doc-part {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 1.5rem;
+  margin-bottom: -0.5rem;
+}
+.doc-part:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
 .doc-ol,
 .doc-ul {
   display: flex;

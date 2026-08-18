@@ -34,5 +34,6 @@ export const realInfra: DocsInfra = {
   servicePrefix: "nm-magmon-gateway",
   scriptBase: "/opt/magmon-gateway",
   processMatch: "magmon-gateway",
+  reportHost: "wxygirzfxutvtfkxxcvw.supabase.co",
   assets: ["CA1012", "NM1001", "NM1019", "NM1027", "NM1034", "NM1037"],
 };

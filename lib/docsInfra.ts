@@ -24,6 +24,7 @@ export type DocsInfra = {
   servicePrefix: string; // systemd unit prefix, e.g. nm-magmon-gateway
   scriptBase: string; // collector script path prefix, e.g. /opt/magmon-gateway
   processMatch: string; // token to grep the running process by
+  reportHost: string; // cloud host the gateway reports to (the one DNS lookup that matters)
   assets: string[]; // asset IDs shown in the collector list
 };
 
@@ -41,6 +42,7 @@ export const demoInfra: DocsInfra = {
   servicePrefix: "magmon-gateway",
   scriptBase: "/opt/magmon-gateway",
   processMatch: "magmon-gateway",
+  reportHost: "example-project.supabase.co",
   // Was DEMO_ASSET_IDS.slice(0, 6) from lib/demoFixtures, deleted in Phase 4
   // when the demo became a real org. These are display labels for the docs
   // page, not real ids, so they are inlined rather than queried — the docs
