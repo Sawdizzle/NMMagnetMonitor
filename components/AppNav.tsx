@@ -27,6 +27,14 @@ function liveNavItems(session: Session): NavItem[] {
       isActive: (p) => p === "/" || p.startsWith("/asset"),
     },
   ];
+  // The morning debrief is a read of the same alerts every signed-in user can
+  // already see on the fleet, so it needs no grant of its own.
+  items.push({
+    href: "/debrief",
+    label: "Debrief",
+    icon: <ClipboardIcon />,
+    isActive: (p) => p.startsWith("/debrief"),
+  });
   // TV/Display mode — only for users granted access (admins always qualify).
   if (session.role === "admin" || session.tvAccess) {
     items.push({
@@ -73,6 +81,12 @@ function demoNavItems(basePath: string): NavItem[] {
       label: "Fleet",
       icon: <GridIcon />,
       isActive: (p) => p === basePath || p === home || p.startsWith(`${basePath}/asset`),
+    },
+    {
+      href: `${basePath}/debrief`,
+      label: "Debrief",
+      icon: <ClipboardIcon />,
+      isActive: (p) => p.startsWith(`${basePath}/debrief`),
     },
     {
       href: `${basePath}/tv`,
@@ -202,6 +216,15 @@ function GearIcon() {
         strokeWidth="1.8"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function ClipboardIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+      <path d="M6 4.5h9l4 4v12H6z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M9 12h7M9 16h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }

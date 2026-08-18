@@ -49,6 +49,42 @@ export type HeliumSeriesResult = { points: HeliumPoint[]; error: string | null }
 export type FleetHeliumResult = { series: Record<string, HeliumPoint[]>; error: string | null };
 export type AssetAlertsResult = { events: AlertEvent[]; error: string | null };
 
+// ---- morning debrief ------------------------------------------------------
+
+/**
+ * Where one alert_event sits relative to the debrief window:
+ *   new      opened in the window and still open at the 9am boundary
+ *   flapped  opened AND resolved inside the window — came and went overnight
+ *   cleared  opened before the window, recovered inside it
+ *   ongoing  opened before the window and still open at the boundary
+ */
+export type DebriefBucket = "new" | "flapped" | "cleared" | "ongoing";
+
+export type DebriefEntry = {
+  id: number;
+  assetId: string;
+  assetName: string;
+  /** null for offline/reporting_stalled; the rule id for threshold events. */
+  alertRuleId: string | null;
+  kind: string;
+  message: string;
+  triggeredAt: string;
+  resolvedAt: string | null;
+  bucket: DebriefBucket;
+  /** Resolved after the 9am cutoff — reported as it stood, flagged as since-cleared. */
+  resolvedAfterWindow: boolean;
+};
+
+export type DebriefResult = {
+  // ISO bounds plus the zone they were measured in, so the client formats the
+  // same window the server computed instead of re-deriving it in the browser's
+  // own zone and disagreeing about which morning this is.
+  window: { start: string; end: string; timeZone: string; hour: number };
+  entries: DebriefEntry[];
+  counts: { opened: number; resolved: number; stillOpen: number; assetsAffected: number };
+  error: string | null;
+};
+
 export interface DataSource {
   loadFleet(historyHours: number): Promise<FleetResult>;
   loadAssetDetail(assetId: string, historyHours: number): Promise<AssetDetailResult>;
@@ -63,6 +99,9 @@ export interface DataSource {
   // Persisted alert_events for one asset (open + recent resolved), newest first.
   // The system-of-record view that evaluate_alerts() maintains on its cron.
   loadAssetAlerts(assetId: string, limit?: number): Promise<AssetAlertsResult>;
+  // The 9am-to-9am alert digest for the whole org. Derived on read from
+  // alert_events — no snapshot table, no nightly job.
+  loadDebrief(): Promise<DebriefResult>;
 }
 
 // ---- one implementation, two prefixes ------------------------------------
@@ -134,6 +173,17 @@ function makeDataSource(base: string): DataSource {
         `${base}/asset/${encodeURIComponent(assetId)}/alerts?limit=${limit}`,
         (error) => ({ events: [], error })
       );
+    },
+
+    async loadDebrief() {
+      return getJson<DebriefResult>(`${base}/debrief`, (error) => ({
+        // A failed fetch must still carry a window the UI can render a header
+        // from, so the error state looks like the page rather than a blank slab.
+        window: { start: "", end: "", timeZone: "UTC", hour: 9 },
+        entries: [],
+        counts: { opened: 0, resolved: 0, stillOpen: 0, assetsAffected: 0 },
+        error,
+      }));
     },
   };
 }
