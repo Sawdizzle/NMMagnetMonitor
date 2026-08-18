@@ -13,17 +13,22 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // alert_recipients with no filter and email EVERY recipient in the database
 // about EVERY open alert. With one tenant that was invisible; with two it pages
 // one company's staff about another company's magnet. Events are now grouped by
-// their asset's org and each digest goes only to that org's recipients, from
-// that org's sending address.
+// their asset's org and each digest goes only to that org's recipients, under
+// that org's sender identity.
 //
 // DEMO TENANTS (orgs.is_demo) and DISABLED companies (orgs.enabled = false) are
 // excluded outright: a demo's assets are invented, and a suspended company's
 // staff should not be emailed. Neither must reach a human inbox no matter how
 // the org is configured. See the suppression block below.
 //
-// The From address per org: orgs.alert_from, else the legacy global
-// app_settings 'alert_from' (both via org_alert_from()), else the ALERT_FROM
-// secret, else Resend's test sender.
+// SENDER IDENTITY (2026-08-18). One verified domain that Numed owns carries
+// every company's mail; the per-company part is the display name and the
+// Reply-To, neither of which needs a record in the customer's DNS. Sending as
+// alerts@customer.org would need SPF/DKIM published by the customer, and a
+// DMARC-enforcing hospital junks anything without them. org_alert_identity()
+// resolves all four fields; the address itself still falls back
+// org.alert_from -> app_settings.alert_from -> ALERT_FROM secret -> Resend test
+// sender.
 //
 // CORS: the test mode is invoked from the admin page in the browser, so the
 // function must answer the preflight and set CORS headers on every response.
@@ -42,6 +47,13 @@ type EventRow = {
   asset_id: string;
 };
 
+type Identity = {
+  from_addr: string | null;
+  from_name: string | null;
+  reply_to: string | null;
+  subject_prefix: string | null;
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -53,10 +65,17 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceKey);
   const secretFrom = Deno.env.get("ALERT_FROM") || "onboarding@resend.dev";
 
-  // Resolve an org's sending address, falling back to the secret/test sender.
-  async function fromFor(orgId: string): Promise<string> {
-    const { data } = await supabase.rpc("org_alert_from", { p_org_id: orgId });
-    return (data as string | null)?.trim() || secretFrom;
+  // Resolve an org's full sending identity, falling back to the secret/test
+  // sender for the address only — the name and prefix always have a default.
+  async function identityFor(orgId: string): Promise<Identity> {
+    const { data } = await supabase.rpc("org_alert_identity", { p_org_id: orgId });
+    const row = (Array.isArray(data) ? data[0] : data) as Identity | undefined;
+    return {
+      from_addr: row?.from_addr?.trim() || secretFrom,
+      from_name: row?.from_name?.trim() || null,
+      reply_to: row?.reply_to?.trim() || null,
+      subject_prefix: row?.subject_prefix?.trim() || "MagMon",
+    };
   }
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -95,14 +114,20 @@ Deno.serve(async (req) => {
       });
     }
 
-    const from = await fromFor(actorOrg);
-    const resp = await sendEmail(
-      resendKey,
-      from,
-      [to],
-      "MagMon: test alert",
-      `This is a test from NM Magnet Monitor.\n\nIf you received this, alert delivery to ${to} is working.\n\n— NM Magnet Monitor`,
-    );
+    const id = await identityFor(actorOrg);
+    const from = composeFrom(id);
+    // The test exists to prove the identity, so it shows what it used rather
+    // than only that something arrived.
+    const resp = await sendEmail(resendKey, from, [to], `${id.subject_prefix}: test alert`, [
+      `This is a test from ${id.from_name ?? "NM Magnet Monitor"}.`,
+      ``,
+      `If you received this, alert delivery to ${to} is working.`,
+      ``,
+      `Sent as: ${from}`,
+      id.reply_to ? `Replies go to: ${id.reply_to}` : `Replies to this address are not monitored.`,
+      ``,
+      `— ${id.from_name ?? "NM Magnet Monitor"}`,
+    ].join("\n"), id.reply_to);
     if (!resp.ok) {
       return json({ ok: false, message: `Resend rejected it (${resp.status}). ${await resp.text()}` });
     }
@@ -129,14 +154,16 @@ Deno.serve(async (req) => {
   if (!events || events.length === 0) return json({ sent: 0, reason: "no new alerts" });
 
   // Map each event to its asset's org. Done as a separate lookup rather than a
-  // PostgREST embed so the row shape is unambiguous.
+  // PostgREST embed so the row shape is unambiguous. The name comes along so
+  // the subject can say WHICH magnet — the whole point of a lockscreen glance.
   const assetIds = [...new Set((events as EventRow[]).map((e) => e.asset_id))];
   const { data: assets, error: aErr } = await supabase
     .from("assets")
-    .select("id, org_id")
+    .select("id, org_id, name")
     .in("id", assetIds);
   if (aErr) return json({ error: aErr.message }, 500);
   const orgOf = new Map((assets ?? []).map((a) => [a.id as string, a.org_id as string]));
+  const nameOf = new Map((assets ?? []).map((a) => [a.id as string, a.name as string]));
 
   // Demo tenants never email. Their alerts are real rows on purpose — the demo
   // has to look alive, so evaluate_alerts still opens and resolves them — but
@@ -203,11 +230,21 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    const lines = orgEvents.map((e) => `• [${e.kind}] ${e.message}`).join("\n");
-    const subject = `MagMon: ${orgEvents.length} active alert${orgEvents.length === 1 ? "" : "s"}`;
-    const text = `The following MagMon alerts are active:\n\n${lines}\n\n— NM Magnet Monitor`;
+    const id = await identityFor(orgId);
+    const subject = composeSubject(id.subject_prefix!, orgEvents, nameOf);
+    const lines = orgEvents
+      .map((e) => `• ${e.message}  (since ${shortTime(e.triggered_at)})`)
+      .join("\n");
+    const text = [
+      `The following alerts are active:`,
+      ``,
+      lines,
+      ``,
+      id.reply_to ? `` : `This mailbox is not monitored.`,
+      `— ${id.from_name ?? "NM Magnet Monitor"}`,
+    ].join("\n");
 
-    const resp = await sendEmail(resendKey, await fromFor(orgId), to, subject, text);
+    const resp = await sendEmail(resendKey, composeFrom(id), to, subject, text, id.reply_to);
     if (!resp.ok) {
       // One org's send failing must not stop the others, and its events stay
       // un-notified so the next run retries them.
@@ -230,11 +267,70 @@ Deno.serve(async (req) => {
   return json({ orgs: perOrg, notified: notifiedIds.length, suppressed: mutedIds.length });
 });
 
-function sendEmail(key: string, from: string, to: string[], subject: string, text: string) {
+// ---- header composition ---------------------------------------------------
+
+// Build the From header. If the configured address ALREADY carries a display
+// name (`Name <addr>`) it is trusted as-is — the ALERT_FROM secret predates the
+// split into address + name, and wrapping it again would nest the brackets.
+function composeFrom(id: Identity): string {
+  const addr = id.from_addr!;
+  if (addr.includes("<")) return addr;
+  if (!id.from_name) return addr;
+  return `${encodeDisplayName(id.from_name)} <${addr}>`;
+}
+
+// A display name is not free text once it reaches a mail header. "Numed, Inc
+// Magnet Monitor" — a real value here — contains a comma, which is the address
+// SEPARATOR: unquoted, the header parses as two broken recipients and Resend
+// rejects it. Quote anything with a special character, and fall back to an
+// RFC 2047 encoded-word for non-ASCII, which quoting alone cannot carry.
+function encodeDisplayName(name: string): string {
+  if (/[^\x20-\x7E]/.test(name)) {
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(name)));
+    return `=?UTF-8?B?${b64}?=`;
+  }
+  if (/[()<>@,;:\\".\[\]]/.test(name)) {
+    return `"${name.replace(/([\\"])/g, "\\$1")}"`;
+  }
+  return name;
+}
+
+// "Magnet Monitor: 1 active alert" told you nothing without opening it. Name the
+// magnet instead — on a phone lockscreen that is the entire message.
+function composeSubject(
+  prefix: string,
+  events: EventRow[],
+  nameOf: Map<string, string>,
+): string {
+  if (events.length === 1) return clamp(`${prefix}: ${events[0].message}`, 150);
+
+  const names = [...new Set(events.map((e) => nameOf.get(e.asset_id)).filter(Boolean))] as string[];
+  const shown = names.slice(0, 2).join(", ");
+  const rest = names.length - Math.min(2, names.length);
+  const tail = rest > 0 ? ` +${rest} more` : "";
+  return clamp(`${prefix}: ${events.length} alerts — ${shown}${tail}`, 150);
+}
+
+function clamp(s: string, n: number): string {
+  return s.length <= n ? s : `${s.slice(0, n - 1).trimEnd()}…`;
+}
+
+function shortTime(iso: string): string {
+  return `${iso.slice(0, 16).replace("T", " ")} UTC`;
+}
+
+function sendEmail(
+  key: string,
+  from: string,
+  to: string[],
+  subject: string,
+  text: string,
+  replyTo?: string | null,
+) {
   return fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to, subject, text }),
+    body: JSON.stringify({ from, to, subject, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
   });
 }
 

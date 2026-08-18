@@ -32,11 +32,14 @@ import {
   adminUpsertAlertRecipient,
   adminDeleteAlertRecipient,
   adminListAlertEvents,
-  adminGetAlertFrom,
+  adminGetAlertIdentity,
+  adminSetAlertIdentity,
   adminSetAlertFrom,
+  adminSetPlatformAlertFrom,
   adminListAuditLog,
   adminSendTestAlert,
 } from "@/lib/adminActions";
+import type { AlertIdentity } from "@/lib/adminActions";
 import { getSessionAction } from "@/lib/authActions";
 import GlobalUsersTab from "@/components/GlobalUsersTab";
 import CompaniesTab from "@/components/CompaniesTab";
@@ -1432,7 +1435,20 @@ function AlertRecipientsSection({
   );
 }
 
-/* ----------------------------------------------------- Sending address section */
+/* ---------------------------------------------------- Sender identity section */
+
+// Who the alert emails come FROM, and how they read.
+//
+// The split here is deliberate. Everything a company admin can edit is
+// cosmetic-but-meaningful — the display name is what a recipient actually reads
+// in an inbox list, and Reply-To decides where an answer lands — and none of it
+// requires a DNS record. The ADDRESS is superadmin-only, because it must be a
+// Resend-verified sender: point it at an unverified domain and every send fails
+// silently, once a minute, forever.
+//
+// Sending as alerts@customer.org was considered and rejected: SPF/DKIM for that
+// From would have to be published in the CUSTOMER's DNS, and a DMARC-enforcing
+// hospital junks anything without them.
 
 function AlertSenderSection({
   me,
@@ -1443,48 +1459,170 @@ function AlertSenderSection({
   notify: (msg: string) => void;
   fail: (msg: string) => void;
 }) {
-  const [from, setFrom] = useState("");
-  const [loaded, setLoaded] = useState(false);
+  const [identity, setIdentity] = useState<AlertIdentity | null>(null);
+  const [fromName, setFromName] = useState("");
+  const [replyTo, setReplyTo] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [orgFrom, setOrgFrom] = useState("");
+  const [platformFrom, setPlatformFrom] = useState("");
 
   const load = useCallback(async () => {
-    const { data } = await adminGetAlertFrom();
-    setFrom((data as string | null) ?? "");
-    setLoaded(true);
+    const { data } = await adminGetAlertIdentity();
+    if (!data) return;
+    setIdentity(data);
+    setFromName(data.from_name ?? "");
+    setReplyTo(data.reply_to ?? "");
+    setPrefix(data.subject_prefix ?? "");
+    setOrgFrom(data.from_addr ?? "");
+    setPlatformFrom(data.platform_from ?? "");
   }, []);
   useEffect(() => {
     load();
   }, [load]);
 
-  async function save(e: React.FormEvent) {
+  async function saveIdentity(e: React.FormEvent) {
     e.preventDefault();
-    const { error } = await adminSetAlertFrom(from);
-    if (error) return fail(actionError("Could not save sending address", error));
-    notify(from.trim() ? "Sending address updated." : "Sending address cleared — using the default.");
+    const { error } = await adminSetAlertIdentity({ fromName, replyTo, subjectPrefix: prefix });
+    if (error) return fail(actionError("Could not save sender identity", error));
+    notify("Sender identity updated.");
     load();
   }
 
+  async function saveOrgFrom(e: React.FormEvent) {
+    e.preventDefault();
+    const { error } = await adminSetAlertFrom(orgFrom);
+    if (error) return fail(actionError("Could not save sending address", error));
+    notify(orgFrom.trim() ? "Company sending address updated." : "Cleared — using the platform address.");
+    load();
+  }
+
+  async function savePlatformFrom(e: React.FormEvent) {
+    e.preventDefault();
+    const { error } = await adminSetPlatformAlertFrom(platformFrom);
+    if (error) return fail(actionError("Could not save platform address", error));
+    notify(platformFrom.trim() ? "Platform sending address updated." : "Cleared — falling back to the ALERT_FROM secret.");
+    load();
+  }
+
+  const loaded = identity !== null;
+  const effectiveName = fromName.trim() || identity?.from_name_default || "";
+  const effectivePrefix = prefix.trim() || identity?.subject_prefix_default || "MagMon";
+  // Mirrors composeFrom() in the notify-alerts function, including the quoting
+  // rule — a company name with a comma ("Numed, Inc") has to be quoted or the
+  // header parses as two addresses, and an admin should see that here.
+  const effectiveAddr = identity?.from_addr || "onboarding@resend.dev (Resend test sender)";
+  const needsQuotes = /[()<>@,;:\\".[\]]/.test(effectiveName);
+  const previewFrom = effectiveName
+    ? `${needsQuotes ? `"${effectiveName}"` : effectiveName} <${effectiveAddr}>`
+    : effectiveAddr;
+
   return (
     <section className="mb-10">
-      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-2">Sending address</h2>
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-2">Sender identity</h2>
       <p className="text-xs text-[var(--text-dim)] mb-3">
-        The <span className="font-mono-data">From</span> address on alert emails. Must be a{" "}
-        <strong>Resend-verified sender</strong> (verify a domain in Resend first). Leave blank to fall back to the
-        <span className="font-mono-data"> ALERT_FROM</span> secret, then Resend&apos;s test sender
-        (<span className="font-mono-data">onboarding@resend.dev</span>, which only delivers to your own Resend account).
-        Use a recipient&apos;s <strong>Test</strong> button above to confirm a change works.
+        How your alert emails appear in a recipient&apos;s inbox. The sending address is shared across
+        companies and set by Numed; the name and reply address are yours.
       </p>
-      <form onSubmit={save} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4">
-        <Field label="From address">
-          <input
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            placeholder="MagMon Alerts <alerts@numedmagnetdata.com>"
-            className="input min-w-[20rem] font-mono-data"
-            disabled={!loaded}
-          />
-        </Field>
-        <button type="submit" className="btn-primary" disabled={!loaded}>Save</button>
+
+      <form onSubmit={saveIdentity} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5">
+        <div className="flex flex-wrap items-end gap-4">
+          <Field label="Sender name">
+            <input
+              value={fromName}
+              onChange={(e) => setFromName(e.target.value)}
+              placeholder={identity?.from_name_default ?? ""}
+              maxLength={78}
+              className="input min-w-[18rem]"
+              disabled={!loaded}
+            />
+          </Field>
+          <Field label="Reply-To">
+            <input
+              value={replyTo}
+              onChange={(e) => setReplyTo(e.target.value)}
+              placeholder="biomed@yourhospital.org"
+              className="input min-w-[16rem] font-mono-data"
+              disabled={!loaded}
+            />
+          </Field>
+          <Field label="Subject prefix">
+            <input
+              value={prefix}
+              onChange={(e) => setPrefix(e.target.value)}
+              placeholder={identity?.subject_prefix_default ?? "MagMon"}
+              maxLength={40}
+              className="input min-w-[12rem]"
+              disabled={!loaded}
+            />
+          </Field>
+          <button type="submit" className="btn-primary" disabled={!loaded}>Save</button>
+        </div>
+
+        <p className="text-xs text-[var(--text-dim)] mt-3">
+          Leave any field blank to use the placeholder shown. With no Reply-To, replies go to an
+          unmonitored mailbox.
+        </p>
+
+        {loaded && (
+          <div className="mt-4 rounded-lg border border-[var(--border-soft)] bg-[var(--bg)] p-4 text-xs font-mono-data leading-relaxed">
+            <div className="text-[var(--text-dim)] uppercase tracking-wide mb-2 font-sans">Preview</div>
+            <div><span className="text-[var(--text-dim)]">From:&nbsp;&nbsp;&nbsp;&nbsp;</span>{previewFrom}</div>
+            <div>
+              <span className="text-[var(--text-dim)]">Reply-To:</span>{" "}
+              {replyTo.trim() || <span className="text-[var(--text-dim)]">(none)</span>}
+            </div>
+            <div><span className="text-[var(--text-dim)]">Subject:&nbsp;</span>{effectivePrefix}: NM1035 h2o_temp &gt; 75 (now 100.5)</div>
+            <div><span className="text-[var(--text-dim)]">Subject:&nbsp;</span>{effectivePrefix}: 3 alerts — NM1027, NM1020 +1 more</div>
+          </div>
+        )}
       </form>
+
+      {identity?.is_superadmin && (
+        <div className="mt-4 rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5">
+          <h3 className="text-xs uppercase tracking-wide text-[var(--text-muted)] mb-1">
+            Sending address · Numed only
+          </h3>
+          <p className="text-xs text-[var(--text-dim)] mb-4">
+            Must be a <strong>Resend-verified sender</strong> — verify the domain in Resend first, or every
+            send fails. Plain address only, no name: the name above is attached at send time. The platform
+            address is the default every company inherits; the per-company override is for a customer who
+            has verified their own domain.
+          </p>
+          <div className="flex flex-wrap items-end gap-6">
+            <form onSubmit={savePlatformFrom} className="flex items-end gap-3">
+              <Field label="Platform default (all companies)">
+                <input
+                  value={platformFrom}
+                  onChange={(e) => setPlatformFrom(e.target.value)}
+                  placeholder="alerts@numedmagnetdata.com"
+                  className="input min-w-[20rem] font-mono-data"
+                />
+              </Field>
+              <button type="submit" className="btn-secondary">Save</button>
+            </form>
+            <form onSubmit={saveOrgFrom} className="flex items-end gap-3">
+              <Field label="Override for this company">
+                <input
+                  value={orgFrom}
+                  onChange={(e) => setOrgFrom(e.target.value)}
+                  placeholder="(inherit the platform default)"
+                  className="input min-w-[20rem] font-mono-data"
+                />
+              </Field>
+              <button type="submit" className="btn-secondary">Save</button>
+            </form>
+          </div>
+          <p className="text-xs text-[var(--text-dim)] mt-4">
+            With both blank, sending falls back to the <span className="font-mono-data">ALERT_FROM</span>{" "}
+            secret and then to <span className="font-mono-data">onboarding@resend.dev</span>, which only ever
+            delivers to your own Resend account — no customer will receive anything.
+          </p>
+        </div>
+      )}
+
+      <p className="text-xs text-[var(--text-dim)] mt-3">
+        Use a recipient&apos;s <strong>Test</strong> button above to confirm a change actually delivers.
+      </p>
     </section>
   );
 }

@@ -162,6 +162,37 @@ create table if not exists public.orgs (
   -- evaluate_alerts DOES still run on demo assets: the demo is meant to look
   -- alive, and blocking delivery is what keeps that contained.
   is_demo      boolean     not null default false,
+  -- --- alert sender identity (migration alert_sender_identity_per_org,
+  -- 2026-08-18) ------------------------------------------------------------
+  -- The decision behind the split: ONE Resend-verified domain that Numed owns
+  -- carries every company's alert mail, with the per-company identity layered
+  -- on top of it. Sending as alerts@customer.org instead would require SPF and
+  -- DKIM records in the CUSTOMER's DNS -- hospitals enforce DMARC, so without
+  -- them the alert is junked or rejected, and every onboarding would block on
+  -- someone else's IT ticket. What a recipient actually reads in an inbox list
+  -- is the display name; where a reply lands is Reply-To. Both are per-company
+  -- and neither touches customer DNS.
+  --
+  -- alert_from is the bare address, and it is SUPERADMIN-ONLY: it must be a
+  -- Resend-verified sender, and pointing it at an unverified domain fails every
+  -- send silently, once a minute, forever. It stays as a bring-your-own-domain
+  -- escape hatch for a customer who will do the DNS work. Null falls back to
+  -- app_settings 'alert_from', then the ALERT_FROM secret, then Resend's test
+  -- sender (which only ever delivers to Numed's own Resend account).
+  alert_from           text,
+  -- Display name on the From header. Null => name || ' ' || product_name, e.g.
+  -- "Mercy Health Magnet Monitor". Stored raw; notify-alerts is what RFC-quotes
+  -- it at send time, which matters more than it looks: "Numed, Inc Magnet
+  -- Monitor" contains a COMMA, the address separator, so unquoted it parses as
+  -- two broken addresses.
+  alert_from_name      text,
+  -- Reply-To. Null => no header at all, and replies go to an unmonitored
+  -- mailbox. This is the field that lets one sending domain still route each
+  -- company's answers back to its own people.
+  alert_reply_to       text,
+  -- Leading text on the email subject and the push title, so both channels
+  -- rename together. Null => product_name.
+  alert_subject_prefix text,
   created_at   timestamptz not null default now()
 );
 
@@ -1432,36 +1463,172 @@ begin
 end;
 $function$;
 
--- Alert sending address (app_settings key 'alert_from'), admin-editable from the
--- UI (migration admin_alert_from_setting_rpcs, 2026-08-12). notify-alerts reads
--- this value; DB overrides the ALERT_FROM secret overrides the Resend test sender.
-CREATE OR REPLACE FUNCTION public.admin_get_alert_from(p_actor_username text, p_actor_pin text)
- RETURNS text
- LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+-- --- alert sender identity RPCs --------------------------------------
+-- Migration alert_sender_identity_per_org (2026-08-18) replaced the PIN-era
+-- pair documented here before (admin_alert_from_setting_rpcs, 2026-08-12),
+-- which took (p_actor_username, p_actor_pin) and wrote ONE global
+-- app_settings key. Two things changed: the actor is now a session token like
+-- every other admin_* RPC, and the setting is per-company.
+--
+-- Who may change what is the point of the split. A company admin owns how
+-- their alerts READ -- display name, Reply-To, subject prefix -- none of which
+-- needs a DNS record anywhere. The ADDRESS is superadmin-only; see the orgs
+-- column comments for why an unverified sender is worse than no setting.
+
+-- Resolution order for an org, used by notify-alerts and send-push.
+-- Supersedes org_alert_from(), which is left in place so a not-yet-redeployed
+-- function keeps working.
+CREATE OR REPLACE FUNCTION public.org_alert_identity(p_org_id uuid)
+RETURNS TABLE(from_addr text, from_name text, reply_to text, subject_prefix text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public'
 AS $function$
+  select
+    coalesce(o.alert_from, (select s.value from app_settings s where s.key = 'alert_from')),
+    coalesce(o.alert_from_name, btrim(o.name || ' ' || coalesce(o.product_name, 'Magnet Monitor'))),
+    o.alert_reply_to,
+    coalesce(o.alert_subject_prefix, o.product_name, 'MagMon')
+  from orgs o
+  where o.id = p_org_id
+$function$;
+
+-- Anything bound for a mail header gets control characters stripped. Resend
+-- takes JSON rather than raw SMTP, so this is not classic header injection --
+-- but a newline in a display name still corrupts the rendered header, and
+-- these fields are customer-editable.
+CREATE OR REPLACE FUNCTION public._clean_header(p text)
+RETURNS text LANGUAGE sql IMMUTABLE SET search_path TO ''
+AS $function$
+  select nullif(btrim(regexp_replace(coalesce(p, ''), '[[:cntrl:]]', ' ', 'g')), '')
+$function$;
+
+-- Returns the STORED values (so a blank field shows blank in the UI) next to
+-- the derived defaults, which the admin page renders as placeholders -- an
+-- admin can then see what "leave blank" will actually send.
+CREATE OR REPLACE FUNCTION public.admin_get_alert_identity(p_token text)
+RETURNS TABLE(from_addr text, from_name text, reply_to text, subject_prefix text,
+              from_name_default text, subject_prefix_default text,
+              platform_from text, is_superadmin boolean)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'extensions'
+AS $function$
+declare v_actor record; v_org record;
 begin
-  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
-  return (select value from app_settings where key = 'alert_from');
+  select * into v_actor from public._admin_actor(p_token);
+  select * into v_org from orgs o where o.id = v_actor.org_id;
+  return query select
+    v_org.alert_from, v_org.alert_from_name, v_org.alert_reply_to, v_org.alert_subject_prefix,
+    btrim(v_org.name || ' ' || coalesce(v_org.product_name, 'Magnet Monitor')),
+    coalesce(v_org.product_name, 'MagMon'),
+    (select s.value from app_settings s where s.key = 'alert_from'),
+    v_actor.is_superadmin;
 end;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.admin_set_alert_from(p_actor_username text, p_actor_pin text, p_from text)
- RETURNS boolean
- LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public','extensions'
+-- The self-serve half: any company admin, no DNS involved.
+CREATE OR REPLACE FUNCTION public.admin_set_alert_identity(
+  p_token text, p_from_name text, p_reply_to text, p_subject_prefix text)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'extensions'
 AS $function$
+declare v_actor record; v_name text; v_reply text; v_prefix text;
 begin
-  if not is_admin(p_actor_username, p_actor_pin) then raise exception 'not authorized'; end if;
-  if btrim(coalesce(p_from, '')) = '' then
-    delete from app_settings where key = 'alert_from';
-    perform _record_audit(p_actor_username, 'set_alert_from', 'app', 'alert_from', 'Cleared sending address (revert to default)');
-  else
-    insert into app_settings (key, value) values ('alert_from', btrim(p_from))
-      on conflict (key) do update set value = excluded.value;
-    perform _record_audit(p_actor_username, 'set_alert_from', 'app', 'alert_from', format('Sending address set to %s', btrim(p_from)));
+  select * into v_actor from public._admin_actor(p_token);
+  v_name   := public._clean_header(p_from_name);
+  v_reply  := public._clean_header(p_reply_to);
+  v_prefix := public._clean_header(p_subject_prefix);
+  -- A single bare address: a display name here would be double-wrapped by the
+  -- sender, and a comma would split it in two.
+  if v_reply is not null and v_reply !~ '^[^@[:space:],<>]+@[^@[:space:],<>]+\.[^@[:space:],<>]+$' then
+    raise exception 'Reply-To must be a single plain email address, with no name attached.';
   end if;
+  -- 78 keeps the composed From header inside the RFC 5322 line limit.
+  if length(coalesce(v_name, '')) > 78 then
+    raise exception 'Sender name is too long (78 characters max).';
+  end if;
+  if length(coalesce(v_prefix, '')) > 40 then
+    raise exception 'Subject prefix is too long (40 characters max).';
+  end if;
+  update orgs set alert_from_name = v_name, alert_reply_to = v_reply, alert_subject_prefix = v_prefix
+   where id = v_actor.org_id;
+  perform _record_audit(v_actor.username, 'set_alert_identity', 'app', 'alert_identity',
+    format('Sender identity set (name %s, reply-to %s, prefix %s)',
+           coalesce(v_name, 'default'), coalesce(v_reply, 'none'), coalesce(v_prefix, 'default')),
+    v_actor.org_id);
   return true;
 end;
 $function$;
+
+-- Superadmin-only, and now a BARE address: the display name is attached at send
+-- time from alert_from_name, so a full "Name <addr>" here would be double-wrapped.
+CREATE OR REPLACE FUNCTION public.admin_set_alert_from(p_token text, p_from text)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'extensions'
+AS $function$
+declare v_actor record; v_from text;
+begin
+  select * into v_actor from public._admin_actor(p_token);
+  if not v_actor.is_superadmin then
+    raise exception 'Only Numed can change the sending address. Set the sender name and Reply-To instead.';
+  end if;
+  v_from := public._clean_header(p_from);
+  if v_from is not null and v_from !~ '^[^@[:space:],<>]+@[^@[:space:],<>]+\.[^@[:space:],<>]+$' then
+    raise exception 'Sending address must be a single plain email address, with no name attached.';
+  end if;
+  update orgs set alert_from = v_from where id = v_actor.org_id;
+  perform _record_audit(v_actor.username, 'set_alert_from', 'app', 'alert_from',
+    case when v_from is null
+         then 'Cleared per-company sending address (revert to the platform address)'
+         else format('Per-company sending address set to %s', v_from) end,
+    v_actor.org_id);
+  return true;
+end;
+$function$;
+
+-- The platform-wide default every company inherits. This value used to live
+-- ONLY in the ALERT_FROM edge-function secret, where nobody could read it --
+-- which is how "who sends our alerts?" became a question you could only answer
+-- by opening a received email and reading its headers.
+CREATE OR REPLACE FUNCTION public.admin_set_platform_alert_from(p_token text, p_from text)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'extensions'
+AS $function$
+declare v_actor record; v_from text;
+begin
+  select * into v_actor from public._admin_actor(p_token);
+  if not v_actor.is_superadmin then raise exception 'Not authorized.'; end if;
+  v_from := public._clean_header(p_from);
+  if v_from is null then
+    delete from app_settings where key = 'alert_from';
+    perform _record_audit(v_actor.username, 'set_platform_alert_from', 'app', 'alert_from',
+      'Cleared the platform sending address (revert to the ALERT_FROM secret)', v_actor.org_id);
+    return true;
+  end if;
+  if v_from !~ '^[^@[:space:],<>]+@[^@[:space:],<>]+\.[^@[:space:],<>]+$' then
+    raise exception 'Sending address must be a single plain email address, with no name attached.';
+  end if;
+  insert into app_settings (key, value) values ('alert_from', v_from)
+    on conflict (key) do update set value = excluded.value;
+  perform _record_audit(v_actor.username, 'set_platform_alert_from', 'app', 'alert_from',
+    format('Platform sending address set to %s', v_from), v_actor.org_id);
+  return true;
+end;
+$function$;
+
+-- EXECUTE defaults to the PUBLIC pseudo-role on a fresh function, so each of
+-- these is locked down explicitly (see the ACL note at the top of this file).
+revoke execute on function public._clean_header(text)                              from public, anon, authenticated;
+revoke execute on function public.org_alert_identity(uuid)                         from public, anon, authenticated;
+revoke execute on function public.admin_get_alert_identity(text)                   from public, anon, authenticated;
+revoke execute on function public.admin_set_alert_identity(text, text, text, text) from public, anon, authenticated;
+-- admin_set_alert_from changed SIGNATURE here (the PIN pair became a token), so
+-- this is a NEW function to Postgres, not a replaced one -- it starts with the
+-- default PUBLIC grant no matter what the old one was locked down to.
+revoke execute on function public.admin_set_alert_from(text, text)                 from public, anon, authenticated;
+revoke execute on function public.admin_set_platform_alert_from(text, text)        from public, anon, authenticated;
+grant  execute on function public.org_alert_identity(uuid)                         to service_role;
+grant  execute on function public.admin_get_alert_identity(text)                   to service_role;
+grant  execute on function public.admin_set_alert_identity(text, text, text, text) to service_role;
+grant  execute on function public.admin_set_alert_from(text, text)                 to service_role;
+grant  execute on function public.admin_set_platform_alert_from(text, text)        to service_role;
 
 
 -- =====================================================================

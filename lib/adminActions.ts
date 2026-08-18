@@ -293,12 +293,54 @@ export async function adminListAlertEvents(limit = 100) {
   >("admin_list_alert_events", { p_limit: limit });
 }
 
-export async function adminGetAlertFrom() {
-  return call<string | null>("admin_get_alert_from");
+// The sender identity is split by who may change it. A company admin owns how
+// their alerts READ — display name, Reply-To, subject prefix — none of which
+// needs a DNS record anywhere. The ADDRESS is superadmin-only: it has to be a
+// Resend-verified sender, and an unverified one fails every send silently,
+// once a minute, forever.
+export type AlertIdentity = {
+  from_addr: string | null;
+  from_name: string | null;
+  reply_to: string | null;
+  subject_prefix: string | null;
+  from_name_default: string;
+  subject_prefix_default: string;
+  platform_from: string | null;
+  is_superadmin: boolean;
+};
+
+export async function adminGetAlertIdentity() {
+  const res = await call<AlertIdentity[] | AlertIdentity>("admin_get_alert_identity");
+  // RETURNS TABLE comes back as an array of one row.
+  const row = Array.isArray(res.data) ? (res.data[0] ?? null) : res.data;
+  return { data: row, error: res.error };
 }
 
+export async function adminSetAlertIdentity(args: {
+  fromName: string;
+  replyTo: string;
+  subjectPrefix: string;
+}) {
+  const res = await call<boolean>("admin_set_alert_identity", {
+    p_from_name: args.fromName,
+    p_reply_to: args.replyTo,
+    p_subject_prefix: args.subjectPrefix,
+  });
+  revalidatePath("/admin");
+  return res;
+}
+
+// Superadmin only (enforced in the RPC, not here).
 export async function adminSetAlertFrom(from: string) {
   const res = await call<boolean>("admin_set_alert_from", { p_from: from });
+  revalidatePath("/admin");
+  return res;
+}
+
+// Superadmin only. The platform-wide default every company inherits — this is
+// the value that used to live only in the ALERT_FROM secret, invisible.
+export async function adminSetPlatformAlertFrom(from: string) {
+  const res = await call<boolean>("admin_set_platform_alert_from", { p_from: from });
   revalidatePath("/admin");
   return res;
 }

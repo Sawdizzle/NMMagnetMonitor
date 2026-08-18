@@ -36,6 +36,64 @@ happens to be looking. (Architecture review finding **F-2**.)
   *(Remaining polish: coldhead-from-blob check so emails match the TV; richer
   email formatting; optional per-rule debounce windows.)*
 
+### Phase 4 — sender identity (2026-08-18)
+
+**Decision: one verified sending domain, per-company identity on top of it.**
+
+The alternative — each customer's alerts arriving from `alerts@theirdomain.org`
+— was considered and rejected. SPF and DKIM for that From have to be published
+in the *customer's* DNS, and hospitals enforce DMARC, so without those records
+the alert is junked or refused. It would put a customer IT ticket in front of
+every onboarding, and put alert delivery at the mercy of a DNS change nobody
+here would see until a magnet quenched quietly. Reputation is also per-domain:
+one warmed domain beats seventeen cold ones.
+
+What makes it per-company anyway, with zero customer DNS:
+
+| Field | Column | Who edits | Default when blank |
+|---|---|---|---|
+| Display name | `orgs.alert_from_name` | company admin | `name` + `product_name` |
+| Reply-To | `orgs.alert_reply_to` | company admin | no header (unmonitored) |
+| Subject prefix | `orgs.alert_subject_prefix` | company admin | `product_name` |
+| Address | `orgs.alert_from` | **superadmin** | platform address |
+| Platform address | `app_settings.alert_from` | **superadmin** | `ALERT_FROM` secret |
+
+The display name is what a recipient reads in an inbox list, and Reply-To is
+what routes an answer back to their people — so the mail reads as theirs while
+leaving from an address Numed controls. `orgs.alert_from` survives as a
+bring-your-own-domain upgrade, but is superadmin-only now: it was settable by
+any company admin to any string, and an unverified sender fails every send
+silently, once a minute, forever.
+
+Subjects now name the magnet instead of counting alerts. `MagMon: 1 active
+alert` became `Magnet Monitor: NM1035 h2o_temp > 75 (now 100.476)`, and a
+digest reads `Magnet Monitor: 3 alerts — NM1027, NM1020 +1 more`. `send-push`
+composes its title the same way off the same prefix, so the two channels stay
+in step. Deliberately **not** a subject template language: `{{asset}}` strings
+are a support burden and a header-injection surface for no gain.
+
+One trap worth remembering: `Numed, Inc Magnet Monitor` contains a **comma**,
+which is the address separator in a mail header — unquoted it parses as two
+broken addresses. `encodeDisplayName()` in `notify-alerts` RFC-quotes anything
+with a special character and falls back to an RFC 2047 encoded-word for
+non-ASCII.
+
+**Still open — the part that makes any of this deliver.** `ALERT_FROM` is
+still Resend's test sender, which only ever delivers to Numed's own Resend
+account. Until the domain is verified, a second recipient silently receives
+nothing:
+
+1. Add the sending domain in Resend — use a **subdomain**
+   (`alerts.numedmagnetdata.com`). The root SPF is
+   `include:websitewelcome.com` for HostGator; a subdomain leaves website mail
+   untouched and isolates alert reputation from it.
+2. Add the DKIM/SPF/MX records Resend generates. DNS is on Cloudflare
+   (`margot`/`vin.ns.cloudflare.com`), so this is Numed's to do.
+3. There is **no DMARC record** on the domain today. Add `_dmarc` at `p=none`
+   first to collect reports without risking delivery, then tighten.
+4. Set the platform address in Admin → Alerts → Sender identity, and confirm
+   with a recipient's **Test** button.
+
 ### Tuning backlog (needs the physicist/engineer)
 - `he_press > 3.0` flaps near threshold (NM1035 3.318, NM1004 in/out) — raise it
   or add debounce.

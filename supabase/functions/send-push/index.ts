@@ -94,10 +94,13 @@ Deno.serve(async (req) => {
   const assetIds = [...new Set((events as Ev[]).map((e) => e.asset_id))];
   const { data: assets, error: aErr } = await supabase
     .from("assets")
-    .select("id, org_id")
+    .select("id, org_id, name")
     .in("id", assetIds);
   if (aErr) return json({ error: aErr.message }, 500);
   const orgOf = new Map((assets ?? []).map((a) => [a.id as string, a.org_id as string]));
+  // Names ride along so a push title can say WHICH magnet, matching the email
+  // subject — the two channels describe the same event and should read alike.
+  const nameOf = new Map((assets ?? []).map((a) => [a.id as string, a.name as string]));
 
   // Demo tenants never push — the mirror of the same gate in notify-alerts, and
   // needed just as much: a demo org has members, members have phones, and a
@@ -152,8 +155,16 @@ Deno.serve(async (req) => {
       continue;
     }
 
+    // Same per-company prefix the email subject uses (org_alert_identity), so a
+    // customer who renames their alerts renames both channels at once.
+    const { data: identity } = await supabase.rpc("org_alert_identity", { p_org_id: orgId });
+    const idRow = (Array.isArray(identity) ? identity[0] : identity) as
+      | { subject_prefix: string | null }
+      | undefined;
+    const prefix = idRow?.subject_prefix?.trim() || "MagMon";
+
     const payload = JSON.stringify({
-      title: orgEvents.length === 1 ? "MagMon alert" : `MagMon: ${orgEvents.length} new alerts`,
+      title: pushTitle(prefix, orgEvents, nameOf),
       body:
         orgEvents.slice(0, 4).map((e) => e.message).join("\n") +
         (orgEvents.length > 4 ? `\n+${orgEvents.length - 4} more` : ""),
@@ -201,4 +212,18 @@ function json(b: unknown, s = 200) {
     status: s,
     headers: { "Content-Type": "application/json", ...CORS },
   });
+}
+
+// "MagMon alert" told a locked phone nothing. Name the magnet instead, and keep
+// the wording in step with composeSubject() in notify-alerts.
+function pushTitle(
+  prefix: string,
+  events: { asset_id: string }[],
+  nameOf: Map<string, string>,
+): string {
+  const names = [...new Set(events.map((e) => nameOf.get(e.asset_id)).filter(Boolean))] as string[];
+  if (events.length === 1) return `${prefix}: ${names[0] ?? "alert"}`;
+  const shown = names.slice(0, 2).join(", ");
+  const rest = names.length - Math.min(2, names.length);
+  return `${prefix}: ${events.length} alerts — ${shown}${rest > 0 ? ` +${rest} more` : ""}`;
 }
