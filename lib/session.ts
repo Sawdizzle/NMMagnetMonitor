@@ -21,6 +21,7 @@ export type Membership = {
   name: string;
   role: Role;
   tvAccess: boolean;
+  docsAccess: boolean;
   isDemo: boolean;
 };
 
@@ -45,6 +46,16 @@ export type SessionContext = {
   activeOrgIsDemo: boolean;
   role: Role;
   tvAccess: boolean;
+  /**
+   * May this caller read the live runbook at /docs?
+   *
+   * Same shape as tvAccess: the per-membership grant OR being an admin
+   * (superadmins are admin everywhere, so they always qualify). It gates real
+   * infrastructure identifiers, so app/docs/page.tsx checks it on the SERVER
+   * before those values are put in the response — a client-only check would
+   * ship them to the browser and then decline to draw them.
+   */
+  docsAccess: boolean;
   memberships: Membership[];
   expiresAt: string;
   /**
@@ -65,12 +76,14 @@ type ResolveRow = {
   active_org_is_demo: boolean;
   effective_role: Role;
   tv_access: boolean;
+  docs_access: boolean;
   memberships: {
     org_id: string;
     slug: string;
     name: string;
     role: Role;
     tv_access: boolean;
+    docs_access: boolean;
     is_demo: boolean;
   }[];
   expires_at: string;
@@ -104,12 +117,14 @@ export async function resolveToken(token: string): Promise<SessionContext | null
     activeOrgIsDemo: row.active_org_is_demo ?? false,
     role: row.effective_role,
     tvAccess: row.tv_access,
+    docsAccess: row.docs_access ?? false,
     memberships: (row.memberships ?? []).map((m) => ({
       orgId: m.org_id,
       slug: m.slug,
       name: m.name,
       role: m.role,
       tvAccess: m.tv_access,
+      docsAccess: m.docs_access ?? false,
       isDemo: m.is_demo,
     })),
     expiresAt: row.expires_at,

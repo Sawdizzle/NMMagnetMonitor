@@ -23,6 +23,13 @@ export type Session = {
   role: Role;
   tvAccess: boolean;
   /**
+   * Drives whether the Docs nav item is offered. NOT the security boundary —
+   * this copy is optimistic localStorage and can lag a revoke. The real check
+   * is server-side in app/docs/page.tsx, which decides whether the sensitive
+   * values are sent at all.
+   */
+  docsAccess: boolean;
+  /**
    * The active org's brand, cached alongside the rest of the session purely so
    * a returning user paints their own company's branding on first frame
    * instead of flashing the built-in default and then correcting itself.
@@ -113,6 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             username: server.username,
             role: server.role,
             tvAccess: server.tvAccess,
+            docsAccess: server.docsAccess,
             brand: server.brand,
           };
           updateStoredSession(fresh);
@@ -152,6 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       username,
       role: result.session.role,
       tvAccess: result.session.tvAccess,
+      docsAccess: result.session.docsAccess,
       brand: result.session.brand,
     };
     writeStoredSession(newSession, remember);
@@ -181,6 +190,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       username,
       role: result.session.role,
       tvAccess: result.session.tvAccess,
+      docsAccess: result.session.docsAccess,
       brand: result.session.brand,
     };
     writeStoredSession(newSession, remember);

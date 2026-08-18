@@ -44,12 +44,16 @@ function liveNavItems(session: Session): NavItem[] {
       isActive: (p) => p.startsWith("/admin"),
     });
   }
-  items.push({
-    href: "/docs",
-    label: "Docs",
-    icon: <BookIcon />,
-    isActive: (p) => p.startsWith("/docs"),
-  });
+  // The live runbook carries real infrastructure identifiers, so it is a
+  // grant like TV access rather than something every signed-in user gets.
+  if (session.role === "admin" || session.docsAccess) {
+    items.push({
+      href: "/docs",
+      label: "Docs",
+      icon: <BookIcon />,
+      isActive: (p) => p.startsWith("/docs"),
+    });
+  }
   items.push({
     href: "/account",
     label: "Account",

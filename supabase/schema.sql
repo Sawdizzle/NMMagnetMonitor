@@ -165,6 +165,23 @@ create table if not exists public.org_members (
   role       text        not null default 'viewer'
                check (role = any (array['admin','viewer'])),
   tv_access  boolean     not null default false,
+  -- Access to the live runbook at /docs, which renders lib/docsInfraReal.ts:
+  -- admin emails, the tailnet account, LAN and Tailscale IPs, the server
+  -- hostname, the Pi SSH user. /docs was gated on "signed in" alone, so every
+  -- user of every tenant could read Numed's infrastructure — including the
+  -- demo org's viewer. Now a grant, mirroring tv_access, and `default false`
+  -- means nobody holds it until it is given.
+  --
+  -- Admins pass WITHOUT the flag (resolve_session ORs it with is_superadmin,
+  -- and the app checks `role === 'admin' || docsAccess`), so it only ever has
+  -- to be ticked for viewers.
+  --
+  -- NOTE: this flag alone was never enough. app/docs/page.tsx had to become a
+  -- SERVER component too — as a client component it compiled those values into
+  -- a PUBLIC static chunk, readable with no session at all. The flag decides
+  -- who may read; the server component decides what is ever sent.
+  -- Applied 2026-08-17 (migration org_members_docs_access_grant).
+  docs_access boolean    not null default false,
   created_at timestamptz not null default now(),
   primary key (user_id, org_id)
 );
@@ -396,8 +413,8 @@ create or replace view public.latest_telemetry
 --   resolve_session(token)
 --       -> table(user_id, username, is_superadmin, active_org,
 --                active_org_slug, active_org_is_demo, effective_role,
---                tv_access, memberships, expires_at, org_product_name,
---                org_eyebrow, org_tagline, org_logo_url)
+--                tv_access, docs_access, memberships, expires_at,
+--                org_product_name, org_eyebrow, org_tagline, org_logo_url)
 --       The per-request read path. effective_role collapses the superadmin
 --       rule — a superadmin is admin in EVERY org, including ones they hold
 --       no membership in, hence the left join to org_members.
@@ -411,6 +428,17 @@ create or replace view public.latest_telemetry
 --       org_logo_url joined it the same way (migration
 --       resolve_session_active_org_logo_url) so the nav/dashboard mark can be
 --       a tenant's own logo with no extra round-trip.
+--
+-- --- Docs access grant (2026-08-17) -----------------------------------
+--   admin_set_docs_access(p_token, p_target_username, p_docs_access)
+--       The checkbox, an exact mirror of admin_set_tv_access: scoped to the
+--       actor's active org, audited as 'set_docs_access', and raising the same
+--       deliberately vague "User not found in this organization." for both a
+--       missing user and a non-member.
+--   admin_list_users / admin_list_all_users / admin_set_membership all carry
+--       docs_access alongside tv_access. admin_set_membership was DROPPED and
+--       recreated with a 6th defaulted param — an overload would have left the
+--       5-arg version live and made a 5-arg call ambiguous.
 --
 -- --- Company logos (2026-08-17) ---------------------------------------
 --   admin_set_org_logo(p_token, p_org_id, p_logo_url) -> boolean

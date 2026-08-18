@@ -1,9 +1,14 @@
 // The docs page is full of real infrastructure identifiers — admin emails,
 // tailnet account, LAN/Tailscale IPs, server hostname, the numed Pi user, real
 // asset IDs. Rather than keep a drift-prone second copy for the demo, every
-// sensitive literal is pulled out here: the live docs render with realInfra,
-// the /demo docs render with demoInfra (neutral placeholders). Structure and
-// prose are identical; only these values change.
+// sensitive literal is pulled out: the live docs render with realInfra, the
+// /demo docs render with demoInfra (neutral placeholders). Structure and prose
+// are identical; only these values change.
+//
+// This module holds ONLY the type and the neutral demo values, so it is safe
+// to import from anywhere. `realInfra` lives in lib/docsInfraReal.ts behind a
+// `server-only` guard — it used to sit here and was reachable from a public
+// client chunk. Do not move it back.
 
 export type DocsInfra = {
   introOwner: string; // "…the {introOwner} fleet is set up…"
@@ -20,23 +25,6 @@ export type DocsInfra = {
   scriptBase: string; // collector script path prefix, e.g. /opt/magmon-gateway
   processMatch: string; // token to grep the running process by
   assets: string[]; // asset IDs shown in the collector list
-};
-
-export const realInfra: DocsInfra = {
-  introOwner: "Numed MagMon",
-  deviceScopeLabel: "Numed devices",
-  lanLabel: "Numed LAN",
-  sampleHostname: "ca1012-setonsw",
-  piUser: "numed",
-  inhandEmail: "NumedIT@numedinc.com",
-  tailnetAccount: "nmbackup@numedinc.com",
-  serverHostname: "nas123",
-  serverLanIp: "10.1.100.100",
-  serverTailscaleIp: "100.120.75.117",
-  servicePrefix: "nm-magmon-gateway",
-  scriptBase: "/opt/magmon-gateway",
-  processMatch: "magmon-gateway",
-  assets: ["CA1012", "NM1001", "NM1019", "NM1027", "NM1034", "NM1037"],
 };
 
 export const demoInfra: DocsInfra = {

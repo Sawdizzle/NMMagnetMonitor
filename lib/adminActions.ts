@@ -132,7 +132,7 @@ export async function adminRotateGatewayToken(assetId: string) {
 // ---- users ----------------------------------------------------------------
 
 export async function adminListUsers() {
-  return call<{ username: string; role: string; tv_access: boolean; created_at: string }[]>(
+  return call<{ username: string; role: string; tv_access: boolean; docs_access: boolean; created_at: string }[]>(
     "admin_list_users"
   );
 }
@@ -144,6 +144,18 @@ export async function adminCreateUser(username: string, pin: string, role: strin
     p_role: role,
   });
   revalidatePath("/admin");
+  return res;
+}
+
+/** Grant or revoke this person's access to the live runbook, in the active org. */
+export async function adminSetDocsAccess(username: string, docsAccess: boolean) {
+  const res = await call<boolean>("admin_set_docs_access", {
+    p_target_username: username,
+    p_docs_access: docsAccess,
+  });
+  // The Docs nav item and the /docs server check both read the session, so a
+  // change here must invalidate the rendered tree, not just this component.
+  revalidatePath("/", "layout");
   return res;
 }
 
@@ -356,6 +368,7 @@ export type UserGrant = {
   name: string;
   role: "admin" | "viewer";
   tv_access: boolean;
+  docs_access: boolean;
 };
 
 export type GlobalUser = {
@@ -404,13 +417,15 @@ export async function adminSetMembership(
   username: string,
   orgId: string,
   role: "admin" | "viewer" | null,
-  tvAccess = false
+  tvAccess = false,
+  docsAccess = false
 ) {
   const res = await call<boolean>("admin_set_membership", {
     p_target_username: username,
     p_org_id: orgId,
     p_role: role,
     p_tv_access: tvAccess,
+    p_docs_access: docsAccess,
   });
   // Could be the caller's own access, which the nav reads from the session.
   revalidatePath("/", "layout");

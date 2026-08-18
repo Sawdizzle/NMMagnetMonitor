@@ -8,10 +8,12 @@ import type { Session } from "@/lib/auth";
 export default function Protected({
   requireAdmin = false,
   requireTv = false,
+  requireDocs = false,
   children,
 }: {
   requireAdmin?: boolean;
   requireTv?: boolean;
+  requireDocs?: boolean;
   children: (session: Session) => React.ReactNode;
 }) {
   const { session, loading } = useAuth();
@@ -29,7 +31,13 @@ export default function Protected({
 
   // Admins always pass. TV access is a separate per-user grant for viewers.
   const isAdmin = session.role === "admin";
-  const denied = (requireAdmin && !isAdmin) || (requireTv && !isAdmin && !session.tvAccess);
+  // requireDocs mirrors requireTv. It hides the page and its nav entry; the
+  // values themselves are withheld server-side (app/docs/page.tsx), because a
+  // check here runs only after the bundle has reached the browser.
+  const denied =
+    (requireAdmin && !isAdmin) ||
+    (requireTv && !isAdmin && !session.tvAccess) ||
+    (requireDocs && !isAdmin && !session.docsAccess);
   return (
     <>
       <AppNav session={session} />

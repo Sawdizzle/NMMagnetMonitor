@@ -22,6 +22,7 @@ import {
   adminListUsers,
   adminCreateUser,
   adminSetTvAccess,
+  adminSetDocsAccess,
   adminSetRole,
   adminResetPin,
   adminListAlertRules,
@@ -66,7 +67,13 @@ const TABS: { id: TabId; label: string; superadminOnly?: boolean }[] = [
   { id: "activity", label: "Activity" },
 ];
 
-type AppUser = { username: string; role: "viewer" | "admin"; tv_access: boolean; created_at: string };
+type AppUser = {
+  username: string;
+  role: "viewer" | "admin";
+  tv_access: boolean;
+  docs_access: boolean;
+  created_at: string;
+};
 type AuditEntry = {
   id: number;
   actor: string | null;
@@ -307,6 +314,17 @@ function AdminPanel({ me }: { me: Session }) {
     notify(u.tv_access ? `TV access revoked for ${u.username}.` : `TV access granted to ${u.username}.`);
     load();
   }
+  async function handleToggleDocsAccess(u: AppUser) {
+    const { error } = await adminSetDocsAccess(u.username, !u.docs_access);
+    if (error) return fail(actionError("Could not change Docs access", error));
+    notify(
+      u.docs_access
+        ? `Docs access revoked for ${u.username}.`
+        : `Docs access granted to ${u.username}.`
+    );
+    load();
+  }
+
 
   async function handleToggleRole(u: AppUser) {
     const newRole = u.role === "admin" ? "viewer" : "admin";
@@ -802,6 +820,7 @@ function AdminPanel({ me }: { me: Session }) {
             handleAddUser={handleAddUser}
             handleToggleRole={handleToggleRole}
             handleToggleTvAccess={handleToggleTvAccess}
+            handleToggleDocsAccess={handleToggleDocsAccess}
             handleResetPin={handleResetPin}
           />
         ))}
@@ -965,7 +984,7 @@ function AssetsTab(props: {
             <input value={props.assetServiceUser} onChange={(e) => props.setAssetServiceUser(e.target.value)} placeholder="pi" className="input font-mono-data" />
           </Field>
           <p className="text-xs text-[var(--text-dim)] -mt-1">
-            OS user the collector runs as on its host. Site Pis use <code className="font-mono-data">pi</code>; assets on the nas123 pi server use <code className="font-mono-data">numed</code>.
+            OS user the collector runs as on its host. Site Pis use <code className="font-mono-data">pi</code>; assets on the central Pi server use <code className="font-mono-data">numed</code>.
           </p>
           <button type="submit" className="btn-primary">Add asset</button>
         </form>
@@ -1526,6 +1545,7 @@ function UsersTab(props: {
   handleAddUser: (e: React.FormEvent) => void;
   handleToggleRole: (u: AppUser) => void;
   handleToggleTvAccess: (u: AppUser) => void;
+  handleToggleDocsAccess: (u: AppUser) => void;
   handleResetPin: (u: AppUser) => void;
 }) {
   const { users } = props;
@@ -1569,6 +1589,27 @@ function UsersTab(props: {
                     onChange={() => props.handleToggleTvAccess(u)}
                   />
                   TV access
+                </label>
+              )}
+              {u.role === "admin" ? (
+                <label
+                  className="flex items-center gap-1.5 text-xs text-[var(--text-dim)]"
+                  title="Admins always have Docs access"
+                >
+                  <input type="checkbox" checked disabled readOnly />
+                  Docs
+                </label>
+              ) : (
+                <label
+                  className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] cursor-pointer"
+                  title="The runbook at /docs carries real infrastructure details — hostnames, IPs, the tailnet account and SSH user."
+                >
+                  <input
+                    type="checkbox"
+                    checked={u.docs_access}
+                    onChange={() => props.handleToggleDocsAccess(u)}
+                  />
+                  Docs
                 </label>
               )}
               <button onClick={() => props.handleToggleRole(u)} className="btn-secondary">
@@ -1720,6 +1761,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   reset_pin: "PIN reset",
   set_role: "Role changed",
   set_tv_access: "TV access changed",
+  set_docs_access: "Docs access changed",
   set_invite_code: "Invite code changed",
   create_alert_rule: "Alert rule added",
   update_alert_rule: "Alert rule edited",

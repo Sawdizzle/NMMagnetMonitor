@@ -75,7 +75,8 @@ export default function GlobalUsersTab({
     orgId: string,
     orgName: string,
     role: "admin" | "viewer" | null,
-    tvAccess: boolean
+    tvAccess: boolean,
+    docsAccess: boolean
   ) {
     // Revoking is the one destructive action here and it is a single click on a
     // dropdown, so confirm it.
@@ -83,7 +84,7 @@ export default function GlobalUsersTab({
       return;
     }
     setBusy(`${username}:${orgId}`);
-    const { error } = await adminSetMembership(username, orgId, role, tvAccess);
+    const { error } = await adminSetMembership(username, orgId, role, tvAccess, docsAccess);
     setBusy(null);
     if (error) return fail(actionError("Could not change access", error));
     notify(
@@ -266,7 +267,15 @@ export default function GlobalUsersTab({
                             disabled={!g || busy === key || g.role === "admin"}
                             checked={g ? g.tv_access || g.role === "admin" : false}
                             onChange={(e) =>
-                              g && setGrant(u.username, o.orgId, o.name, g.role, e.target.checked)
+                              g &&
+                              setGrant(
+                                u.username,
+                                o.orgId,
+                                o.name,
+                                g.role,
+                                e.target.checked,
+                                g.docs_access
+                              )
                             }
                             title={
                               g?.role === "admin"
@@ -275,6 +284,33 @@ export default function GlobalUsersTab({
                             }
                           />
                           TV
+                        </label>
+                        {/* Docs is a grant for the same reason TV is: the live
+                            runbook carries real hostnames, IPs, the tailnet
+                            account and the Pi SSH user. */}
+                        <label className="flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
+                          <input
+                            type="checkbox"
+                            disabled={!g || busy === key || g.role === "admin"}
+                            checked={g ? g.docs_access || g.role === "admin" : false}
+                            onChange={(e) =>
+                              g &&
+                              setGrant(
+                                u.username,
+                                o.orgId,
+                                o.name,
+                                g.role,
+                                g.tv_access,
+                                e.target.checked
+                              )
+                            }
+                            title={
+                              g?.role === "admin"
+                                ? "Admins always have Docs access"
+                                : "Runbook (/docs) access for this company"
+                            }
+                          />
+                          Docs
                         </label>
                         <select
                           className="input py-1 text-xs"
@@ -286,7 +322,8 @@ export default function GlobalUsersTab({
                               o.orgId,
                               o.name,
                               (e.target.value || null) as "admin" | "viewer" | null,
-                              g?.tv_access ?? false
+                              g?.tv_access ?? false,
+                              g?.docs_access ?? false
                             )
                           }
                         >
