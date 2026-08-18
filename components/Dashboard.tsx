@@ -111,7 +111,10 @@ export default function Dashboard() {
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
       <header className="mb-6">
         <p className="eyebrow mb-1.5">{brand.eyebrow}</p>
-        <div className="flex items-center gap-3 justify-between">
+        {/* Stacks on phones: title first, actions on their own row beneath. Side
+            by side, the two buttons squeezed the heading into three wrapped
+            lines and left the header the tallest thing on the screen. */}
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
             <span className="dash-mark" aria-hidden="true">
               <OrgMark size="100%" bleed />

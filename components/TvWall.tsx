@@ -167,7 +167,12 @@ export default function TvWall() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  const autoPerView = vw < 900 ? 1 : vw < 1400 ? 2 : 3;
+  // Two columns from tablet width up. The old floor was 900px, which dropped
+  // small landscape panels — the 800x480 and 1024x600 screens people actually
+  // mount on a wall — to a single column of enormously wide cards, with the
+  // second row clipped off the bottom. A landscape screen has the width for two
+  // cells at any size; only a portrait phone genuinely needs one.
+  const autoPerView = vw < 640 ? 1 : vw < 1400 ? 2 : 3;
   const cols = Math.max(1, Math.min(perViewOverride ?? autoPerView, Math.max(1, assets.length)));
   // Rows for the rotation when nothing needs attention; overridable via ?rows=.
   const rowCount = clampInt(params.get("rows"), 1, 3, 2);

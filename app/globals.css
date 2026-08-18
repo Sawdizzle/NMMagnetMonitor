@@ -1391,6 +1391,42 @@ button {
 .tv-ticker-item.warning { color: #ffedbf; }
 .tv-ticker-item.warning .tv-ticker-dot { background: var(--status-warning); }
 
+/* Small wall panels (800x480, 1024x600). The header lays out brand + five
+   tallies + controls + clock on one row, which simply does not fit at these
+   widths — the clock was running off the right edge. Drop the labels that
+   repeat what is already obvious and keep every number. */
+@media (max-width: 900px) {
+  .tv-header { gap: 0.5rem; }
+  .tv-brand { gap: 0.45rem; }
+  /* "Fleet Status" under the product name — the screen is self-evidently the
+     fleet status, and at this width it wrapped onto two lines. */
+  .tv-brand-sub { display: none; }
+  .tv-brand-name { font-size: 0.95rem; }
+  .tv-summary { gap: 0.75rem; }
+  .tv-tally-n { font-size: 1.2rem; }
+  .tv-tally-label { font-size: 0.5rem; letter-spacing: 0.06em; }
+  .tv-header-right { gap: 0.45rem; }
+  .tv-fs { width: 1.7rem; height: 1.7rem; }
+  /* The date goes, the time stays: which day it is matters far less on a wall
+     than the clock, and the pair together was what overflowed. */
+  .tv-date { display: none; }
+  .tv-time { font-size: 1.1rem; }
+  .tv-live { font-size: 0.55rem; letter-spacing: 0.08em; }
+}
+/* Narrower than any wall panel — a phone held upright, which /demo/tv gets
+   opened on. Brand and clock keep the first row and the five tallies drop to a
+   full-width second row, rather than the last two running off the edge (the
+   root clips, so they were simply gone). */
+@media (max-width: 640px) {
+  .tv-header { flex-wrap: wrap; }
+  .tv-summary {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
+    gap: 0.4rem;
+  }
+}
+
 /* --- content: one uniform, edge-to-edge grid of equal cards --- */
 .tv-grid {
   --tv-gap: clamp(0.7rem, 1.6vw, 1.5rem);
@@ -1431,7 +1467,14 @@ button {
 }
 
 /* --- asset card --- */
+/* A size container, so the rules at the end of this block can respond to how
+   big the CELL is rather than how big the screen is. The two are not the same
+   thing: a 4-up grid on a 1080p TV and a 2x2 on an 800x480 panel produce
+   similarly sized cells, and viewport units get that backwards. The grid always
+   gives explicit row/column tracks (repeat(n, minmax(0,1fr))), so the card has
+   a definite size in both axes and containment is safe here. */
 .tv-card {
+  container-type: size;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1464,6 +1507,9 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.6rem;
+}
+.tv-card-id {
+  min-width: 0;
 }
 .tv-card-name {
   font-size: clamp(1.3rem, 2.6vw, 2.4rem);
@@ -1597,6 +1643,55 @@ button {
   font-size: clamp(0.72rem, 1.1vw, 1rem);
   color: var(--tv-dim);
   text-transform: capitalize;
+}
+
+/* --- small cells -------------------------------------------------------- */
+/* When a card gets short — a 2x2 on an 800x480 wall panel, or a dense grid on a
+   big screen — drop the ornament before the data. Sparklines and the site line
+   go first because the readings and the unit name are the point; nothing here
+   removes a number or a fault chip. */
+@container (max-height: 230px) {
+  .tv-card { gap: 0.3rem; padding: 0.6rem 0.7rem; }
+  .tv-card-name { font-size: 1.15rem; }
+  .tv-card-site { margin-top: 0.15rem; font-size: 0.7rem; }
+  .tv-level { font-size: 0.66rem; }
+  .tv-level-dot { width: 0.5rem; height: 0.5rem; }
+  .tv-faults { min-height: 0; gap: 0.25rem 0.35rem; }
+  .tv-fault, .tv-faults-clear { font-size: 0.66rem; padding: 0.12rem 0.4rem; }
+  /* The days-to-refill forecast is the only thing here that is not a live
+     reading or an open fault, so it is what gives way when the cell cannot
+     hold everything — otherwise the flex column overflows and the fault chip
+     is squashed under it. Still on the dashboard, asset page and debrief. */
+  .tv-refill { display: none; }
+  .tv-metrics { gap: 0.35rem; }
+  .tv-metric { padding: 0.3rem 0.35rem; }
+  .tv-metric-label { font-size: 0.55rem; letter-spacing: 0.05em; }
+  .tv-metric-value { margin-top: 0.1rem; font-size: 1rem; }
+  .tv-metric-spark { display: none; }
+  .tv-card-foot { padding-top: 0.25rem; font-size: 0.62rem; }
+}
+/* Shorter still. The site moves ONTO the name's line rather than disappearing:
+   on a wall the answer to "which one is that?" is the unit AND where it lives,
+   and inline it costs no vertical space at all. It truncates before it pushes
+   the alarm chip off the row. */
+@container (max-height: 165px) {
+  .tv-card { gap: 0.22rem; padding: 0.45rem 0.55rem; }
+  .tv-card-name { font-size: 1rem; }
+  .tv-card-id {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .tv-card-site {
+    margin-top: 0;
+    font-size: 0.62rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tv-metric-value { font-size: 0.9rem; }
+  .tv-card-foot { border-top: 0; padding-top: 0.15rem; }
 }
 
 /* --- page dots + states --- */
