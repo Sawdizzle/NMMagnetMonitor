@@ -336,6 +336,31 @@ create table if not exists public.alert_recipients (
   created_at timestamptz not null default now()
 );
 
+-- --- display_tokens (long-lived read-only credentials for wall TVs) ---
+-- Added by migration display_tokens_and_rpcs; recorded here 2026-08-18, having
+-- been missing from this file since it shipped.
+--
+-- A corridor TV used to run on a HUMAN's 30-day session: it carried that
+-- person's identity and access, and dropped to a login form when the session
+-- lapsed, usually with nobody watching. A display token is bound to one org,
+-- grants only the fleet read, never expires, and is revocable.
+--
+-- Stored as a hash, exactly like user_sessions: the raw token is shown once at
+-- creation and never persisted, so a dump of this table cannot be replayed
+-- onto a screen. resolve_display_token matches on that hash, which is why
+-- DELETING a row is itself a revocation — there is no longer a hash to match.
+create table if not exists public.display_tokens (
+  id           uuid        primary key default gen_random_uuid(),
+  org_id       uuid        not null references public.orgs(id) on delete cascade,
+  label        text        not null,   -- 'Corridor TV, Iuka' — how screens are told apart
+  token_hash   text        not null unique,
+  created_by   text,                   -- username, for the audit trail
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz,            -- last fleet read by this screen; null = never opened
+  revoked_at   timestamptz             -- set by admin_revoke_display_token; the row survives
+);
+create index if not exists display_tokens_org_idx on public.display_tokens (org_id);
+
 
 -- =====================================================================
 -- VIEWS
@@ -466,6 +491,50 @@ create or replace view public.latest_telemetry
 --
 --   destroy_session(token) -> boolean
 --   cleanup_expired_sessions() -> integer   (pg_cron 'cleanup-expired-sessions', 17 3 * * *)
+
+-- --- Wall displays (2026-08-17; delete added 2026-08-18) --------------
+-- Migrations display_tokens_and_rpcs, then admin_delete_display_token.
+-- service_role only, like every other admin_* — a new function carries EXECUTE
+-- for PUBLIC by default, so each migration revokes anon/authenticated.
+--
+--   resolve_display_token(p_token) -> table(org_id, label)
+--       The read path, called on every request a screen makes. Matches the
+--       sha256 hash, ignores revoked rows, and stamps last_seen_at as a side
+--       effect — which is what makes "never opened" vs "seen 10 min ago"
+--       answerable in the admin list. Returns no rows for a revoked, deleted
+--       or forged token; app/tv/page.tsx renders a dead-link message rather
+--       than a login form, because someone standing at a wall TV needs to know
+--       the link is dead, not wonder why a screen is asking for a PIN.
+--
+--   admin_create_display_token(p_token, p_label, p_org_id default null)
+--       -> table(display_token, id)
+--       Returns the raw token ONCE. p_org_id defaults to the actor's active
+--       org; a superadmin may name any company, anyone else is refused for
+--       anything but their own. That rule is what the company picker in
+--       DisplaysSection mirrors — the UI must never offer a company this
+--       would then reject.
+--
+--   admin_list_display_tokens(p_token)
+--       -> table(id, org_id, org_name, label, created_by, created_at,
+--                last_seen_at, revoked_at)
+--       A company admin sees only their own screens; a superadmin sees all.
+--
+--   admin_revoke_display_token(p_token, p_id) -> boolean
+--       Stamps revoked_at and KEEPS the row, so a screen that was real stays
+--       on record with when it stopped.
+--
+--   admin_delete_display_token(p_token, p_id) -> boolean
+--       Removes the row outright — for links that are clutter rather than
+--       history (a typo'd label, a duplicate, a test). Allowed on an ACTIVE
+--       token too: the commonest reason to delete is a link created by
+--       mistake, and requiring a revoke first is a two-step dance for one
+--       intent. Audits BEFORE deleting, noting whether the link was still
+--       live, since the row is about to stop existing and a removal with
+--       nothing recording who did it is worse than the clutter it clears.
+--
+-- Both mutators carry the same tenancy check as the list (superadmin any,
+-- otherwise own org only) and raise a deliberately vague "Display not found."
+-- for a miss, so the id space cannot be probed for other tenants' rows.
 
 -- --- Phase 3: session-authenticated, org-scoped admin RPCs (2026-08-17) ----
 -- Migrations: phase3a_admin_session_foundation, phase3b1_asset_admin_rpcs_session_scoped.
@@ -1478,6 +1547,11 @@ alter table public.user_sessions     enable row level security;
 revoke all on public.orgs          from anon, authenticated;
 revoke all on public.org_members   from anon, authenticated;
 revoke all on public.user_sessions from anon, authenticated;
+-- display_tokens holds screen credentials (hashed, but still one row per live
+-- screen), so it gets the same treatment as user_sessions: RLS on, no policy,
+-- and no reach for anon/authenticated at all.
+alter table public.display_tokens    enable row level security;
+revoke all on public.display_tokens from anon, authenticated;
 
 -- The three "public read" policies that used to live here are GONE, dropped by
 -- phase2_close_public_reads (2026-08-17). For the record, they were:

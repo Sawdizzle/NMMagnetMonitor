@@ -159,23 +159,45 @@ export default function TvWall() {
     });
   }, []);
 
-  // ---- responsive cards-per-page -----------------------------------------
+  // ---- responsive grid ---------------------------------------------------
+  // Both axes are measured, because a grid is two decisions and they have
+  // different inputs: how many cards fit across is a question about width, how
+  // many fit down is a question about height. Rows used to be a fixed 2 at
+  // every size, which is why a 4K panel showed six cards on a screen with room
+  // for sixteen.
   const [vw, setVw] = useState(1280);
+  const [vh, setVh] = useState(800);
   useEffect(() => {
-    const onResize = () => setVw(window.innerWidth);
+    const onResize = () => {
+      setVw(window.innerWidth);
+      setVh(window.innerHeight);
+    };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  // Two columns from tablet width up. The old floor was 900px, which dropped
-  // small landscape panels — the 800x480 and 1024x600 screens people actually
-  // mount on a wall — to a single column of enormously wide cards, with the
-  // second row clipped off the bottom. A landscape screen has the width for two
-  // cells at any size; only a portrait phone genuinely needs one.
-  const autoPerView = vw < 640 ? 1 : vw < 1400 ? 2 : 3;
+  // Columns by width. The 640 floor exists because small landscape panels — the
+  // 800x480 and 1024x600 screens people actually mount on a wall — were falling
+  // to a single column of enormously wide cards with the second row clipped off
+  // the bottom; only a portrait phone genuinely needs one column. The 2400 step
+  // is the 4K/ultrawide end: at 3840 a three-column card is over a metre wide
+  // on a real panel, mostly empty.
+  const autoPerView = vw < 640 ? 1 : vw < 1400 ? 2 : vw < 2400 ? 3 : 4;
   const cols = Math.max(1, Math.min(perViewOverride ?? autoPerView, Math.max(1, assets.length)));
-  // Rows for the rotation when nothing needs attention; overridable via ?rows=.
-  const rowCount = clampInt(params.get("rows"), 1, 3, 2);
+  // Rows by height, on the same principle. The thresholds are set so that a
+  // cell never falls below roughly 300px tall, which is where a card starts
+  // having to drop its sparklines: 1080p keeps the 2 rows it has always had,
+  // 1440p takes 3, and 2160p takes 4 — a 4x4 of sixteen cells, very nearly
+  // Numed's whole fleet on one screen with no rotation at all.
+  const autoRows = vh >= 1900 ? 4 : vh >= 1300 ? 3 : 2;
+  // ...but never reserve a row the fleet cannot fill. A 4K screen asks for four
+  // rows; a twelve-unit fleet in four columns only has three rows' worth, and
+  // the sixteen-cell grid left the bottom quarter of the wall blank. Taking the
+  // smaller of the two makes the cards grow into the space instead.
+  const fittedRows = Math.min(autoRows, Math.ceil(Math.max(1, assets.length) / cols));
+  // ?rows= still wins, now up to 4 rather than 3 so the override can reach what
+  // a 4K screen picks on its own.
+  const rowCount = clampInt(params.get("rows"), 1, 4, Math.max(1, fittedRows));
 
   // ---- ordering (recomputed as `now` ticks so status stays live) ---------
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);

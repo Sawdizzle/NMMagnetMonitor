@@ -1413,6 +1413,26 @@ button {
   .tv-time { font-size: 1.1rem; }
   .tv-live { font-size: 0.55rem; letter-spacing: 0.08em; }
 }
+/* 4K and ultrawide. The header and ticker clamps top out near 1920 for the
+   same reason the card's did, leaving the chrome looking shrunken on a big
+   panel while the grid below it grew. */
+@media (min-width: 2400px) {
+  .tv-brand-name { font-size: 2.9rem; }
+  .tv-brand-sub { font-size: 1.35rem; }
+  .tv-tally-n { font-size: 4rem; }
+  .tv-tally-label { font-size: 1.3rem; }
+  .tv-time { font-size: 3.6rem; }
+  .tv-date { font-size: 1.7rem; }
+  .tv-live { font-size: 1.3rem; }
+  .tv-fs { width: 4rem; height: 4rem; }
+  .tv-fs svg { width: 26px; height: 26px; }
+  .tv-ticker-tag { font-size: 1.6rem; }
+  .tv-ticker-item { font-size: 2rem; }
+  .tv-ticker-dot { width: 1rem; height: 1rem; }
+  .tv-dot { width: 0.9rem; height: 0.9rem; }
+  .tv-dot.on { width: 2.4rem; }
+}
+
 /* Narrower than any wall panel — a phone held upright, which /demo/tv gets
    opened on. Brand and clock keep the first row and the five tallies drop to a
    full-width second row, rather than the last two running off the edge (the
@@ -1692,6 +1712,31 @@ button {
   }
   .tv-metric-value { font-size: 0.9rem; }
   .tv-card-foot { border-top: 0; padding-top: 0.15rem; }
+}
+
+/* --- large cells (4K / ultrawide) --------------------------------------- */
+/* The mirror image of the compact rules above. Every size in this card is a
+   clamp on vw, and those clamps top out around 1920 — so a 924px cell on a 4K
+   wall drew exactly the same 38px unit name as a 600px cell on a 1080p one,
+   which on a panel twice the size and read from across a room is half as
+   legible. The floor of 760px sits clear of both (1080p cells land near 600,
+   4K near 924), and the height floor stops a short ultrawide cell taking type
+   it has no room for. */
+@container (min-width: 760px) and (min-height: 420px) {
+  .tv-card { gap: 1rem; padding: 1.6rem 1.8rem; }
+  .tv-card-name { font-size: 3.4rem; }
+  .tv-card-site { margin-top: 0.5rem; font-size: 1.4rem; }
+  .tv-level { font-size: 1.35rem; }
+  .tv-level-dot { width: 1rem; height: 1rem; }
+  .tv-faults { min-height: 2.4rem; gap: 0.6rem 0.7rem; }
+  .tv-fault, .tv-faults-clear { font-size: 1.3rem; padding: 0.3rem 0.8rem; }
+  .tv-refill { font-size: 1.25rem; padding: 0.35rem 0.9rem; }
+  .tv-refill svg { width: 20px; height: 20px; }
+  .tv-metrics { gap: 1.2rem; }
+  .tv-metric { padding: 1rem 0.9rem; border-radius: 0.8rem; }
+  .tv-metric-label { font-size: 1.05rem; }
+  .tv-metric-value { margin-top: 0.4rem; font-size: 2.6rem; }
+  .tv-card-foot { padding-top: 0.9rem; font-size: 1.25rem; }
 }
 
 /* --- page dots + states --- */
