@@ -135,6 +135,10 @@ function AdminPanel({ me }: { me: Session }) {
   // Whether the org being administered is a demo tenant. Read from the server
   // session, not the client one — see lib/session.ts.
   const [isDemoOrg, setIsDemoOrg] = useState(false);
+  // The company being administered, for surfaces that must NAME it rather than
+  // just scope to it — a wall-display link is company-bound, and "which fleet
+  // will this TV show?" has to be answerable before the link is minted.
+  const [activeOrg, setActiveOrg] = useState<{ id: string; name: string } | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
 
   // Toast + dialog state (replaces the old top-of-page status string and the
@@ -246,6 +250,12 @@ function AdminPanel({ me }: { me: Session }) {
       .then((s) => {
         setIsSuperadmin(!!s?.isSuperadmin);
         setIsDemoOrg(!!s?.activeOrgIsDemo);
+        // Name via memberships. A superadmin can be active in an org they hold
+        // no membership in, so this can be null for them — DisplaysSection
+        // loads the full company list in that case anyway.
+        const orgId = s?.activeOrgId ?? null;
+        const name = s?.memberships.find((m) => m.orgId === orgId)?.name ?? null;
+        setActiveOrg(orgId ? { id: orgId, name: name ?? "this company" } : null);
       })
       .catch(() => {});
   }, []);
@@ -830,7 +840,13 @@ function AdminPanel({ me }: { me: Session }) {
       )}
 
       {activeTab === "displays" && (
-        <DisplaysSection notify={notify} fail={fail} askConfirm={askConfirm} />
+        <DisplaysSection
+          notify={notify}
+          fail={fail}
+          askConfirm={askConfirm}
+          isSuperadmin={isSuperadmin}
+          activeOrg={activeOrg}
+        />
       )}
 
       {activeTab === "activity" && <ActivityTab auditLog={auditLog} loadAuditLog={loadAuditLog} />}
