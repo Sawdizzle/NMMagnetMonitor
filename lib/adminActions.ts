@@ -387,6 +387,8 @@ export type OrgRow = {
   eyebrow: string;
   tagline: string;
   is_demo: boolean;
+  /** False = suspended: no login, no org switch, dead display links, no alerts. */
+  enabled: boolean;
   invite_code: string | null;
   logo_url: string | null;
   asset_count: number;
@@ -475,6 +477,42 @@ export async function adminDeleteUser(username: string) {
 
 export async function adminListOrgs() {
   return call<OrgRow[]>("admin_list_orgs");
+}
+
+/**
+ * Suspend or restore a company.
+ *
+ * Disabled means access stops and collection continues: nobody signs in to it
+ * or switches into it, its wall-display links go dead, and alert delivery skips
+ * it — but telemetry keeps arriving, so re-enabling restores the company intact
+ * with no gap in history. Superadmins are exempt from the gate, or a disabled
+ * company would be one nobody could reach to re-enable.
+ */
+export async function adminSetOrgEnabled(orgId: string, enabled: boolean) {
+  const res = await call<boolean>("admin_set_org_enabled", {
+    p_org_id: orgId,
+    p_enabled: enabled,
+  });
+  // The gate is read through the session, so a suspended user must stop being
+  // served their old org on the very next render, not at their next login.
+  revalidatePath("/", "layout");
+  return res;
+}
+
+/**
+ * Delete a company AND everything under it — assets, telemetry, alert rules and
+ * events, recipients, memberships, display links. Irreversible.
+ *
+ * The RPC refuses the caller's own active company (deleting it would strand
+ * their session with no org and break the admin panel around them) and refuses
+ * the last remaining company (every admin RPC needs an active org, so an empty
+ * orgs table cannot be recovered from inside the app). The audit trail survives:
+ * the log entries are unlinked from the company rather than deleted with it.
+ */
+export async function adminDeleteOrg(orgId: string) {
+  const res = await call<boolean>("admin_delete_org", { p_org_id: orgId });
+  revalidatePath("/", "layout");
+  return res;
 }
 
 export async function adminCreateOrg(args: {

@@ -398,6 +398,22 @@ button {
 .alert-msg { flex: 1 1 auto; color: var(--text); }
 .alert-meta { color: var(--text-dim); font-size: 0.72rem; white-space: nowrap; }
 
+/* Suspended-company badge in Admin -> Companies. Deliberately grey rather than
+   red: a disabled company is an administrative state someone chose, not a fault. */
+.org-off-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  border: 1px solid var(--border);
+}
+
 /* ---- Morning debrief ---------------------------------------------------- */
 /* Count badge on the dashboard's Debrief button. */
 .debrief-badge {

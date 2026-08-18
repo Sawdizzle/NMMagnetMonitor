@@ -124,6 +124,18 @@ create table if not exists public.orgs (
   eyebrow      text        not null,
   tagline      text        not null,
   invite_code  text,
+  -- Suspension (migration org_enabled_and_delete, 2026-08-18). False = access
+  -- stops, collection continues: no login into it, no org switch into it, dead
+  -- wall-display links, no alert email or push -- but telemetry keeps arriving,
+  -- so re-enabling restores the company intact with no gap in history. That
+  -- combination is the whole point; a suspension that also stopped ingest would
+  -- lose exactly the history a returning customer came back for.
+  --
+  -- SUPERADMINS BYPASS THIS. Someone has to be able to reach a disabled company
+  -- to re-enable it, so every gate reads "(o.enabled or is_superadmin)". The
+  -- exception is resolve_display_token, which has none: a screen is not a
+  -- person, and a suspended company's corridor TV must go dark.
+  enabled      boolean     not null default true,
   -- The company's own logo, as a URL into the PUBLIC 'org-logos' storage
   -- bucket (migration org_logos_storage_bucket). The fourth brand field
   -- alongside product_name/eyebrow/tagline: when set it REPLACES the built-in
@@ -535,6 +547,44 @@ create or replace view public.latest_telemetry
 -- Both mutators carry the same tenancy check as the list (superadmin any,
 -- otherwise own org only) and raise a deliberately vague "Display not found."
 -- for a miss, so the id space cannot be probed for other tenants' rows.
+
+-- --- Company suspension + deletion (2026-08-18) -----------------------
+-- Migration org_enabled_and_delete. service_role only, as ever.
+--
+--   admin_set_org_enabled(p_token, p_org_id, p_enabled) -> boolean
+--       Superadmin-only; flips orgs.enabled, audited as enable_org/disable_org.
+--       Takes effect on the NEXT REQUEST, not the next login: the gate lives in
+--       resolve_session, which every request already calls.
+--
+--   admin_delete_org(p_token, p_id) -> boolean
+--       Superadmin-only. Destroys the company and everything under it. The
+--       child deletes are written out rather than left to ON DELETE CASCADE:
+--       the FKs from assets/alert_rules/alert_recipients to orgs are NO ACTION,
+--       so a bare "delete from orgs" just errors -- and a cascade that silently
+--       removes tens of thousands of telemetry rows ought to be visible in the
+--       source of the function doing it. Order: alert_recipients, alert_rules,
+--       assets (which cascades telemetry_samples, alert_events, per-asset rules
+--       and demo_asset_specs), then the org itself (cascading org_members and
+--       display_tokens, and nulling user_sessions.active_org).
+--
+--       audit_log is the deliberate exception: its rows are NULLED, not
+--       deleted. Losing the record of what was done to a company at the moment
+--       the company is destroyed is precisely backwards. The deletion is itself
+--       audited BEFORE the row goes, while the FK still holds.
+--
+--       Two refusals, both about states the app cannot recover from on its own:
+--       deleting the caller's OWN active org would strand their session with no
+--       active_org, which _admin_actor rejects -- every subsequent admin action
+--       would fail and the panel would look broken; and deleting the LAST org
+--       leaves an empty orgs table, which no admin RPC can be called to fix.
+--
+-- The gate itself is spread across the access paths rather than centralised,
+-- because there is no single choke point -- create_session (login),
+-- resolve_session (every request), switch_active_org, list_switchable_orgs and
+-- resolve_display_token each grant access their own way. notify-alerts and
+-- send-push carry the delivery half, folded into the query that already
+-- excluded demo tenants: one "who must not be written to" list, two reasons to
+-- be on it.
 
 -- --- Phase 3: session-authenticated, org-scoped admin RPCs (2026-08-17) ----
 -- Migrations: phase3a_admin_session_foundation, phase3b1_asset_admin_rpcs_session_scoped.

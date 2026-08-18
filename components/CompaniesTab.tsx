@@ -5,6 +5,8 @@ import {
   adminListOrgs,
   adminCreateOrg,
   adminUpdateOrg,
+  adminSetOrgEnabled,
+  adminDeleteOrg,
   adminSetInviteCode,
   adminUploadOrgLogo,
   adminRemoveOrgLogo,
@@ -29,9 +31,17 @@ import BrandMark from "@/components/BrandMark";
 export default function CompaniesTab({
   notify,
   fail,
+  askConfirm,
+  askPrompt,
 }: {
   notify: (m: string) => void;
   fail: (m: string) => void;
+  askConfirm: (m: string, danger?: boolean) => Promise<boolean>;
+  askPrompt: (opts: {
+    title: string;
+    label: string;
+    minLength?: number;
+  }) => Promise<string | null>;
 }) {
   const [orgs, setOrgs] = useState<OrgRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,6 +83,48 @@ export default function CompaniesTab({
     if (error) return fail(actionError("Could not create company", error));
     notify(`"${name}" created. Add its assets and people, then set an invite code.`);
     resetForm();
+    load();
+  }
+
+  async function toggleEnabled(o: OrgRow) {
+    // Enabling is benign and needs no ceremony. Disabling takes people's access
+    // away and darkens screens, so it says so first — including the part that is
+    // easy to assume wrongly, that the data keeps arriving.
+    if (o.enabled) {
+      const ok = await askConfirm(
+        `Disable "${o.name}"? Its ${o.member_count} member${o.member_count === 1 ? "" : "s"} ` +
+          `will lose access, any wall displays will go dark, and alert emails and push will stop. ` +
+          `Telemetry keeps being collected, so enabling it again restores everything.`,
+        true
+      );
+      if (!ok) return;
+    }
+    const { error } = await adminSetOrgEnabled(o.org_id, !o.enabled);
+    if (error) return fail(actionError("Could not change that company", error));
+    notify(`"${o.name}" ${o.enabled ? "disabled" : "enabled"}.`);
+    load();
+  }
+
+  async function remove(o: OrgRow) {
+    // Typed name rather than a yes/no, because the consequence is unbounded:
+    // this is the only control in the panel that destroys telemetry history, and
+    // the count in the message is the part worth reading twice.
+    const typed = await askPrompt({
+      title: `Delete "${o.name}"?`,
+      label:
+        `This permanently destroys ${o.asset_count} asset${o.asset_count === 1 ? "" : "s"}, ` +
+        `all of their telemetry history, alert rules, and wall-display links. It cannot be undone. ` +
+        `Type the company name to confirm.`,
+    });
+    // Cancelled — say nothing, the user already knows what they did.
+    if (typed === null) return;
+    if (typed.trim() !== o.name) {
+      return fail("That name didn't match. Nothing was deleted.");
+    }
+
+    const { error } = await adminDeleteOrg(o.org_id);
+    if (error) return fail(actionError("Could not delete that company", error));
+    notify(`"${o.name}" and everything under it was deleted.`);
     load();
   }
 
@@ -210,6 +262,9 @@ export default function CompaniesTab({
           <div
             key={o.org_id}
             className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-[var(--border)] last:border-0"
+            // Dimmed like a revoked display link — the row is still fully
+            // operable (that is how it gets re-enabled), just visibly not live.
+            style={o.enabled ? undefined : { opacity: 0.6 }}
           >
             <div className="min-w-0 flex items-center gap-3">
               {/* Same dark tile the nav uses, so this row is a true preview of
@@ -248,6 +303,14 @@ export default function CompaniesTab({
                       Demo only
                     </span>
                   )}
+                  {!o.enabled && (
+                    <span
+                      className="org-off-badge"
+                      title="Suspended. Members cannot sign in to it or switch into it, its wall displays are dark, and no alerts are sent. Telemetry is still being collected."
+                    >
+                      Disabled
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-[var(--text-dim)] font-mono-data">{o.slug}</p>
               </div>
@@ -265,6 +328,25 @@ export default function CompaniesTab({
               </span>
               <button onClick={() => startEdit(o)} className="btn-secondary">
                 Edit
+              </button>
+              <button
+                onClick={() => toggleEnabled(o)}
+                className="btn-secondary"
+                title={
+                  o.enabled
+                    ? "Suspend access — keeps collecting telemetry"
+                    : "Restore access for this company"
+                }
+              >
+                {o.enabled ? "Disable" : "Enable"}
+              </button>
+              <button
+                onClick={() => remove(o)}
+                className="btn-secondary"
+                style={{ color: "var(--status-offline)" }}
+                title="Delete this company and all of its data"
+              >
+                Delete
               </button>
             </div>
           </div>

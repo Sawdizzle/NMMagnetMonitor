@@ -836,7 +836,7 @@ function AdminPanel({ me }: { me: Session }) {
         ))}
 
       {activeTab === "companies" && isSuperadmin && (
-        <CompaniesTab notify={notify} fail={fail} />
+        <CompaniesTab notify={notify} fail={fail} askConfirm={askConfirm} askPrompt={askPrompt} />
       )}
 
       {activeTab === "displays" && (

@@ -16,9 +16,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // their asset's org and each digest goes only to that org's recipients, from
 // that org's sending address.
 //
-// DEMO TENANTS (orgs.is_demo) are excluded outright: their assets are invented,
-// so their alerts must never reach a human inbox no matter how the org is
-// configured. See the suppression block below.
+// DEMO TENANTS (orgs.is_demo) and DISABLED companies (orgs.enabled = false) are
+// excluded outright: a demo's assets are invented, and a suspended company's
+// staff should not be emailed. Neither must reach a human inbox no matter how
+// the org is configured. See the suppression block below.
 //
 // The From address per org: orgs.alert_from, else the legacy global
 // app_settings 'alert_from' (both via org_alert_from()), else the ALERT_FROM
@@ -144,15 +145,21 @@ Deno.serve(async (req) => {
   // recipients and the block below would close them out anyway; that is an
   // accident of configuration, one "add recipient" away from paging a real
   // person about MM-1004. This makes it a property of being a demo instead.
-  const { data: demoOrgs, error: dErr } = await supabase
+  //
+  // DISABLED companies (orgs.enabled = false) are suppressed by the same gate,
+  // for a related reason. A suspended company keeps collecting telemetry by
+  // design, so evaluate_alerts keeps opening events for it — but "we stopped
+  // this company's access" and "we still email their staff at 3am" cannot both
+  // be true. One query answers both questions: who must not be written to.
+  const { data: mutedOrgs, error: dErr } = await supabase
     .from("orgs")
     .select("id")
-    .eq("is_demo", true);
+    .or("is_demo.eq.true,enabled.eq.false");
   if (dErr) return json({ error: dErr.message }, 500);
-  const demoOrgIds = new Set((demoOrgs ?? []).map((o) => o.id as string));
+  const mutedOrgIds = new Set((mutedOrgs ?? []).map((o) => o.id as string));
 
   const byOrg = new Map<string, EventRow[]>();
-  const demoIds: number[] = [];
+  const mutedIds: number[] = [];
   for (const e of events as EventRow[]) {
     const org = orgOf.get(e.asset_id);
     // An event whose asset vanished mid-run has no org to route to. Skip it
@@ -161,19 +168,19 @@ Deno.serve(async (req) => {
     // Stamped as handled, same as the no-recipients case: "there is nobody this
     // may be sent to" is a terminal outcome, and leaving them queued would
     // re-examine every demo alert every minute forever.
-    if (demoOrgIds.has(org)) {
-      demoIds.push(e.id);
+    if (mutedOrgIds.has(org)) {
+      mutedIds.push(e.id);
       continue;
     }
     const arr = byOrg.get(org) ?? [];
     arr.push(e);
     byOrg.set(org, arr);
   }
-  if (demoIds.length > 0) {
-    console.log(`${demoIds.length} demo-tenant alert(s) suppressed — demo companies never email`);
+  if (mutedIds.length > 0) {
+    console.log(`${mutedIds.length} alert(s) suppressed — demo and disabled companies never email`);
   }
 
-  const notifiedIds: number[] = [...demoIds];
+  const notifiedIds: number[] = [...mutedIds];
   const perOrg: { org: string; recipients: number; events: number }[] = [];
 
   for (const [orgId, orgEvents] of byOrg) {
@@ -220,7 +227,7 @@ Deno.serve(async (req) => {
     if (uErr) return json({ error: uErr.message }, 500);
   }
 
-  return json({ orgs: perOrg, notified: notifiedIds.length, demoSuppressed: demoIds.length });
+  return json({ orgs: perOrg, notified: notifiedIds.length, suppressed: mutedIds.length });
 });
 
 function sendEmail(key: string, from: string, to: string[], subject: string, text: string) {

@@ -10,8 +10,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 //     already in push_subscriptions, so it can't be used to push arbitrary devices.
 // CORS is set because the test path is invoked from the browser; the cron path is
 // server-to-server and unaffected.
-// DEMO TENANTS (orgs.is_demo) are excluded outright — their assets are invented,
-// so their alerts never reach a device. See the suppression block below.
+// DEMO TENANTS (orgs.is_demo) and DISABLED companies (orgs.enabled = false) are
+// excluded outright — a demo's assets are invented and a suspended company's
+// people should not be buzzed. See the suppression block below.
 const DEBOUNCE_MIN = Number(Deno.env.get("ALERT_DEBOUNCE_MINUTES") ?? "5");
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -102,15 +103,19 @@ Deno.serve(async (req) => {
   // needed just as much: a demo org has members, members have phones, and a
   // buzz at 3am about a magnet that does not exist is worse than a stale email.
   // Being a demo is the check, not "does this org happen to have subscribers".
-  const { data: demoOrgs, error: dErr } = await supabase
+  //
+  // Disabled companies (orgs.enabled = false) ride the same gate — see the
+  // longer note in notify-alerts. A suspended company still collects telemetry,
+  // so its alerts keep opening; nobody there should be buzzed about them.
+  const { data: mutedOrgs, error: dErr } = await supabase
     .from("orgs")
     .select("id")
-    .eq("is_demo", true);
+    .or("is_demo.eq.true,enabled.eq.false");
   if (dErr) return json({ error: dErr.message }, 500);
-  const demoOrgIds = new Set((demoOrgs ?? []).map((o) => o.id as string));
+  const mutedOrgIds = new Set((mutedOrgs ?? []).map((o) => o.id as string));
 
   const byOrg = new Map<string, Ev[]>();
-  const demoIds: number[] = [];
+  const mutedIds: number[] = [];
   for (const e of events as Ev[]) {
     const org = orgOf.get(e.asset_id);
     // No resolvable org (asset deleted mid-run): skip, and leave
@@ -118,21 +123,21 @@ Deno.serve(async (req) => {
     if (!org) continue;
     // Stamped, not left queued — see notify-alerts for why "nobody to tell" is
     // a terminal outcome rather than a pending one.
-    if (demoOrgIds.has(org)) {
-      demoIds.push(e.id);
+    if (mutedOrgIds.has(org)) {
+      mutedIds.push(e.id);
       continue;
     }
     const arr = byOrg.get(org) ?? [];
     arr.push(e);
     byOrg.set(org, arr);
   }
-  if (demoIds.length > 0) {
-    console.log(`${demoIds.length} demo-tenant alert(s) suppressed — demo companies never push`);
+  if (mutedIds.length > 0) {
+    console.log(`${mutedIds.length} alert(s) suppressed — demo and disabled companies never push`);
   }
 
   let sent = 0;
   let pruned = 0;
-  const pushedIds: number[] = [...demoIds];
+  const pushedIds: number[] = [...mutedIds];
 
   for (const [orgId, orgEvents] of byOrg) {
     const { data: subs } = await supabase.rpc("org_push_subscriptions", { p_org_id: orgId });
@@ -187,7 +192,7 @@ Deno.serve(async (req) => {
     pruned,
     orgs: byOrg.size,
     events: pushedIds.length,
-    demoSuppressed: demoIds.length,
+    suppressed: mutedIds.length,
   });
 });
 
