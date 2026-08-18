@@ -5,6 +5,7 @@ import {
   adminListDisplayTokens,
   adminCreateDisplayToken,
   adminRevokeDisplayToken,
+  adminDeleteDisplayToken,
   adminListOrgs,
   type DisplayToken,
   type OrgRow,
@@ -124,6 +125,21 @@ export default function DisplaysSection({
     const { error } = await adminRevokeDisplayToken(d.id);
     if (error) return fail(actionError("Could not revoke display", error));
     notify(`"${d.label}" revoked.`);
+    load();
+  }
+
+  async function remove(d: DisplayToken) {
+    // Two different warnings, because these are two different acts. Deleting a
+    // revoked link only tidies the list; deleting a live one takes a screen
+    // down as well, and the person clicking may not have realised it was live.
+    const message = d.revoked_at
+      ? `Delete "${d.label}" from the list? It is already revoked, so no screen is affected — this only removes the row.`
+      : `Delete "${d.label}"? It is still active: that screen will stop showing the fleet immediately, and the row will be gone rather than listed as revoked.`;
+    if (!(await askConfirm(message, true))) return;
+
+    const { error } = await adminDeleteDisplayToken(d.id);
+    if (error) return fail(actionError("Could not delete display", error));
+    notify(`"${d.label}" deleted.`);
     load();
   }
 
@@ -256,11 +272,23 @@ export default function DisplaysSection({
                 <button
                   onClick={() => revoke(d)}
                   className="btn-secondary"
-                  style={{ color: "var(--status-offline)" }}
+                  title="Stop this screen, but keep the row on record"
                 >
                   Revoke
                 </button>
               )}
+              <button
+                onClick={() => remove(d)}
+                className="btn-secondary"
+                style={{ color: "var(--status-offline)" }}
+                title={
+                  d.revoked_at
+                    ? "Remove this row from the list"
+                    : "Remove this row — the screen stops immediately"
+                }
+              >
+                Delete
+              </button>
             </div>
           </div>
         ))}

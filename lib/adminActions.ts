@@ -659,8 +659,21 @@ export async function adminCreateDisplayToken(label: string, orgId?: string) {
   return res;
 }
 
+/** Kill the credential but keep the row, so the screen stays on record. */
 export async function adminRevokeDisplayToken(id: string) {
   const res = await call<boolean>("admin_revoke_display_token", { p_id: id });
+  revalidatePath("/admin");
+  return res;
+}
+
+/**
+ * Remove the row entirely — for links that are clutter rather than history: a
+ * typo'd label, a duplicate, a test. Works on an active link too, and deleting
+ * one revokes it as a side effect (there is no stored hash left to match), so
+ * the UI warns when that is the case. The audit log keeps a record either way.
+ */
+export async function adminDeleteDisplayToken(id: string) {
+  const res = await call<boolean>("admin_delete_display_token", { p_id: id });
   revalidatePath("/admin");
   return res;
 }
