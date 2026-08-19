@@ -5,7 +5,7 @@ import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent, type AlertRule } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
-import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
+import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, NO_TELEMETRY_KINDS, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm } from "@/lib/faults";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "@/components/FieldRing";
@@ -306,11 +306,11 @@ function AlertsSection({ events }: { events: AlertEvent[] }) {
 
 function AlertRow({ e }: { e: AlertEvent }) {
   const isOpen = !e.resolved_at;
-  // offline and reporting_stalled both mean "no telemetry" -> red severity;
-  // reporting_stalled's message carries the disambiguation (Pi reachable, egress
-  // fault). threshold/other alerts stay amber.
+  // No-telemetry kinds read red; each message carries its own disambiguation
+  // (reporting_stalled = Pi reachable/egress fault, never_reported = install
+  // never completed). threshold/sensor_fault stay amber — the unit is reporting.
   const color = isOpen
-    ? e.kind === "offline" || e.kind === "reporting_stalled"
+    ? NO_TELEMETRY_KINDS.has(e.kind)
       ? "var(--status-offline)"
       : "var(--status-warning)"
     : "var(--text-dim)";

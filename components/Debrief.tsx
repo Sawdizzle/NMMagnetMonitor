@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getDataSource, type DebriefEntry, type DebriefResult } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
+import { NO_TELEMETRY_KINDS } from "@/lib/health";
 import OrgMark from "./OrgMark";
 
 // The morning debrief page: what the alerting system did between yesterday
@@ -268,12 +269,13 @@ function DebriefRow({
   );
 }
 
-// offline and reporting_stalled both mean "no telemetry" -> red; thresholds are
-// amber. Anything already resolved reads dim, whatever it was — same convention
-// as the alert rows on the asset page.
+// offline, reporting_stalled and never_reported all mean "no telemetry" -> red;
+// thresholds and a blind channel are amber (the unit is still reporting, we just
+// can't see one metric). Anything already resolved reads dim, whatever it was —
+// same convention as the alert rows on the asset page.
 function severityColor(e: DebriefEntry): string {
   if (e.bucket === "cleared" || e.bucket === "flapped") return "var(--text-dim)";
-  return e.kind === "offline" || e.kind === "reporting_stalled"
+  return NO_TELEMETRY_KINDS.has(e.kind)
     ? "var(--status-offline)"
     : "var(--status-warning)";
 }
@@ -286,6 +288,10 @@ function kindLabel(kind: string): string {
       return "Reporting stalled";
     case "threshold":
       return "Threshold";
+    case "sensor_fault":
+      return "Sensor fault";
+    case "never_reported":
+      return "Never reported";
     default:
       return kind.replace(/_/g, " ");
   }

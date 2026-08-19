@@ -6,6 +6,7 @@ import { supabase, type Asset } from "@/lib/supabase";
 import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
 import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
+import { NO_TELEMETRY_KINDS } from "@/lib/health";
 import Protected from "@/components/Protected";
 import type { Session } from "@/lib/auth";
 // Admin mutations go through server actions now: the httpOnly session cookie
@@ -1657,7 +1658,7 @@ function AlertEventsSection({ me }: { me: Session }) {
         {events.map((e) => {
           const isOpen = !e.resolved_at;
           const color = isOpen
-            ? e.kind === "offline" || e.kind === "reporting_stalled"
+            ? NO_TELEMETRY_KINDS.has(e.kind)
               ? "var(--status-offline)"
               : "var(--status-warning)"
             : "var(--text-dim)";

@@ -55,6 +55,18 @@ export function minutesSince(dateStr: string | null): number | null {
 // (ingest-side), which is immune to the device clock, so "reachable but silent"
 // is just health !== "online" while isReachable() stays true.
 
+// Alert kinds that mean "we are not getting telemetry" and therefore read red
+// wherever an alert is rendered: 'offline' (unit or site network down),
+// 'reporting_stalled' (Pi reachable, data dead) and 'never_reported' (added but
+// never reported once). Every other kind — 'threshold', 'sensor_fault' — leaves
+// the unit reporting normally and reads amber. Shared so the asset page, the
+// admin log and the debrief cannot drift apart when a kind is added.
+export const NO_TELEMETRY_KINDS: ReadonlySet<string> = new Set([
+  "offline",
+  "reporting_stalled",
+  "never_reported",
+]);
+
 export const STATUS_COLORS: Record<HealthStatus, string> = {
   online: "#4ade80",
   stale: "#fbbf24", // --status-warning

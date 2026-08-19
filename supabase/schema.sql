@@ -362,8 +362,9 @@ create table if not exists public.alert_events (
   id             bigint      generated always as identity primary key,
   asset_id       uuid        not null references public.assets(id) on delete cascade,
   alert_rule_id  uuid        references public.alert_rules(id) on delete set null,
-  kind           text        not null,   -- 'offline' | 'reporting_stalled' | 'router_offline' | 'threshold'
+  kind           text        not null,   -- 'offline' | 'reporting_stalled' | 'router_offline' | 'threshold' | 'sensor_fault' | 'never_reported'
   message        text        not null,
+  channel        text,                   -- metric name for kind='sensor_fault' (dedup key: one unit can have several blind channels)
   triggered_at   timestamptz not null default now(),
   resolved_at    timestamptz,
   notified_at    timestamptz             -- set once a notifier has delivered it
@@ -1021,6 +1022,49 @@ end;
 $function$;
 
 -- --- telemetry -------------------------------------------------------
+-- ── Sensor sentinels stored as NULL, not as a reading ──────────────────
+-- The MagMon does not omit a water channel that has no sensor attached (or
+-- whose sensor has failed) — it emits a FIXED placeholder. It is the same
+-- constant on every machine, which is what gives it away: NM1006 and NM1035
+-- sit on it permanently (1972/1972 and 1990/1990 samples), while NM1027 and
+-- NM1019 drop into it intermittently. Depending on the unit system a device is
+-- configured for it arrives as either the metric or the imperial rendering of
+-- one underlying value — NM1035 has emitted both, which is how the pairing was
+-- identified:
+--
+--   h2o_temp    38.042 °C     ==  100.4756 °F   (device rounds to 100.476)
+--   h2o_flow    19.017 L/min  ==    5.0238 gpm  (device rounds to 5.024)
+--
+-- Storing that as a reading is worse than storing nothing. It held a
+-- "h2o_temp > 75" alert open on NM1006 for 177 h against a channel that was
+-- never measuring anything, and on NM1027 it repeatedly RESOLVED a genuine
+-- low-flow alarm: real flow reads 0.05–0.6, the sensor drops out to 5.024, the
+-- alarm clears, the next real sample re-opens it — 12 open/close cycles and 6
+-- notifications in 24 h. We store NULL instead. The device's original payload
+-- is preserved verbatim in telemetry_samples.data, so nothing is discarded.
+--
+-- Tolerance is deliberately tight (0.002). The observed spellings are 100.476 /
+-- 100.47560000000001 and 5.024 / 5.023759919694909, all well inside it, while
+-- the highest real reading on the fleet is 77.68 °F and 3.884 gpm — no genuine
+-- measurement is anywhere near either constant.
+create or replace function public.nullify_sentinel(p_field text, p_value numeric)
+returns numeric
+language sql
+immutable
+as $$
+  select case
+    when p_value is null then null
+    when p_field = 'h2o_temp'
+      and (abs(p_value - 100.4756) < 0.002 or abs(p_value - 38.042) < 0.002) then null
+    when p_field = 'h2o_flow'
+      and (abs(p_value - 5.0238) < 0.002 or abs(p_value - 19.017) < 0.002) then null
+    else p_value
+  end;
+$$;
+-- APPLIED to live DB 2026-08-19 via migration
+-- sensor_sentinel_nullify_and_alert_channel, plus a one-time backfill of the
+-- 5,375 already-stored rows that carried the placeholder.
+
 
 CREATE OR REPLACE FUNCTION public.report_telemetry(p_gateway_token text, p_recorded_at timestamp with time zone, p_he_lvl numeric DEFAULT NULL::numeric, p_he_press numeric DEFAULT NULL::numeric, p_h2o_flow numeric DEFAULT NULL::numeric, p_h2o_temp numeric DEFAULT NULL::numeric, p_shield numeric DEFAULT NULL::numeric, p_cs1 numeric DEFAULT NULL::numeric, p_raw jsonb DEFAULT NULL::jsonb)
  RETURNS boolean
@@ -1061,7 +1105,13 @@ begin
 
   if v_recent_count = 0 then
     insert into telemetry_samples (asset_id, recorded_at, he_lvl, he_press, h2o_flow, h2o_temp, shield, cs1, data)
-    values (v_asset_id, v_rec, p_he_lvl, p_he_press, p_h2o_flow, p_h2o_temp, p_shield, p_cs1, p_raw);
+    -- Water channels pass through nullify_sentinel(): the MagMon's fixed
+    -- no-sensor placeholder is stored as NULL rather than as a reading. p_raw
+    -- keeps the device's original payload verbatim.
+    values (v_asset_id, v_rec, p_he_lvl, p_he_press,
+            nullify_sentinel('h2o_flow', p_h2o_flow),
+            nullify_sentinel('h2o_temp', p_h2o_temp),
+            p_shield, p_cs1, p_raw);
     -- A genuinely new sample stored: bump the data-freshness clock.
     update assets set last_sample_at = now() where id = v_asset_id;
   end if;
@@ -1125,8 +1175,8 @@ begin
               else date_trunc('minute', (s->>'recorded_at')::timestamptz + v_offset) end,
          (s->>'he_lvl')::numeric,
          (s->>'he_press')::numeric,
-         (s->>'h2o_flow')::numeric,
-         (s->>'h2o_temp')::numeric,
+         nullify_sentinel('h2o_flow', (s->>'h2o_flow')::numeric),  -- see report_telemetry
+         nullify_sentinel('h2o_temp', (s->>'h2o_temp')::numeric),
          (s->>'shield')::numeric,
          (s->>'cs1')::numeric,
          s
@@ -1246,6 +1296,21 @@ create index if not exists idx_dm_webhook_events_received
 -- keys off last_sample_at = fresh-data, not last_seen_at = reachability, closing
 -- the reachable-but-silent blind spot; reachability now also accepts a fresh
 -- last_seen_at, not just a Tailscale poll).
+-- APPLIED to live DB 2026-08-19 via migration
+-- evaluate_alerts_sensor_fault_never_reported_freshness, which adds three
+-- things found during a fleet health check:
+--   * kind 'never_reported' -- the stale loop requires last_sample_at is not
+--     null, so a unit that never reported once was invisible to alerting
+--     FOREVER. NM1030 and NM1031 had been silent and un-alerted for 8 and 13
+--     days respectively.
+--   * kind 'sensor_fault' (with alert_events.channel) -- a channel blank for an
+--     hour on a unit that is otherwise reporting. Without it, nullify_sentinel()
+--     would convert a blind channel into a silent one.
+--   * a freshness guard on the threshold loop -- latest_telemetry used to be
+--     joined with no freshness test, so an offline unit's final reading was
+--     re-evaluated forever and a unit that went dark mid-breach held that alarm
+--     indefinitely. Stale units now have their threshold events resolved; the
+--     offline / reporting_stalled event is what speaks for them.
 CREATE OR REPLACE FUNCTION public.evaluate_alerts()
  RETURNS void
  LANGUAGE plpgsql
@@ -1259,19 +1324,42 @@ begin
   from assets a
   where e.asset_id = a.id and e.resolved_at is null and a.maintenance;
 
-  -- STALE TELEMETRY (no NEW data within the unit's threshold, by last_sample_at)
-  -- -> partition by Pi reachability into two actionable kinds:
-  --   * reporting_stalled: the Pi is reachable (fresh Tailscale poll, or still
-  --     phoning home via last_seen_at) yet no fresh telemetry -> a
+  -- NEVER REPORTED: provisioned, but no telemetry has EVER landed. The stale
+  -- loop below requires last_sample_at is not null, so these units were
+  -- invisible to alerting entirely — NM1030 (added 2026-08-06) and NM1031
+  -- (added 2026-08-11) sat silent and un-alerted for days. The grace period
+  -- keeps a freshly-added asset quiet while its Pi is still being installed.
+  for r in
+    select a.id, a.name, a.created_at
+    from assets a
+    where a.maintenance = false
+      and a.last_sample_at is null
+      and a.created_at < now() - interval '2 hours'
+  loop
+    if not exists (select 1 from alert_events e
+                   where e.asset_id = r.id and e.kind = 'never_reported' and e.resolved_at is null) then
+      insert into alert_events (asset_id, kind, message)
+      values (r.id, 'never_reported',
+        format('%s has never reported telemetry since it was added on %s — check the collector install on its Pi',
+               r.name, to_char(r.created_at, 'YYYY-MM-DD')));
+    end if;
+  end loop;
+
+  update alert_events e set resolved_at = now()
+  from assets a
+  where e.asset_id = a.id and e.kind = 'never_reported' and e.resolved_at is null
+    and a.last_sample_at is not null;
+
+  -- STALE TELEMETRY (no NEW data within the unit's threshold) -> partition by Pi
+  -- reachability into two actionable kinds:
+  --   * reporting_stalled: the Pi is reachable (fresh Tailscale poll, or it is
+  --     still phoning home via last_seen_at) yet no fresh telemetry -> a
   --     gateway/device/clock fault on an otherwise-up Pi. Covers both the NM1020
-  --     2026-08-13 DNS case and a hung MagMon that stops advancing its log.
+  --     DNS case and a hung MagMon that stops advancing its log.
   --   * offline: no fresh data and the Pi is NOT confirmed reachable -> the unit
-  --     is down / the site network is down.
+  --     or its site network is down.
   -- Exactly one kind is open per stale unit; if reachability flips, the wrong one
-  -- is resolved and the right one opened on the next run. BOTH notify -- only the
-  -- router_offline/tailscale_offline connectivity chips stay informational.
-  -- Reachability requires a FRESH Tailscale poll (status within 15 min) OR a
-  -- fresh last_seen_at, so a stale signal is never trusted.
+  -- is resolved and the right one opened next run.
   for r in
     select a.id, a.name, a.last_sample_at,
       ((a.tailscale_online is true
@@ -1309,7 +1397,70 @@ begin
   where e.asset_id=a.id and e.kind in ('offline','reporting_stalled') and e.resolved_at is null
     and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes);
 
-  -- THRESHOLD / STATE with per-asset override (skip maintenance)
+  -- SENSOR FAULT: a metric that reads blank on EVERY sample for an hour while
+  -- the unit is otherwise reporting normally is a dead or absent sensor, not a
+  -- measurement. Without this, nullify_sentinel() would turn a blind channel
+  -- into a silent one — it would render as an em-dash on the dashboard forever
+  -- and nobody would be told. Windowed on created_at (ingest time), so a device
+  -- with a wrong clock is judged on when we received the sample, not on what it
+  -- stamped. Requires >= 10 samples so a unit that just came up is not judged
+  -- on one reading.
+  for r in
+    with reporting as (
+      select a.id, a.name
+      from assets a
+      where a.maintenance = false
+        and a.last_sample_at is not null
+        and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+    ),
+    chan as (
+      select rp.id as asset_id, rp.name, v.field,
+             count(*) as n, count(v.val) as n_present
+      from reporting rp
+      join telemetry_samples t
+        on t.asset_id = rp.id and t.created_at >= now() - interval '1 hour'
+      cross join lateral (values
+        ('he_lvl', t.he_lvl), ('he_press', t.he_press),
+        ('h2o_flow', t.h2o_flow), ('h2o_temp', t.h2o_temp),
+        ('shield', t.shield), ('cs1', t.cs1)
+      ) as v(field, val)
+      group by rp.id, rp.name, v.field
+    )
+    select asset_id, name, field, n, n_present from chan
+  loop
+    if r.n >= 10 and r.n_present = 0 then
+      if not exists (select 1 from alert_events e
+                     where e.asset_id = r.asset_id and e.kind = 'sensor_fault'
+                       and e.channel = r.field and e.resolved_at is null) then
+        insert into alert_events (asset_id, kind, channel, message)
+        values (r.asset_id, 'sensor_fault', r.field,
+          format('%s %s sensor is not reporting a value — the channel has read blank for the last hour while the unit is otherwise online', r.name, r.field));
+      end if;
+      -- A channel with no reading cannot support a value alarm either way.
+      update alert_events e set resolved_at = now()
+      from alert_rules ar
+      where e.asset_id = r.asset_id and e.kind = 'threshold' and e.resolved_at is null
+        and e.alert_rule_id = ar.id and ar.field = r.field;
+    elsif r.n_present > 0 then
+      update alert_events e set resolved_at = now()
+      where e.asset_id = r.asset_id and e.kind = 'sensor_fault'
+        and e.channel = r.field and e.resolved_at is null;
+    end if;
+  end loop;
+
+  -- Threshold events on a unit whose data has gone stale are resolved. The
+  -- offline / reporting_stalled event already says the unit is not reporting,
+  -- and holding a value alarm against a reading that may be hours old asserts
+  -- something we no longer know. Previously latest_telemetry was joined with no
+  -- freshness test at all, so an offline unit's final reading was re-evaluated
+  -- forever — a unit that went dark mid-breach held that alarm indefinitely.
+  update alert_events e set resolved_at = now()
+  from assets a
+  where e.asset_id = a.id and e.kind = 'threshold' and e.resolved_at is null
+    and (a.last_sample_at is null
+         or a.last_sample_at < now() - make_interval(mins => a.offline_threshold_minutes));
+
+  -- THRESHOLD / STATE with per-asset override (skip maintenance, skip stale)
   for r in
     with effective as (
       select distinct on (a.id, ar.field)
@@ -1317,6 +1468,8 @@ begin
       from assets a
       join alert_rules ar on (ar.asset_id = a.id or ar.asset_id is null)
       where ar.enabled and a.maintenance = false
+        and a.last_sample_at is not null
+        and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
       order by a.id, ar.field, (ar.asset_id is not null) desc
     )
     select e.asset_id, e.name, e.rule_id, e.field, e.comparator, e.threshold,
@@ -1326,6 +1479,10 @@ begin
     from effective e
     join latest_telemetry lt on lt.asset_id = e.asset_id
   loop
+    -- A NULL reading is the ABSENCE of information: it neither opens nor
+    -- resolves. Resolving on null is exactly what made NM1027 flap once the
+    -- sentinel became NULL, and a persistently blank channel is already handled
+    -- by the sensor-fault block above.
     if r.value is null then continue; end if;
     if (r.comparator='<' and r.value<r.threshold) or (r.comparator='<=' and r.value<=r.threshold)
     or (r.comparator='>' and r.value>r.threshold) or (r.comparator='>=' and r.value>=r.threshold)
