@@ -13,7 +13,11 @@ export const SESSION_COOKIE = "nm_session";
 // and clearing one never signs out the other.
 export const DISPLAY_COOKIE = "nm_display";
 
-export type Role = "admin" | "viewer";
+// 'engineer' sits between viewer and admin: may acknowledge and annotate alerts
+// (own a fault, mark it a false alarm, leave a note for the next person), but
+// may not touch companies, users, rules or gateway tokens. Mirrors the
+// org_members role check and _engineer_actor in schema.sql.
+export type Role = "admin" | "engineer" | "viewer";
 
 export type Membership = {
   orgId: string;
@@ -160,6 +164,15 @@ export async function activeOrgId(): Promise<string | null> {
 export async function isAdminHere(): Promise<boolean> {
   const s = await getSession();
   return s?.role === "admin";
+}
+
+// Alert triage: engineers and admins. Admins are deliberately included — an
+// admin who cannot acknowledge an alert would have to grant themselves a lesser
+// role to work the queue, which is absurd. Mirrors _engineer_actor in the DB,
+// which is the boundary that actually enforces this.
+export async function canTriageHere(): Promise<boolean> {
+  const role = (await getSession())?.role;
+  return role === "admin" || role === "engineer";
 }
 
 export type DisplayScope = { orgId: string; label: string };

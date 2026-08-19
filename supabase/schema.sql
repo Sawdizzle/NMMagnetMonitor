@@ -2628,3 +2628,20 @@ $function$;
 --   jobid 8   rollup-telemetry-daily  '30 2 * * *'   (BEFORE the 03:00 raw purge)
 --   jobid 9   cleanup-old-rollups     '45 3 * * *'
 --   jobid 10  evaluate-diagnostics    '*/5 * * * *'
+
+-- --- engineer role reachability (migration allow_engineer_role_in_admin_rpcs)
+-- Three admin RPCs validated the requested role against a hardcoded
+-- ('admin','viewer') whitelist that was STRICTER than the org_members check
+-- constraint. Adding 'engineer' to the constraint was therefore not enough on
+-- its own — the constraint permitted the role while every path that writes the
+-- column refused it, so it would have been unreachable from the UI:
+--   admin_set_role(p_token, p_target_username, p_new_role)
+--   admin_set_membership(p_token, p_target_username, p_org_id, p_role, ...)
+--   admin_create_user(p_token, p_new_username, p_new_pin, p_role)
+-- All three now accept ('admin','engineer','viewer'). The self-demotion guard
+-- in admin_set_role is untouched and still refuses to strip your own admin role.
+--
+-- NB: these three live in the DB under the session-token signature shown above.
+-- The copies earlier in this file still carry the retired
+-- (p_actor_username, p_actor_pin) signature — see the "IN PROGRESS" note at the
+-- top of the admin section; that drift predates this work.

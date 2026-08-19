@@ -73,7 +73,7 @@ const TABS: { id: TabId; label: string; superadminOnly?: boolean }[] = [
 
 type AppUser = {
   username: string;
-  role: "viewer" | "admin";
+  role: "viewer" | "engineer" | "admin";
   tv_access: boolean;
   docs_access: boolean;
   created_at: string;
@@ -190,7 +190,7 @@ function AdminPanel({ me }: { me: Session }) {
 
   const [userName, setUserName] = useState("");
   const [userPin, setUserPin] = useState("");
-  const [userRole, setUserRole] = useState<"viewer" | "admin">("viewer");
+  const [userRole, setUserRole] = useState<"viewer" | "engineer" | "admin">("viewer");
 
   // script
   const [scriptText, setScriptText] = useState<string | null>(null);
@@ -340,8 +340,10 @@ function AdminPanel({ me }: { me: Session }) {
   }
 
 
-  async function handleToggleRole(u: AppUser) {
-    const newRole = u.role === "admin" ? "viewer" : "admin";
+  // Was a two-way toggle ("Make admin" / "Make viewer"), which cannot express
+  // three roles — engineer would have been unreachable from the UI.
+  async function handleSetRole(u: AppUser, newRole: "viewer" | "engineer" | "admin") {
+    if (newRole === u.role) return;
     const { error } = await adminSetRole(u.username, newRole);
     if (error) return fail(actionError("Could not change role", error));
     notify(`${u.username} is now ${newRole}.`);
@@ -832,7 +834,7 @@ function AdminPanel({ me }: { me: Session }) {
             userRole={userRole}
             setUserRole={setUserRole}
             handleAddUser={handleAddUser}
-            handleToggleRole={handleToggleRole}
+            handleSetRole={handleSetRole}
             handleToggleTvAccess={handleToggleTvAccess}
             handleToggleDocsAccess={handleToggleDocsAccess}
             handleResetPin={handleResetPin}
@@ -1695,10 +1697,10 @@ function UsersTab(props: {
   setUserName: (v: string) => void;
   userPin: string;
   setUserPin: (v: string) => void;
-  userRole: "viewer" | "admin";
-  setUserRole: (v: "viewer" | "admin") => void;
+  userRole: "viewer" | "engineer" | "admin";
+  setUserRole: (v: "viewer" | "engineer" | "admin") => void;
   handleAddUser: (e: React.FormEvent) => void;
-  handleToggleRole: (u: AppUser) => void;
+  handleSetRole: (u: AppUser, role: "viewer" | "engineer" | "admin") => void;
   handleToggleTvAccess: (u: AppUser) => void;
   handleToggleDocsAccess: (u: AppUser) => void;
   handleResetPin: (u: AppUser) => void;
@@ -1712,8 +1714,9 @@ function UsersTab(props: {
         </Field>
         <PasswordField label="PIN (min 4 characters)" value={props.userPin} onChange={props.setUserPin} minLength={4} mono />
         <Field label="Role">
-          <select value={props.userRole} onChange={(e) => props.setUserRole(e.target.value as "viewer" | "admin")} className="input">
+          <select value={props.userRole} onChange={(e) => props.setUserRole(e.target.value as "viewer" | "engineer" | "admin")} className="input">
             <option value="viewer">Viewer</option>
+            <option value="engineer">Engineer</option>
             <option value="admin">Admin</option>
           </select>
         </Field>
@@ -1767,9 +1770,17 @@ function UsersTab(props: {
                   Docs
                 </label>
               )}
-              <button onClick={() => props.handleToggleRole(u)} className="btn-secondary">
-                Make {u.role === "admin" ? "viewer" : "admin"}
-              </button>
+              <select
+                value={u.role}
+                onChange={(e) => props.handleSetRole(u, e.target.value as "viewer" | "engineer" | "admin")}
+                className="input"
+                aria-label={`Role for ${u.username}`}
+                title="Engineer can acknowledge and annotate alerts, but cannot change companies, users, rules or tokens."
+              >
+                <option value="viewer">Viewer</option>
+                <option value="engineer">Engineer</option>
+                <option value="admin">Admin</option>
+              </select>
               <button onClick={() => props.handleResetPin(u)} className="btn-secondary">Reset PIN</button>
             </div>
           </div>

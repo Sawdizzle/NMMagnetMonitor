@@ -35,6 +35,18 @@ function liveNavItems(session: Session): NavItem[] {
     icon: <ClipboardIcon />,
     isActive: (p) => p.startsWith("/debrief"),
   });
+  // The alert queue: the triage surface for whoever actually works faults.
+  // Gated on role rather than on a grant flag, because acknowledging an alert
+  // is a write — a viewer may read every one of these on the fleet page, but
+  // may not put their name against one.
+  if (session.role === "admin" || session.role === "engineer") {
+    items.push({
+      href: "/engineer",
+      label: "Queue",
+      icon: <WrenchIcon />,
+      isActive: (p) => p.startsWith("/engineer"),
+    });
+  }
   // TV/Display mode — only for users granted access (admins always qualify).
   if (session.role === "admin" || session.tvAccess) {
     items.push({
@@ -202,6 +214,20 @@ function TvIcon() {
     <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
       <rect x="3" y="4" width="18" height="13" rx="1.8" stroke="currentColor" strokeWidth="1.8" />
       <path d="M8 20h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function WrenchIcon() {
+  return (
+    <svg className="app-tab-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M15.5 6.5a3.5 3.5 0 0 0 4.4 4.4l-8.5 8.5a2.1 2.1 0 0 1-3-3l8.5-8.5a3.5 3.5 0 0 0-1.4-1.4Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

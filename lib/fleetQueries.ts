@@ -26,6 +26,23 @@ const PUBLIC_ASSET_COLUMNS =
 
 const HISTORY_ROW_LIMIT = 5000;
 
+/** One row of the engineer queue: an open alert plus the asset it belongs to. */
+export type OpenAlertRow = {
+  id: number;
+  asset_id: string;
+  assetName: string;
+  kind: string;
+  channel: string | null;
+  severity: "warning" | "critical";
+  message: string;
+  detail: Record<string, unknown> | null;
+  triggered_at: string;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  disposition: "accepted" | "ignored" | "false_alarm" | null;
+  ack_note: string | null;
+};
+
 /**
  * The demo org's id.
  *
@@ -317,4 +334,44 @@ export async function loadAssetAlertsForOrg(
     .limit(limit);
   if (error) return { events: [], error: error.message };
   return { events: (data ?? []) as AlertEvent[], error: null };
+}
+
+/**
+ * Every open alert for one org, newest first, with its asset's name.
+ *
+ * The engineer's queue. Deliberately org-scoped through the asset join rather
+ * than by trusting an id from the caller: alert_events carries no org_id of its
+ * own, so this is the only thing standing between a uuid and another tenant's
+ * fault list.
+ */
+export async function loadOpenAlertsForOrg(orgId: string): Promise<{
+  alerts: OpenAlertRow[];
+  error: string | null;
+}> {
+  const { data: assetRows, error: aErr } = await supabaseAdmin
+    .from("assets")
+    .select("id, name, maintenance")
+    .eq("org_id", orgId);
+  if (aErr) return { alerts: [], error: aErr.message };
+
+  const assets = (assetRows ?? []) as { id: string; name: string; maintenance: boolean }[];
+  if (assets.length === 0) return { alerts: [], error: null };
+  const nameOf = new Map(assets.map((a) => [a.id, a.name]));
+
+  const { data, error } = await supabaseAdmin
+    .from("alert_events")
+    .select(
+      "id, asset_id, kind, channel, severity, message, detail, triggered_at, " +
+        "acknowledged_at, acknowledged_by, disposition, ack_note"
+    )
+    .in("asset_id", assets.map((a) => a.id))
+    .is("resolved_at", null)
+    .order("triggered_at", { ascending: false });
+  if (error) return { alerts: [], error: error.message };
+
+  const rows = (data ?? []) as unknown as (Omit<OpenAlertRow, "assetName"> & { asset_id: string })[];
+  return {
+    alerts: rows.map((r) => ({ ...r, assetName: nameOf.get(r.asset_id) ?? "unknown" })),
+    error: null,
+  };
 }

@@ -11,7 +11,8 @@ import {
   changePinAction,
 } from "./authActions";
 
-export type Role = "admin" | "viewer";
+// Kept in step with lib/session.ts Role — the client mirror of the same union.
+export type Role = "admin" | "engineer" | "viewer";
 
 // The authoritative session is the httpOnly cookie minted by loginAction. This
 // localStorage copy holds NO credential — it exists only so the app can paint
