@@ -63,9 +63,16 @@ export type AlertEvent = {
   alert_rule_id: string | null;
   kind: string;
   message: string;
-  // Which metric a kind='sensor_fault' event refers to; null for every other
-  // kind. One unit can have several blind channels (NM1006 has two).
+  // Which metric a kind='sensor_fault' / 'trend' / 'flatline' / 'bound' event
+  // refers to; null for every other kind. One unit can have several blind
+  // channels (NM1006 has two).
   channel: string | null;
+  severity: "warning" | "critical";
+  // Evidence behind a diagnostic finding; null for threshold/connectivity kinds.
+  detail: Record<string, unknown> | null;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  disposition: "accepted" | "ignored" | "false_alarm" | null;
   triggered_at: string;
   resolved_at: string | null;
   notified_at: string | null;

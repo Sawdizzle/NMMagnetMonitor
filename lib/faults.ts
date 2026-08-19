@@ -177,9 +177,13 @@ export function computeAssetFaults(asset: FleetAsset): Fault[] {
   const cold = coldheadK(asset);
   if (cold !== null) {
     if (cold > th.coldheadCriticalK) {
-      faults.push({ key: "coldhead", label: "Coldhead warm", detail: `${fmt(cold)} K`, severity: "critical" });
+      faults.push({ key: "coldhead", label: "Coldhead hot", detail: `${fmt(cold)} K`, severity: "critical" });
     } else if (cold > th.coldheadWarnK) {
-      faults.push({ key: "coldhead", label: "Coldhead warming", detail: `${fmt(cold, 1)} K`, severity: "warning" });
+      // "warming" claimed a direction this check cannot see: it compares one
+      // reading to a bound. NM1028 sat at a flat 8.94 K for eight days and was
+      // labelled as warming the whole time. Direction is the trend detector's
+      // job (kind='trend'), which reads the daily rollups and says so explicitly.
+      faults.push({ key: "coldhead", label: "Coldhead high", detail: `${fmt(cold, 1)} K`, severity: "warning" });
     }
   }
 
@@ -216,7 +220,7 @@ export function computeAssetFaults(asset: FleetAsset): Fault[] {
 // describes the same condition the local pill already shows, so it is dropped
 // rather than double-pilled; the local version is richer (it has warn/critical
 // tiers, the server has one level).
-const CLIENT_EVALUATED_FIELDS = new Set(["cs1", "he_lvl", "he_press", "shield"]);
+const CLIENT_EVALUATED_FIELDS = new Set(["cs1", "he_lvl", "he_press", "shield", "coldhead"]);
 
 const KNOWN_FIELDS = ["he_lvl", "he_press", "h2o_flow", "h2o_temp", "shield", "cs1"] as const;
 
@@ -262,31 +266,66 @@ function serverFaults(asset: FleetAsset, existing: Fault[]): Fault[] {
   if (!events || events.length === 0) return [];
   const out: Fault[] = [];
   const seen = new Set(existing.map((f) => f.key));
+  const named = (field: string | null, fallback: string) =>
+    field ? (FIELD_LABELS[field] ?? field) : fallback;
 
   for (const e of events) {
-    if (e.kind === "sensor_fault") {
-      const name = e.field ? (FIELD_LABELS[e.field] ?? e.field) : "Sensor";
-      const key = `sensor:${e.field ?? e.id}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      // Amber, not red: the unit is still reporting and may be perfectly
-      // healthy — we simply cannot see this one channel, which is its own
-      // problem but not evidence of a magnet in trouble.
-      out.push({ key, label: `${name} sensor blind`, detail: "no reading", severity: "warning" });
-      continue;
+    // Connectivity kinds never reach here — computeAssetAlarm resolves those
+    // from last_sample_at and returns before faults are computed.
+    let fault: Fault | null = null;
+
+    switch (e.kind) {
+      case "sensor_fault":
+        fault = { key: `sensor:${e.field ?? e.id}`, label: `${named(e.field, "Sensor")} sensor blind`,
+                  detail: "no reading", severity: e.severity };
+        break;
+
+      case "cooling_loss": {
+        // The cross-signal diagnosis: shown as ONE pill naming the cause, with
+        // the flow reading as its evidence, rather than as separate flow and
+        // temperature pills the reader has to correlate themselves.
+        const flow = num(e.detail?.h2o_flow);
+        fault = { key: "cooling", label: "Cooling fault",
+                  detail: flow !== null ? `${fmt(flow, 2)} gpm` : "see alert",
+                  severity: e.severity };
+        break;
+      }
+
+      case "trend": {
+        // Predictive, so the pill leads with the deadline rather than the value:
+        // "12 d to limit" is the actionable half.
+        const days = num(e.detail?.days_to_cross);
+        fault = { key: `trend:${e.field}`, label: `${named(e.field, "Metric")} trending`,
+                  detail: days !== null ? `${fmt(days)} d to limit` : "projected",
+                  severity: e.severity };
+        break;
+      }
+
+      case "flatline": {
+        const v = num(e.detail?.value);
+        fault = { key: `flat:${e.field}`, label: `${named(e.field, "Metric")} flatlined`,
+                  detail: v !== null ? `stuck at ${fmt(v, 2)}` : "not moving",
+                  severity: e.severity };
+        break;
+      }
+
+      case "bound":
+      case "threshold": {
+        if (!e.field || CLIENT_EVALUATED_FIELDS.has(e.field)) continue;
+        const value = num((asset.latest as Record<string, unknown> | null)?.[e.field]);
+        fault = { key: `alert:${e.field}`, label: `${named(e.field, "Metric")} alarm`,
+                  detail: value !== null ? fmt(value, 2) : "no reading",
+                  severity: e.severity };
+        break;
+      }
+
+      default:
+        continue;
     }
-    if (e.kind !== "threshold" || !e.field) continue;
-    if (CLIENT_EVALUATED_FIELDS.has(e.field)) continue;
-    const key = `alert:${e.field}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const value = num((asset.latest as Record<string, unknown> | null)?.[e.field]);
-    out.push({
-      key,
-      label: `${FIELD_LABELS[e.field] ?? e.field} alarm`,
-      detail: value !== null ? fmt(value, 2) : "no reading",
-      severity: "warning",
-    });
+
+    if (!fault || seen.has(fault.key)) continue;
+    seen.add(fault.key);
+    out.push(fault);
   }
   return out;
 }

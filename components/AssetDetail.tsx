@@ -123,6 +123,9 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       message: e.message,
       triggeredAt: e.triggered_at,
       field: e.channel ?? fieldFromMessage(e.message),
+      severity: e.severity === "critical" ? "critical" : "warning",
+      detail: e.detail,
+      acknowledgedBy: e.acknowledged_by,
     }));
   const fleetShape: FleetAsset = { ...asset, latest, history: [], alertRules, openAlerts };
   const alarm = computeAssetAlarm(fleetShape);

@@ -44,6 +44,12 @@ export type FleetAlertEvent = {
   message: string;
   triggeredAt: string;
   field: string | null;
+  severity: "warning" | "critical";
+  /** Structured evidence behind a diagnostic finding (slope, projection, the
+   *  readings a cross-signal diagnosis was drawn from). Null for plain
+   *  threshold and connectivity events. */
+  detail: Record<string, unknown> | null;
+  acknowledgedBy: string | null;
 };
 
 export type FleetAsset = Asset & {

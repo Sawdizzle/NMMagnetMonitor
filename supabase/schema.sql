@@ -2158,3 +2158,473 @@ AS $function$ select value from app_settings where key = 'vapid_public'; $functi
 --   $$);
 -- To remove: select cron.unschedule('evaluate-alerts');  select cron.unschedule('notify-alerts');
 -- pg_net enabled 2026-08-12 via migration enable_pg_net_for_alert_notifier.
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- DIAGNOSTICS  (applied to the live DB 2026-08-19)
+--
+-- Everything below turns the app from a threshold monitor into something that
+-- reasons about the data. The prompt was a fleet health check that found the
+-- two alarm systems disagreeing (see lib/faults.ts) and a phantom alert held
+-- open for a week by a dead sensor.
+--
+-- Migrations, in order:
+--   telemetry_daily_rollups
+--   alert_severity_acknowledgement_engineer_role
+--   acknowledge_alert_session_token_and_disposition
+--   diagnostic_bounds_and_finding_helpers
+--   evaluate_diagnostics
+--   evaluate_diagnostics_numeric_casts
+--   demo_coldhead_jitter_and_unruled_bounds
+--   cooling_loss_null_is_not_recovery
+--   cooling_loss_uses_latest_real_reading
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- --- telemetry_daily: long-horizon history ---------------------------
+-- telemetry_samples is purged after 7 days, which is right for raw minute data
+-- but makes slow degradation structurally invisible: you cannot project six days
+-- out from seven days of history. One aggregated row per asset per channel per
+-- day, kept ~400 days — a few MB against ~55k raw rows for a single week.
+--
+-- Long format (channel as a value, not a column) so the evaluator can iterate
+-- channels generically and a new channel needs no DDL. `coldhead` is included
+-- even though it has no typed column: it lives in the raw blob and is the best
+-- early indicator of a cold-head or compressor problem.
+create table if not exists public.telemetry_daily (
+  asset_id uuid    not null references public.assets(id) on delete cascade,
+  day      date    not null,
+  channel  text    not null,
+  n        integer not null,
+  min_v    numeric,
+  avg_v    numeric,
+  max_v    numeric,
+  primary key (asset_id, day, channel)
+);
+create index if not exists telemetry_daily_asset_channel_day_idx
+  on public.telemetry_daily (asset_id, channel, day);
+alter table public.telemetry_daily enable row level security;
+
+-- --- alert_events: severity, acknowledgement, evidence ----------------
+alter table public.alert_events
+  add column if not exists severity text not null default 'warning'
+    check (severity in ('warning','critical')),
+  add column if not exists acknowledged_at timestamptz,
+  add column if not exists acknowledged_by text,
+  add column if not exists ack_note text,
+  add column if not exists detail jsonb,
+  add column if not exists disposition text
+    check (disposition in ('accepted','ignored','false_alarm'));
+
+-- 'engineer' sits between viewer and admin: may acknowledge and annotate
+-- alerts, may not change companies, users, rules or tokens.
+alter table public.org_members drop constraint if exists org_members_role_check;
+alter table public.org_members add constraint org_members_role_check
+  check (role in ('admin','engineer','viewer'));
+
+-- --- diagnostic_bounds: one copy of the physical envelope -------------
+-- These numbers previously existed twice and disagreed: FAULT_THRESHOLDS in
+-- lib/faults.ts (client, cards + TV) and alert_rules rows (server, email).
+-- Coldhead was only in the first and water only in the second, which is exactly
+-- why NM1028 showed a warm coldhead that emailed nobody while NM1006 emailed
+-- about water with a green card. alert_rules is unchanged and still drives
+-- simple threshold email; this is the envelope a DIAGNOSIS reasons against, and
+-- it covers channels (coldhead) that have no column to write a rule on.
+create table if not exists public.diagnostic_bounds (
+  channel        text primary key,
+  label          text not null,
+  unit           text not null default '',
+  warn_above     numeric,
+  critical_above numeric,
+  warn_below     numeric,
+  critical_below numeric,
+  sane_min       numeric,
+  sane_max       numeric
+);
+insert into public.diagnostic_bounds
+  (channel, label, unit, warn_above, critical_above, warn_below, critical_below, sane_min, sane_max)
+values
+  ('coldhead', 'Coldhead',    'K',    6,    20,   null, null,  0,    400),
+  ('shield',   'Shield',      'K',   60,    80,   null, null,  0,    400),
+  ('h2o_temp', 'Water temp',  '°F',  75,    90,   null, null, -40,   250),
+  ('h2o_flow', 'Water flow',  'gpm', null,  null, 0.6,  0.2,   0,    100),
+  ('he_lvl',   'Helium',      '%',   90,    null, 50,   30,    0,    110),
+  ('he_press', 'He pressure', 'psi',  3,     4.5, 0,    null, -5,     50)
+on conflict (channel) do nothing;
+alter table public.diagnostic_bounds enable row level security;
+
+-- --- rollup + retention ----------------------------------------------
+-- Numeric-looking text only. The raw blob is device-authored and a malformed
+-- coldhead value must yield NULL, not abort the whole night's rollup.
+create or replace function public.safe_numeric(p text)
+returns numeric language sql immutable as $function$
+  select case when p ~ '^\s*-?[0-9]+(\.[0-9]+)?\s*$' then p::numeric else null end;
+$function$;
+
+-- Buckets on recorded_at (true reading time), consistent with
+-- asset_telemetry_15min; the clock-skew net in report_telemetry_batch already
+-- rebases a grossly-wrong device clock before storage. Idempotent upsert over a
+-- trailing window, so re-runs and a late backfill both settle. Scheduled 02:30,
+-- deliberately BEFORE the 03:00 raw purge.
+create or replace function public.rollup_telemetry_daily(p_days integer default 2)
+returns integer language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_rows integer;
+begin
+  insert into telemetry_daily (asset_id, day, channel, n, min_v, avg_v, max_v)
+  select t.asset_id, (t.recorded_at at time zone 'UTC')::date, v.channel,
+         count(v.val), min(v.val), avg(v.val), max(v.val)
+  from telemetry_samples t
+  cross join lateral (values
+    ('he_lvl', t.he_lvl), ('he_press', t.he_press),
+    ('h2o_flow', t.h2o_flow), ('h2o_temp', t.h2o_temp),
+    ('shield', t.shield), ('cs1', t.cs1),
+    ('coldhead', coalesce(safe_numeric(t.data->>'ColdheadRuO'),
+                          safe_numeric(t.data->>'Coldhead'),
+                          safe_numeric(t.data->>'ColdHead')))
+  ) as v(channel, val)
+  where t.recorded_at >= now() - make_interval(days => p_days)
+    and v.val is not null
+  group by 1, 2, 3
+  on conflict (asset_id, day, channel) do update
+    set n = excluded.n, min_v = excluded.min_v,
+        avg_v = excluded.avg_v, max_v = excluded.max_v;
+  get diagnostics v_rows = row_count;
+  return v_rows;
+end;
+$function$;
+
+create or replace function public.cleanup_old_rollups()
+returns void language sql security definer set search_path to 'public'
+as $function$
+  delete from telemetry_daily where day < (now() at time zone 'UTC')::date - 400;
+$function$;
+
+-- --- engineer actor + acknowledgement ---------------------------------
+-- Mirrors _admin_actor but admits 'engineer' as well as 'admin'. Superadmins
+-- resolve to 'admin' in resolve_session, and a disabled org yields a null
+-- active_org there, so a suspended company cannot acknowledge through this.
+create or replace function public._engineer_actor(p_token text)
+returns table(user_id uuid, username text, org_id uuid)
+language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_row record;
+begin
+  select r.user_id, r.username, r.active_org, r.effective_role into v_row
+  from public.resolve_session(p_token) r;
+  if v_row.user_id is null then raise exception 'not authenticated'; end if;
+  if v_row.effective_role is distinct from 'admin'
+     and v_row.effective_role is distinct from 'engineer' then
+    raise exception 'not authorized';
+  end if;
+  if v_row.active_org is null then raise exception 'no active organization'; end if;
+  return query select v_row.user_id, v_row.username, v_row.active_org;
+end;
+$function$;
+
+-- Acknowledge an open alert: "seen, I own this."
+-- Deliberately does NOT resolve or hide the event — the unit is still faulted
+-- and still reads as faulted. What changes is that it stops paging. Escalation
+-- re-arms it (see _upsert_finding), so acking a warning never silences the
+-- critical it later becomes.
+create or replace function public.acknowledge_alert(
+  p_token text, p_event_id bigint,
+  p_disposition text default 'accepted', p_note text default null
+) returns boolean language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_actor record;
+begin
+  select * into v_actor from public._engineer_actor(p_token);
+  if p_disposition is not null
+     and p_disposition not in ('accepted','ignored','false_alarm') then
+    raise exception 'invalid disposition';
+  end if;
+  update alert_events e
+     set acknowledged_at = now(), acknowledged_by = v_actor.username,
+         disposition = coalesce(p_disposition, 'accepted'),
+         ack_note = coalesce(p_note, e.ack_note)
+    from assets a
+   where e.id = p_event_id and e.asset_id = a.id
+     and a.org_id = v_actor.org_id and e.resolved_at is null;
+  return found;
+end;
+$function$;
+
+create or replace function public.unacknowledge_alert(p_token text, p_event_id bigint)
+returns boolean language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_actor record;
+begin
+  select * into v_actor from public._engineer_actor(p_token);
+  update alert_events e
+     set acknowledged_at = null, acknowledged_by = null,
+         disposition = null, ack_note = null
+    from assets a
+   where e.id = p_event_id and e.asset_id = a.id
+     and a.org_id = v_actor.org_id and e.resolved_at is null;
+  return found;
+end;
+$function$;
+
+revoke execute on function public._engineer_actor(text) from anon, authenticated;
+revoke execute on function public.acknowledge_alert(text, bigint, text, text) from anon;
+revoke execute on function public.unacknowledge_alert(text, bigint) from anon;
+grant execute on function public.acknowledge_alert(text, bigint, text, text) to authenticated, service_role;
+grant execute on function public.unacknowledge_alert(text, bigint) to authenticated, service_role;
+
+-- --- finding lifecycle ------------------------------------------------
+-- Opens a finding, or updates the one already open for this (asset, kind,
+-- channel). Escalation is the interesting case: a warning somebody acknowledged
+-- must never silence the critical it turns into, so crossing UP re-arms the
+-- event — clears the ack AND clears notified_at, which is all the existing
+-- notifier needs to pick it up again (it sends anything open, unresolved and
+-- not yet notified). No notifier change required. De-escalation keeps the ack:
+-- someone already owns it and it is improving.
+create or replace function public._upsert_finding(
+  p_asset uuid, p_kind text, p_channel text,
+  p_severity text, p_message text, p_detail jsonb
+) returns void language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_id bigint; v_sev text;
+begin
+  select id, severity into v_id, v_sev
+  from alert_events
+  where asset_id = p_asset and kind = p_kind
+    and channel is not distinct from p_channel and resolved_at is null
+  limit 1;
+
+  if v_id is null then
+    insert into alert_events (asset_id, kind, channel, severity, message, detail)
+    values (p_asset, p_kind, p_channel, p_severity, p_message, p_detail);
+    return;
+  end if;
+
+  if p_severity = 'critical' and v_sev is distinct from 'critical' then
+    update alert_events
+       set severity = 'critical', message = p_message, detail = p_detail,
+           notified_at = null, push_notified_at = null,
+           acknowledged_at = null, acknowledged_by = null, disposition = null
+     where id = v_id;
+  else
+    update alert_events set severity = p_severity, message = p_message, detail = p_detail
+     where id = v_id;
+  end if;
+end;
+$function$;
+
+create or replace function public._resolve_finding(p_asset uuid, p_kind text, p_channel text)
+returns void language sql security definer set search_path to 'public'
+as $function$
+  update alert_events set resolved_at = now()
+   where asset_id = p_asset and kind = p_kind
+     and channel is not distinct from p_channel and resolved_at is null;
+$function$;
+
+-- --- evaluate_diagnostics --------------------------------------------
+-- evaluate_alerts answers "is a value over a line right now". This answers the
+-- questions an engineer actually asks: is it MOVING, is it STUCK, and do several
+-- channels together mean one thing? Writes into alert_events like everything
+-- else, so findings inherit notification, acknowledgement and the fleet card.
+-- Scheduled every 5 minutes.
+create or replace function public.evaluate_diagnostics()
+returns void language plpgsql security definer set search_path to 'public'
+as $function$
+declare
+  r record;
+  v_sev text;
+  v_flow_bad boolean;
+  v_temp_bad boolean;
+  v_cause text;
+begin
+  -- 1. TREND. Least-squares fit over daily averages, projected to the channel's
+  -- critical bound. r2 guards it: a channel that merely wobbles has no
+  -- trustworthy slope, and projecting from noise would page people about
+  -- nothing. Only a fit explaining most of the variance, landing inside a
+  -- three-week horizon, is raised. regr_slope/regr_r2 return double precision
+  -- and are cast to numeric so round(value, digits) resolves.
+  for r in
+    with live as (
+      select a.id, a.name from assets a
+      where a.maintenance = false
+        and a.last_sample_at is not null
+        and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+    ),
+    pts as (
+      select d.asset_id, d.channel, (d.day - date '2020-01-01')::numeric as x,
+             d.avg_v as y, d.day
+      from telemetry_daily d
+      join live l on l.id = d.asset_id
+      where d.day >= (now() at time zone 'UTC')::date - 30 and d.avg_v is not null
+    ),
+    fit as (
+      select p.asset_id, p.channel, count(*) as n,
+             regr_slope(p.y, p.x)::numeric as slope,
+             coalesce(regr_r2(p.y, p.x), 0)::numeric as r2,
+             (array_agg(p.y order by p.day desc))[1] as last_y
+      from pts p group by p.asset_id, p.channel having count(*) >= 4
+    )
+    select l.id as asset_id, l.name, f.channel, f.slope, f.r2, f.last_y, f.n,
+           b.label, b.unit, b.critical_above, b.critical_below,
+           case
+             when b.critical_above is not null and f.slope > 0 and f.last_y < b.critical_above
+               then (b.critical_above - f.last_y) / f.slope
+             when b.critical_below is not null and f.slope < 0 and f.last_y > b.critical_below
+               then (b.critical_below - f.last_y) / f.slope
+           end as days_to_cross,
+           case when f.slope > 0 then b.critical_above else b.critical_below end as target
+    from fit f
+    join live l on l.id = f.asset_id
+    join diagnostic_bounds b on b.channel = f.channel
+  loop
+    if r.days_to_cross is not null and r.days_to_cross > 0
+       and r.days_to_cross <= 21 and r.r2 >= 0.6 then
+      v_sev := case when r.days_to_cross <= 5 then 'critical' else 'warning' end;
+      perform _upsert_finding(r.asset_id, 'trend', r.channel, v_sev,
+        format('%s %s %s %s %s/day — on this trend it reaches %s %s in about %s days',
+               r.name, r.label, case when r.slope > 0 then 'rising' else 'falling' end,
+               abs(round(r.slope, 3)), r.unit, round(r.target, 1), r.unit,
+               round(r.days_to_cross)),
+        jsonb_build_object('slope_per_day', round(r.slope, 4), 'r2', round(r.r2, 3),
+                           'current', round(r.last_y, 3), 'target', r.target,
+                           'days_to_cross', round(r.days_to_cross, 1), 'days_fitted', r.n));
+    else
+      perform _resolve_finding(r.asset_id, 'trend', r.channel);
+    end if;
+  end loop;
+
+  -- 2. COOLING LOSS. The cross-signal one: low flow and hot water are the same
+  -- story told twice, and a warming coldhead alongside them is what turns it
+  -- from a plumbing annoyance into a magnet risk. Raised as ONE finding naming
+  -- the cause rather than three pills the reader must assemble.
+  --
+  -- Each channel resolves to its most recent NON-NULL reading in the last 30
+  -- minutes. Reading straight from latest_telemetry made the diagnosis a coin
+  -- flip on NM1027, whose flow sensor drops out every other sample. A threshold
+  -- may fairly speak only for the current sample; a diagnosis reasons over
+  -- recent evidence.
+  for r in
+    select a.id as asset_id, a.name,
+           (select t.h2o_flow from telemetry_samples t
+             where t.asset_id = a.id and t.h2o_flow is not null
+               and t.created_at >= now() - interval '30 minutes'
+             order by t.recorded_at desc limit 1) as h2o_flow,
+           (select t.h2o_temp from telemetry_samples t
+             where t.asset_id = a.id and t.h2o_temp is not null
+               and t.created_at >= now() - interval '30 minutes'
+             order by t.recorded_at desc limit 1) as h2o_temp,
+           safe_numeric(lt.data->>'ColdheadRuO') as coldhead,
+           (select bb.warn_below from diagnostic_bounds bb where bb.channel='h2o_flow') as flow_warn,
+           (select bb.critical_below from diagnostic_bounds bb where bb.channel='h2o_flow') as flow_crit,
+           (select bb.warn_above from diagnostic_bounds bb where bb.channel='h2o_temp') as temp_warn,
+           (select bb.warn_above from diagnostic_bounds bb where bb.channel='coldhead') as cold_warn,
+           (select min(e.triggered_at) from alert_events e
+             where e.asset_id = a.id and e.kind='cooling_loss' and e.resolved_at is null) as opened_at
+    from assets a
+    join latest_telemetry lt on lt.asset_id = a.id
+    where a.maintenance = false
+      and a.last_sample_at is not null
+      and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+  loop
+    v_flow_bad := r.h2o_flow is not null and r.h2o_flow < r.flow_warn;
+    v_temp_bad := r.h2o_temp is not null and r.h2o_temp > r.temp_warn;
+
+    if v_flow_bad or v_temp_bad then
+      v_cause := case
+        when v_flow_bad and v_temp_bad then 'flow is low and water is running hot'
+        when v_flow_bad then 'cooling water flow is low'
+        else 'cooling water is running hot' end;
+      -- Escalation: hard-low flow, the coldhead joining in, or simple
+      -- persistence past two hours.
+      v_sev := case
+        when (r.h2o_flow is not null and r.flow_crit is not null and r.h2o_flow < r.flow_crit)
+          or (r.coldhead is not null and r.coldhead > r.cold_warn)
+          or (r.opened_at is not null and r.opened_at < now() - interval '2 hours')
+        then 'critical' else 'warning' end;
+      perform _upsert_finding(r.asset_id, 'cooling_loss', null, v_sev,
+        format('%s cooling fault — %s (flow %s gpm, water %s °F, coldhead %s K)%s',
+               r.name, v_cause,
+               coalesce(round(r.h2o_flow, 2)::text, '—'),
+               coalesce(round(r.h2o_temp, 1)::text, '—'),
+               coalesce(round(r.coldhead, 2)::text, '—'),
+               case when r.coldhead is not null and r.coldhead > r.cold_warn
+                    then ' — coldhead is above nominal, treat as urgent' else '' end),
+        jsonb_build_object('h2o_flow', r.h2o_flow, 'h2o_temp', r.h2o_temp,
+                           'coldhead', r.coldhead, 'flow_low', v_flow_bad,
+                           'temp_high', v_temp_bad));
+    elsif r.h2o_flow is not null and r.h2o_temp is not null then
+      -- Only a reading that actually ARRIVED can clear this. If either channel
+      -- is absent we cannot confirm recovery, so the finding is left exactly as
+      -- it stands rather than being cleared by a blink.
+      perform _resolve_finding(r.asset_id, 'cooling_loss', null);
+    end if;
+  end loop;
+
+  -- 3. FLATLINE. A live analog channel jitters; one returning a single value for
+  -- two days is not measuring. Sibling of the sentinel work — there the device
+  -- announced "no sensor" with a fixed placeholder, here it simply stops moving.
+  -- Restricted to channels that MUST vary: cs1 is binary and sits at 0 on every
+  -- healthy unit, and he_lvl is quantised and can legitimately hold for days, so
+  -- both would false-positive forever.
+  for r in
+    select a.id as asset_id, a.name, d.channel, sum(d.n) as n,
+           min(d.min_v) as lo, max(d.max_v) as hi
+    from assets a
+    join telemetry_daily d on d.asset_id = a.id
+    where a.maintenance = false
+      and a.last_sample_at is not null
+      and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+      and d.day >= (now() at time zone 'UTC')::date - 1
+      and d.channel in ('h2o_temp','h2o_flow','he_press','shield','coldhead')
+    group by a.id, a.name, d.channel
+  loop
+    if r.n >= 30 and r.lo = r.hi then
+      perform _upsert_finding(r.asset_id, 'flatline', r.channel, 'warning',
+        format('%s %s has read exactly %s for two days — a live sensor jitters, so this channel is probably not measuring',
+               r.name, (select label from diagnostic_bounds b where b.channel = r.channel),
+               round(r.lo, 3)),
+        jsonb_build_object('value', r.lo, 'samples', r.n));
+    else
+      perform _resolve_finding(r.asset_id, 'flatline', r.channel);
+    end if;
+  end loop;
+
+  -- 4. UNRULED BOUNDS. alert_rules can only target typed telemetry columns, so
+  -- coldhead — raw-blob only, and the earliest indicator of a cold-head or
+  -- compressor problem — had never been evaluated server-side at all. NM1028 sat
+  -- at ~8.9 K for eight days: a pill on the fleet card, and not one notification.
+  for r in
+    select a.id as asset_id, a.name,
+           safe_numeric(lt.data->>'ColdheadRuO') as v,
+           b.label, b.unit, b.warn_above, b.critical_above
+    from assets a
+    join latest_telemetry lt on lt.asset_id = a.id
+    cross join diagnostic_bounds b
+    where b.channel = 'coldhead'
+      and a.maintenance = false
+      and a.last_sample_at is not null
+      and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+  loop
+    if r.v is not null and r.v > r.warn_above then
+      v_sev := case when r.v > r.critical_above then 'critical' else 'warning' end;
+      perform _upsert_finding(r.asset_id, 'bound', 'coldhead', v_sev,
+        format('%s %s at %s %s — nominal is below %s %s',
+               r.name, r.label, round(r.v, 2), r.unit, r.warn_above, r.unit),
+        jsonb_build_object('value', r.v, 'warn_above', r.warn_above,
+                           'critical_above', r.critical_above));
+    else
+      perform _resolve_finding(r.asset_id, 'bound', 'coldhead');
+    end if;
+  end loop;
+end;
+$function$;
+
+-- NOTE: generate_demo_telemetry now jitters ColdheadRuO instead of emitting
+-- demo_asset_specs.coldhead_k as a bare constant. It was the only channel
+-- without a wobble, so the entire demo fleet tripped the new flatline detector.
+-- The detector was right and the data was wrong — a real coldhead jitters
+-- (NM1028 reads 8.86-9.09 around a flat 8.94 mean, which is why it did NOT
+-- trip). See migration demo_coldhead_jitter_and_unruled_bounds.
+
+-- pg_cron jobs added 2026-08-19:
+--   jobid 8   rollup-telemetry-daily  '30 2 * * *'   (BEFORE the 03:00 raw purge)
+--   jobid 9   cleanup-old-rollups     '45 3 * * *'
+--   jobid 10  evaluate-diagnostics    '*/5 * * * *'

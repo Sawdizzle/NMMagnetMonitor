@@ -290,6 +290,14 @@ function kindLabel(kind: string): string {
       return "Threshold";
     case "sensor_fault":
       return "Sensor fault";
+    case "cooling_loss":
+      return "Cooling fault";
+    case "trend":
+      return "Trend";
+    case "flatline":
+      return "Flatlined";
+    case "bound":
+      return "Out of range";
     case "never_reported":
       return "Never reported";
     default:

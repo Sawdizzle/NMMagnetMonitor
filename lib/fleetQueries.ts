@@ -145,7 +145,7 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
     // duplicate pill.
     supabaseAdmin
       .from("alert_events")
-      .select("id, asset_id, kind, channel, message, triggered_at, alert_rules(field)")
+      .select("id, asset_id, kind, channel, severity, message, triggered_at, detail, acknowledged_by, alert_rules(field)")
       .in("asset_id", ids)
       .is("resolved_at", null),
   ]);
@@ -184,8 +184,11 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
     asset_id: string;
     kind: string;
     channel: string | null;
+    severity: string | null;
     message: string;
     triggered_at: string;
+    detail: Record<string, unknown> | null;
+    acknowledged_by: string | null;
     alert_rules: { field: string } | { field: string }[] | null;
   };
   const openByAsset = new Map<string, FleetAlertEvent[]>();
@@ -198,6 +201,9 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
       message: e.message,
       triggeredAt: e.triggered_at,
       field: e.channel ?? rule?.field ?? null,
+      severity: e.severity === "critical" ? "critical" : "warning",
+      detail: e.detail ?? null,
+      acknowledgedBy: e.acknowledged_by ?? null,
     });
     openByAsset.set(e.asset_id, arr);
   }
@@ -305,7 +311,7 @@ export async function loadAssetAlertsForOrg(
 
   const { data, error } = await supabaseAdmin
     .from("alert_events")
-    .select("id, asset_id, alert_rule_id, kind, channel, message, triggered_at, resolved_at, notified_at")
+    .select("id, asset_id, alert_rule_id, kind, channel, severity, message, detail, acknowledged_at, acknowledged_by, disposition, triggered_at, resolved_at, notified_at")
     .eq("asset_id", assetId)
     .order("triggered_at", { ascending: false })
     .limit(limit);
