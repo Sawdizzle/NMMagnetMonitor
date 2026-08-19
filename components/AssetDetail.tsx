@@ -3,10 +3,10 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent, type AlertRule } from "@/lib/supabase";
-import { getDataSource, type FleetAsset } from "@/lib/dataSource";
+import { getDataSource, type FleetAlertEvent, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, NO_TELEMETRY_KINDS, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
-import { computeAssetAlarm } from "@/lib/faults";
+import { computeAssetAlarm, fieldFromMessage } from "@/lib/faults";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -112,7 +112,19 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   // Same value-fault evaluation the fleet card runs, so the pills here match the
   // card exactly (single source of truth in lib/faults). computeAssetFaults only
   // reads latest / latest.data / alertRules — history is unused, so [] is fine.
-  const fleetShape: FleetAsset = { ...asset, latest, history: [], alertRules };
+  // Same shape the fleet card evaluates, so the pills here match it exactly —
+  // including the server-side alerts (water thresholds, blind sensors) that
+  // lib/faults cannot derive from telemetry alone.
+  const openAlerts: FleetAlertEvent[] = alerts
+    .filter((e) => !e.resolved_at)
+    .map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      message: e.message,
+      triggeredAt: e.triggered_at,
+      field: e.channel ?? fieldFromMessage(e.message),
+    }));
+  const fleetShape: FleetAsset = { ...asset, latest, history: [], alertRules, openAlerts };
   const alarm = computeAssetAlarm(fleetShape);
 
   return (

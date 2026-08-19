@@ -23,6 +23,29 @@
 import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
 import type { HeliumPoint } from "./forecast";
 
+/**
+ * An open server-side alert, carried onto the fleet card.
+ *
+ * evaluate_alerts (schema.sql) and lib/faults.ts used to be two disjoint alarm
+ * systems: the server emailed about h2o_flow / h2o_temp / sensor_fault, which
+ * the card could not render, while the card showed a warming coldhead that the
+ * server never emailed about. A unit could therefore be alarming loudly in one
+ * place and look perfectly healthy in the other — NM1006 and NM1027 had open
+ * alerts and clean cards on 2026-08-19. This carries the server's view to the
+ * client so the card can show both.
+ *
+ * `field` is resolved from the event's rule (threshold events) or its channel
+ * (sensor faults) purely so lib/faults can drop anything it already evaluates
+ * itself and avoid double-pilling the same condition.
+ */
+export type FleetAlertEvent = {
+  id: number;
+  kind: string;
+  message: string;
+  triggeredAt: string;
+  field: string | null;
+};
+
 export type FleetAsset = Asset & {
   latest: TelemetrySample | null;
   history: TelemetrySample[];
@@ -30,6 +53,8 @@ export type FleetAsset = Asset & {
   // Fleet-wide defaults (asset_id null) are left to the built-in FAULT_THRESHOLDS
   // / the server evaluator; only overrides ride along here. Empty when none.
   alertRules: AlertRule[];
+  // Currently-open alert_events for this asset (resolved_at is null).
+  openAlerts: FleetAlertEvent[];
 };
 
 export type FleetResult = { assets: FleetAsset[]; error: string | null };

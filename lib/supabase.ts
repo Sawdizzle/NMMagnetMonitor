@@ -63,6 +63,9 @@ export type AlertEvent = {
   alert_rule_id: string | null;
   kind: string;
   message: string;
+  // Which metric a kind='sensor_fault' event refers to; null for every other
+  // kind. One unit can have several blind channels (NM1006 has two).
+  channel: string | null;
   triggered_at: string;
   resolved_at: string | null;
   notified_at: string | null;

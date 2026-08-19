@@ -3,6 +3,7 @@ import "server-only";
 import { supabaseAdmin } from "./supabaseServer";
 import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
 import type {
+  FleetAlertEvent,
   FleetAsset,
   FleetResult,
   AssetDetailResult,
@@ -117,6 +118,7 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
     { data: latest, error: latestErr },
     { data: history, error: historyErr },
     { data: rules, error: rulesErr },
+    { data: openEvents, error: openErr },
   ] = await Promise.all([
     supabaseAdmin.from("latest_telemetry").select("*").in("asset_id", ids),
     supabaseAdmin
@@ -137,12 +139,23 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
       .eq("org_id", orgId)
       .not("asset_id", "is", null)
       .eq("enabled", true),
+    // Open server-side alerts, so the card can show what the notifier already
+    // emailed about. The embedded rule supplies the field name, which is what
+    // lets lib/faults skip conditions it evaluates itself instead of showing a
+    // duplicate pill.
+    supabaseAdmin
+      .from("alert_events")
+      .select("id, asset_id, kind, channel, message, triggered_at, alert_rules(field)")
+      .in("asset_id", ids)
+      .is("resolved_at", null),
   ]);
 
-  if (latestErr || historyErr || rulesErr) {
+  if (latestErr || historyErr || rulesErr || openErr) {
     return {
       assets: [],
-      error: latestErr?.message || historyErr?.message || rulesErr?.message || "Failed to load",
+      error:
+        latestErr?.message || historyErr?.message || rulesErr?.message || openErr?.message ||
+        "Failed to load",
     };
   }
 
@@ -163,11 +176,38 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
     rulesByAsset.set(r.asset_id, arr);
   }
 
+  // PostgREST returns the embedded rule as an object (or null when the event
+  // has no rule, i.e. offline / sensor_fault); `channel` covers the sensor-fault
+  // case, where the metric is on the event itself rather than on a rule.
+  type OpenRow = {
+    id: number;
+    asset_id: string;
+    kind: string;
+    channel: string | null;
+    message: string;
+    triggered_at: string;
+    alert_rules: { field: string } | { field: string }[] | null;
+  };
+  const openByAsset = new Map<string, FleetAlertEvent[]>();
+  for (const e of (openEvents ?? []) as unknown as OpenRow[]) {
+    const rule = Array.isArray(e.alert_rules) ? e.alert_rules[0] : e.alert_rules;
+    const arr = openByAsset.get(e.asset_id) ?? [];
+    arr.push({
+      id: e.id,
+      kind: e.kind,
+      message: e.message,
+      triggeredAt: e.triggered_at,
+      field: e.channel ?? rule?.field ?? null,
+    });
+    openByAsset.set(e.asset_id, arr);
+  }
+
   const fleet: FleetAsset[] = assets.map((a) => ({
     ...a,
     latest: latestByAsset.get(a.id) ?? null,
     history: historyByAsset.get(a.id) ?? [],
     alertRules: rulesByAsset.get(a.id) ?? [],
+    openAlerts: openByAsset.get(a.id) ?? [],
   }));
 
   return { assets: fleet, error: null };
@@ -265,7 +305,7 @@ export async function loadAssetAlertsForOrg(
 
   const { data, error } = await supabaseAdmin
     .from("alert_events")
-    .select("id, asset_id, alert_rule_id, kind, message, triggered_at, resolved_at, notified_at")
+    .select("id, asset_id, alert_rule_id, kind, channel, message, triggered_at, resolved_at, notified_at")
     .eq("asset_id", assetId)
     .order("triggered_at", { ascending: false })
     .limit(limit);
