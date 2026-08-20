@@ -422,6 +422,16 @@ def parse_minutes(raw_html):
 DAT_COL = {
     "Date": 0, "Time": 1, "HeLvl": 3, "H20_Flow": 4, "H2O_Temp": 6, "Shield": 8,
     "ReconRuO": 9, "ReconSi410": 10, "ColdheadRuO": 13, "HePress": 14, "CS1": 21,
+    # The device's four active error codes, severity-ranked (see errors_help.html
+    # on the device, and magmon_error_text() in the schema). Without these an
+    # FTP-sourced sample carried NO error codes at all, so a unit falling back to
+    # FTP went dark to every code-based check and to the asset page's error card
+    # -- measured 2026-08-20 as roughly a third of samples on the units that fall
+    # back. Positions confirmed against stored dat_columns on two units with
+    # DIFFERENT code sets: NM1006 read 002/026/006/008 where its HTTP row read
+    # {2,26,6,8}, and NM1034 read 044/045/047/048 against {44,45,47,48}. 46 of 46
+    # rows matched, none contradicted.
+    "EC1": 30, "EC2": 31, "EC3": 32, "EC4": 33,
 }
 DAT_MIN_COLS      = 22          # a complete data row has at least this many columns
 LITERS_PER_GALLON = 3.785411784 # .dat flow (L/min) -> HTTP flow (gal/min)
@@ -436,6 +446,13 @@ def parse_dat(text):
             continue
         rec = {}
         for key, idx in DAT_COL.items():
+            # A row only has to reach DAT_MIN_COLS (22) to count as complete, but
+            # the EC columns live at 30-33 -- so indexing blindly would raise on a
+            # short-but-valid row. Missing trailing columns read as absent, which
+            # is what they are.
+            if idx >= len(parts):
+                rec[key] = None
+                continue
             rec[key] = parts[idx] if key in ("Date", "Time") else _to_float(parts[idx])
         if not (rec.get("Date") and rec.get("Time") and rec.get("HeLvl") is not None):
             continue
