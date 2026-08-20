@@ -74,7 +74,7 @@ export default function GlobalUsersTab({
     username: string,
     orgId: string,
     orgName: string,
-    role: "admin" | "viewer" | null,
+    role: "admin" | "engineer" | "viewer" | null,
     tvAccess: boolean,
     docsAccess: boolean
   ) {
@@ -254,13 +254,17 @@ export default function GlobalUsersTab({
                   return (
                     <div
                       key={o.orgId}
-                      className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border)] px-3 py-2"
+                      // Stacks on phones: the controls below are shrink-0 at
+                      // sm+, so side-by-side this card had a hard minimum width
+                      // (org name + TV + Docs + role select) that overflowed a
+                      // 375px screen.
+                      className="flex flex-col gap-2 rounded-lg border border-[var(--border)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                     >
                       <span className="text-sm truncate">
                         {o.name}
                         {o.isDemo && <span className="text-[var(--text-dim)]"> (demo)</span>}
                       </span>
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
                         <label className="flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
                           <input
                             type="checkbox"
@@ -321,7 +325,7 @@ export default function GlobalUsersTab({
                               u.username,
                               o.orgId,
                               o.name,
-                              (e.target.value || null) as "admin" | "viewer" | null,
+                              (e.target.value || null) as "admin" | "engineer" | "viewer" | null,
                               g?.tv_access ?? false,
                               g?.docs_access ?? false
                             )
@@ -329,6 +333,7 @@ export default function GlobalUsersTab({
                         >
                           <option value="">No access</option>
                           <option value="viewer">Viewer</option>
+                          <option value="engineer">Engineer</option>
                           <option value="admin">Admin</option>
                         </select>
                       </div>

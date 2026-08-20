@@ -460,7 +460,10 @@ export async function adminCreateUnassignedUser(username: string, pin: string) {
 export async function adminSetMembership(
   username: string,
   orgId: string,
-  role: "admin" | "viewer" | null,
+  // null = revoke the membership entirely. 'engineer' sits between viewer and
+  // admin (see lib/session.ts Role); admin_set_membership validates the same
+  // three server-side.
+  role: "admin" | "engineer" | "viewer" | null,
   tvAccess = false,
   docsAccess = false
 ) {

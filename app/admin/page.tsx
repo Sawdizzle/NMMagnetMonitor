@@ -1725,7 +1725,10 @@ function UsersTab(props: {
 
       <div className="rounded-xl border border-[var(--border-soft)] overflow-hidden">
         {users.map((u) => (
-          <div key={u.username} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0">
+          // Stacks on phones. As one wrapping justify-between row the controls
+          // sprang to both edges with a hole in the middle, and the group could
+          // not shrink below the width of three labelled controls.
+          <div key={u.username} className="flex flex-col gap-2 px-4 py-3 border-b border-[var(--border)] last:border-0 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div>
               <p className="font-medium">{u.username}</p>
               <p className="text-xs text-[var(--text-dim)] capitalize">{u.role}</p>
@@ -1773,7 +1776,7 @@ function UsersTab(props: {
               <select
                 value={u.role}
                 onChange={(e) => props.handleSetRole(u, e.target.value as "viewer" | "engineer" | "admin")}
-                className="input"
+                className="input py-1 text-xs"
                 aria-label={`Role for ${u.username}`}
                 title="Engineer can acknowledge and annotate alerts, but cannot change companies, users, rules or tokens."
               >
