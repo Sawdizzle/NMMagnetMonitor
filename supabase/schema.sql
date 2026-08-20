@@ -2594,6 +2594,13 @@ begin
   for r in
     select a.id as asset_id, a.name,
            safe_numeric(lt.data->>'ColdheadRuO') as v,
+           -- Recondenser sensors, carried purely as CONTEXT on the finding. They
+           -- have no bound of their own: nobody here knows what recondenser
+           -- temperature counts as bad, so inventing one would be guessing.
+           -- Reporting the numbers is not, and it changes how the same alert
+           -- reads — NM1028 sits at 8.9 K with its recondenser at 4.2 / 3.5 K.
+           safe_numeric(lt.data->>'ReconRuO') as recon_ruo,
+           safe_numeric(lt.data->>'ReconSi410') as recon_si,
            b.label, b.unit, b.warn_above, b.critical_above
     from assets a
     join latest_telemetry lt on lt.asset_id = a.id
@@ -2606,10 +2613,17 @@ begin
     if r.v is not null and r.v > r.warn_above then
       v_sev := case when r.v > r.critical_above then 'critical' else 'warning' end;
       perform _upsert_finding(r.asset_id, 'bound', 'coldhead', v_sev,
-        format('%s %s at %s %s — nominal is below %s %s',
-               r.name, r.label, round(r.v, 2), r.unit, r.warn_above, r.unit),
+        -- The clause is omitted entirely when neither sensor reported, rather
+        -- than rendering "reads — / —", which says nothing and reads like a bug.
+        format('%s %s at %s %s — nominal is below %s %s%s',
+               r.name, r.label, round(r.v, 2), r.unit, r.warn_above, r.unit,
+               case when r.recon_ruo is null and r.recon_si is null then ''
+                    else format(' (recondenser reads %s / %s K)',
+                                coalesce(round(r.recon_ruo, 2)::text, '—'),
+                                coalesce(round(r.recon_si, 2)::text, '—')) end),
         jsonb_build_object('value', r.v, 'warn_above', r.warn_above,
-                           'critical_above', r.critical_above));
+                           'critical_above', r.critical_above,
+                           'recon_ruo', r.recon_ruo, 'recon_si', r.recon_si));
     else
       perform _resolve_finding(r.asset_id, 'bound', 'coldhead');
     end if;
