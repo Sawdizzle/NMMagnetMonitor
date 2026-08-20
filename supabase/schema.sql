@@ -319,6 +319,18 @@ create table if not exists public.assets (
   -- the Pi lets /docs print a tunnel that can only land on one unit.
   -- Applied 2026-08-20 (migration assets_tailscale_hostname).
   tailscale_hostname         text,
+  -- Which collector build this unit is actually RUNNING, self-reported by the
+  -- script on every cycle (COLLECTOR_VERSION in lib/piScript.ts, baked into the
+  -- generated file and carried on every sample by row_to_sample).
+  --
+  -- We had no way to ask this. NM1035 was found running a months-old pre-batch
+  -- collector only because somebody noticed its recorded_at carried sub-second
+  -- precision instead of being minute-truncated -- luck, not monitoring, across
+  -- 14 collectors on 10 hosts. NULL means it has not reported a version at all,
+  -- which itself says the script predates versioning (2026-08-20).
+  -- Applied 2026-08-20 (migration assets_collector_version).
+  collector_version          text,
+  collector_version_at       timestamptz,
   -- Owning tenant. Every unit belongs to exactly one company, so this is NOT
   -- NULL; the default keeps pre-Phase-3 RPCs (which don't pass it) working.
   -- Applied 2026-08-17 (multi_tenant_phase0_orgs_and_backfill).
@@ -1097,7 +1109,16 @@ begin
   end if;
 
   if v_last_seen is null or v_last_seen < now() - interval '10 seconds' then
-    update assets set last_seen_at = now(), status = 'online' where id = v_asset_id;
+    -- collector_version rides beside the LIVENESS stamp, not the data stamp: it is
+  -- a property of the script phoning home, so a unit whose device has gone quiet
+  -- still reports which code it runs -- exactly when you want to know. coalesce
+  -- keeps a known version rather than blanking it, so an older collector that
+  -- does not send the field cannot erase what a newer one told us.
+  update assets set last_seen_at = now(), status = 'online',
+         collector_version = coalesce(p_raw->>'collector_version', collector_version),
+         collector_version_at = case when p_raw->>'collector_version' is not null
+                                     then now() else collector_version_at end
+   where id = v_asset_id;
   end if;
 
   -- Clock-skew safety net (see report_telemetry_batch): a grossly-wrong device
@@ -1160,7 +1181,16 @@ begin
   -- Liveness stamp uses ingest wall-clock (now()), never the reading time, so a
   -- backfill of delayed rows can never make a unit look more recently seen than
   -- it is. Mirrors the single-row report_telemetry.
-  update assets set last_seen_at = now(), status = 'online' where id = v_asset_id;
+  -- collector_version rides beside the LIVENESS stamp, not the data stamp: it is
+  -- a property of the script phoning home, so a unit whose device has gone quiet
+  -- still reports which code it runs -- exactly when you want to know. coalesce
+  -- keeps a known version rather than blanking it, so an older collector that
+  -- does not send the field cannot erase what a newer one told us.
+  update assets set last_seen_at = now(), status = 'online',
+         collector_version = coalesce(p_samples->0->>'collector_version', collector_version),
+         collector_version_at = case when p_samples->0->>'collector_version' is not null
+                                     then now() else collector_version_at end
+   where id = v_asset_id;
 
   -- Clock-skew safety net: rebase the whole batch by offset = now() - newest when
   -- the newest reading is grossly skewed (> 2 days) — a Pi still on the

@@ -32,6 +32,7 @@ const PARTS: { part: string; blurb: string; sections: { id: string; label: strin
       { id: "tailscale", label: "Tailscale setup" },
       { id: "tailscale-ssh", label: "SSH over Tailscale" },
       { id: "reach-magmon", label: "Open a unit's MagMon" },
+      { id: "replace-script", label: "Replace a collector script" },
       { id: "pi-server", label: "The shared Pi server" },
     ],
   },
@@ -459,6 +460,102 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
                 tailscale status --json | jq -r &apos;.Peer[] | select(.PrimaryRoutes) | &quot;\(.HostName)\t\(.PrimaryRoutes | join(&quot;,&quot;))&quot;&apos;
               </code>
             </P>
+          </Section>
+
+          {/* ---------------- Replacing a collector script ---------------- */}
+          <Section id="replace-script" title="Replace a collector script on a running Pi">
+            <P>
+              Every collector is generated per asset with its own token and MagMon
+              credentials baked in, so a change to the collector code has to be rebuilt and
+              placed on each host. There are 14 collectors across 10 hosts — nine units with
+              their own Pi, and five sharing the Pi server — so work down the list rather
+              than trusting memory. The <b>collector version</b> shown against each asset in
+              Admin tells you which are still behind.
+            </P>
+            <P>
+              This is a <b>script swap and a restart</b>, not a reinstall. The systemd unit
+              rarely changes, so there is normally no <code className="doc-code">daemon-reload</code>{" "}
+              and no re-enable. Do the units in maintenance first and live hospital sites last.
+            </P>
+
+            <ol className="doc-ol">
+              <li>
+                In <b>Admin → Assets</b>, click <b>Get install script</b> on the asset, then{" "}
+                <b>Download script</b>. It lands in <code className="doc-code">~/Downloads</code>{" "}
+                as <code className="doc-code">{infra.servicePrefix}-&lt;ASSET&gt;.py</code>.
+              </li>
+              <li>Copy it to the host&rsquo;s home directory (one password prompt).</li>
+              <li>
+                Back up the running script, install the new one over it, and restart the
+                service. The <code className="doc-code">cp -n</code> will not clobber an
+                existing backup, so a second run in the same session still leaves you a way back.
+              </li>
+              <li>
+                Verify three things: the service is <code className="doc-code">active</code>,
+                the journal shows the new version at startup, and within a few minutes the
+                asset&rsquo;s collector version in Admin matches.
+              </li>
+            </ol>
+
+            <P>Copy up, then install and restart:</P>
+            <CodeBlock
+              code={`scp ~/Downloads/${infra.servicePrefix}-<ASSET>.py <user>@<pi-host>:/home/<user>/
+
+ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBase}-<ASSET>.py.bak; \\
+  sudo install -o <user> -g "$(id -gn <user>)" -m 700 \\
+    /home/<user>/${infra.servicePrefix}-<ASSET>.py ${infra.scriptBase}-<ASSET>.py && \\
+  sudo systemctl restart ${infra.servicePrefix}-<ASSET> && sleep 20 && \\
+  systemctl is-active ${infra.servicePrefix}-<ASSET> && \\
+  journalctl -u ${infra.servicePrefix}-<ASSET> -n 5 --no-pager'`}
+            />
+            <P>
+              A healthy result is <code className="doc-code">active</code> followed by a
+              startup line carrying the version, e.g.{" "}
+              <code className="doc-code">starting for asset &lsquo;NM1035&rsquo; v2026.08.20-1</code>.
+              Restarting makes the collector run a cycle immediately, so one extra reading
+              lands out of step with the five-minute rhythm — that is the restart, not a fault.
+            </P>
+
+            <P>If it misbehaves, roll back to the script that was running a moment ago:</P>
+            <CodeBlock
+              code={`ssh <user>@<pi-host> 'sudo cp ${infra.scriptBase}-<ASSET>.py.bak ${infra.scriptBase}-<ASSET>.py && \\
+  sudo systemctl restart ${infra.servicePrefix}-<ASSET>'`}
+            />
+
+            {infra.unitAccess.length > 0 && (
+              <>
+                <P>
+                  The <code className="doc-code">&lt;user&gt;@&lt;pi-host&gt;</code> for each unit.
+                  Units with no Tailscale node of their own run on the shared Pi server — use
+                  its address for those.
+                </P>
+                <div className="overflow-x-auto">
+                  <table className="cheat-table my-1">
+                    <tbody>
+                      {infra.unitAccess.map((u) => (
+                        <tr key={u.name}>
+                          <td className="desc">
+                            {u.name}
+                            {u.site && (
+                              <span className="block text-[10px] text-[var(--text-dim)]">{u.site}</span>
+                            )}
+                          </td>
+                          <td className="cmd">
+                            {u.piHost ? (
+                              `${u.piUser}@${u.piHost}`
+                            ) : (
+                              <span className="text-[var(--text-dim)]">
+                                {u.piUser}@{infra.serverTailscaleIp} (shared Pi server — confirm before deploying)
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </Section>
 
           {/* ---------------- Pi server ---------------- */}

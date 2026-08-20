@@ -1,3 +1,22 @@
+/**
+ * The version stamp baked into every generated collector.
+ *
+ * BUMP THIS whenever generatePiScript's output changes in a way that matters on
+ * a Pi. It is what lets the fleet answer "which units are running old code?" --
+ * a question we could not answer at all before, and paid for: NM1035 was found
+ * to be running a months-old pre-batch collector only because someone noticed
+ * its recorded_at had sub-second precision instead of being minute-truncated.
+ * That is luck, not monitoring.
+ *
+ * Deliberately a hand-maintained constant rather than a hash of the output --
+ * the output differs per asset (tokens, host, credentials are baked in), so a
+ * content hash would give every unit a different "version" and compare to
+ * nothing.
+ *
+ * Format: YYYY.MM.DD-N, N being the nth change that day.
+ */
+export const COLLECTOR_VERSION = "2026.08.20-1";
+
 export function generatePiScript(opts: {
   assetName: string;
   gatewayToken: string;
@@ -120,6 +139,11 @@ import ftplib
 import datetime
 import traceback
 import requests
+
+# Version of the GENERATOR that produced this file, reported on every cycle so
+# the fleet can show which units are running old code. Not edited by hand here --
+# it comes from COLLECTOR_VERSION in lib/piScript.ts.
+COLLECTOR_VERSION = "${COLLECTOR_VERSION}"
 
 # --- Fixed per-asset config (do not edit unless re-issued by admin) ---
 GATEWAY_TOKEN     = "${gatewayToken}"
@@ -563,6 +587,10 @@ def row_to_sample(row, recorded_at_iso):
     s["h2o_temp"] = row.get("H2O_Temp")
     s["shield"]   = row.get("Shield")
     s["cs1"]      = row.get("CS1")
+    # Rides along on every sample: report_telemetry_batch reads it off the first
+    # element to stamp assets.collector_version. Costs one short string per
+    # sample and needs no extra request or endpoint.
+    s["collector_version"] = COLLECTOR_VERSION
     return s
 
 def build_samples(rows, hwm):
@@ -729,7 +757,7 @@ def main():
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    print(f"[nm-magmon-gateway] starting for asset '${assetName}' @ {MAGMON_HOST}:{MAGMON_PORT}, polling every ${intervalMinutes} min")
+    print(f"[nm-magmon-gateway] starting for asset '${assetName}' v{COLLECTOR_VERSION} @ {MAGMON_HOST}:{MAGMON_PORT}, polling every ${intervalMinutes} min")
 
     if not acquire_singleton_lock():
         sys.exit(0)  # Not an error: the other copy is already doing the work.

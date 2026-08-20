@@ -23,7 +23,10 @@ import type { UnitAccess } from "./docsInfra";
 const PUBLIC_ASSET_COLUMNS =
   "id, name, site_name, site_address, offline_threshold_minutes, status, " +
   "last_seen_at, last_sample_at, created_at, service_user, maintenance, " +
-  "router_online, router_status_at, tailscale_online, tailscale_status_at";
+  "router_online, router_status_at, tailscale_online, tailscale_status_at, " +
+  // Which collector build each unit is running, self-reported. Safe to expose:
+  // it is a date string, and knowing a unit is behind is the point of having it.
+  "collector_version, collector_version_at";
 
 const HISTORY_ROW_LIMIT = 5000;
 

@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { supabase, type Asset } from "@/lib/supabase";
-import { generatePiScript, generateSystemdUnit } from "@/lib/piScript";
+import { generatePiScript, generateSystemdUnit, COLLECTOR_VERSION } from "@/lib/piScript";
 import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
 import { NO_TELEMETRY_KINDS } from "@/lib/health";
@@ -1043,6 +1043,7 @@ function AssetsTab(props: {
                         {a.site_address?.trim() && (
                           <p className="text-xs text-[var(--text-dim)]">{a.site_address}</p>
                         )}
+                        <CollectorVersion asset={a} />
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button
@@ -1959,6 +1960,42 @@ function formatAuditTime(iso: string): string {
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
   if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
   return new Date(iso).toLocaleDateString();
+}
+
+/**
+ * Which collector build this unit is actually running.
+ *
+ * The whole point is drift: with 14 collectors across 10 hosts, a code change is
+ * only as good as the slowest Pi to receive it, and until now nothing recorded
+ * which build each was on. NM1035 sat on a months-old pre-batch collector and it
+ * was spotted by accident, from the SHAPE of its timestamps.
+ *
+ * Three states, deliberately distinct:
+ *   up to date  - reported version equals what the generator produces now
+ *   behind      - reported something older; the script needs redeploying
+ *   unknown     - never reported a version at all, which means the script
+ *                 predates versioning entirely. Not the same as "fine".
+ */
+function CollectorVersion({ asset }: { asset: Asset }) {
+  const current = COLLECTOR_VERSION;
+  const reported = asset.collector_version ?? null;
+  const state = reported === null ? "unknown" : reported === current ? "ok" : "behind";
+  if (state === "ok") {
+    return (
+      <p className="text-[10px] text-[var(--text-dim)] font-mono-data mt-0.5">collector {reported}</p>
+    );
+  }
+  const color = state === "behind" ? "#fbbf24" : "var(--text-dim)";
+  return (
+    <p className="text-[10px] mt-0.5 font-mono-data" style={{ color }}>
+      collector {reported ?? "version unknown"}
+      <span className="ml-1.5 font-sans">
+        {state === "behind"
+          ? `— behind, current is ${current}`
+          : `— predates version reporting; redeploy to find out`}
+      </span>
+    </p>
+  );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

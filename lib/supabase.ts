@@ -38,6 +38,11 @@ export type Asset = {
   router_status_at?: string | null;
   tailscale_online?: boolean | null;
   tailscale_status_at?: string | null;
+  // COLLECTOR_VERSION reported by the script running on this unit's host, and
+  // when it last said so. null = has not reported since versioning shipped,
+  // which itself means the script predates it. See lib/piScript.
+  collector_version?: string | null;
+  collector_version_at?: string | null;
 };
 
 export type TelemetrySample = {
