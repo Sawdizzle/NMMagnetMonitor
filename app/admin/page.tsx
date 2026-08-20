@@ -19,6 +19,8 @@ import {
   adminDeleteAsset,
   adminGetAssetConfig,
   adminSetAssetMaintenance,
+  adminListSiteGeocodes,
+  type SiteGeocodeRow,
   adminRotateGatewayToken,
   adminListUsers,
   adminCreateUser,
@@ -45,6 +47,8 @@ import { getSessionAction } from "@/lib/authActions";
 import GlobalUsersTab from "@/components/GlobalUsersTab";
 import CompaniesTab from "@/components/CompaniesTab";
 import DisplaysSection from "@/components/DisplaysSection";
+import SiteLocationRow from "@/components/SiteLocationRow";
+import { addressKey } from "@/lib/weatherFormat";
 
 const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
   { key: "he_lvl", label: "Helium level", unit: "%" },
@@ -132,6 +136,8 @@ function AdminPanel({ me }: { me: Session }) {
   const [activeTab, setActiveTab] = useState<TabId>("assets");
 
   const [assets, setAssets] = useState<Asset[]>([]);
+  // Resolved map position per asset, for the location line under each unit.
+  const [geocodes, setGeocodes] = useState<Record<string, SiteGeocodeRow>>({});
   const [users, setUsers] = useState<AppUser[]>([]);
   // Not on the client Session type — read from the server session, which is the
   // only authority on it.
@@ -229,7 +235,7 @@ function AdminPanel({ me }: { me: Session }) {
   }, []);
 
   const load = useCallback(async () => {
-    const [assetRes, { data: userRows }, { data: ruleRows }] = await Promise.all([
+    const [assetRes, { data: userRows }, { data: ruleRows }, { data: geocodeRows }] = await Promise.all([
       // Org-scoped through our own API rather than a direct public_assets read:
       // the anon client can no longer see the table, and this list must show
       // only the active org's units. See lib/fleetQueries.ts.
@@ -238,10 +244,12 @@ function AdminPanel({ me }: { me: Session }) {
         .catch(() => ({ assets: [] })),
       adminListUsers(),
       adminListAlertRules(),
+      adminListSiteGeocodes(),
     ]);
     setAssets(assetRes?.assets ?? []);
     setUsers((userRows as AppUser[]) ?? []);
     setAlertRules((ruleRows as AlertRule[]) ?? []);
+    setGeocodes(Object.fromEntries((geocodeRows ?? []).map((g) => [g.asset_id, g])));
     loadAuditLog();
   }, [loadAuditLog]);
 
@@ -721,6 +729,8 @@ function AdminPanel({ me }: { me: Session }) {
       {activeTab === "assets" && (
         <AssetsTab
           assets={assets}
+          geocodes={geocodes}
+          reloadGeocodes={load}
           assetGroups={assetGroups}
           assetSearch={assetSearch}
           setAssetSearch={handleAssetSearchChange}
@@ -882,8 +892,23 @@ function AdminPanel({ me }: { me: Session }) {
 
 /* ---------------------------------------------------------------- Assets tab */
 
+/**
+ * How many OTHER units sit at the same street address.
+ *
+ * Coordinates are stored per address, so pinning one unit moves its neighbours
+ * too — five of Numed's units share the Denton service centre. The editor says
+ * so before you save rather than after.
+ */
+function sharingAddress(assets: Asset[], asset: Asset): number {
+  const key = addressKey(asset.site_address ?? "");
+  if (!key) return 0;
+  return assets.filter((a) => a.id !== asset.id && addressKey(a.site_address ?? "") === key).length;
+}
+
 function AssetsTab(props: {
   assets: Asset[];
+  geocodes: Record<string, SiteGeocodeRow>;
+  reloadGeocodes: () => void;
   assetGroups: [string, Asset[]][];
   assetSearch: string;
   setAssetSearch: (v: string) => void;
@@ -1043,6 +1068,13 @@ function AssetsTab(props: {
                         {a.site_address?.trim() && (
                           <p className="text-xs text-[var(--text-dim)]">{a.site_address}</p>
                         )}
+                        <SiteLocationRow
+                          assetId={a.id}
+                          address={a.site_address}
+                          geocode={props.geocodes[a.id]}
+                          siblingCount={sharingAddress(assets, a)}
+                          onChanged={props.reloadGeocodes}
+                        />
                         <CollectorVersion asset={a} />
                       </div>
                       <div className="flex flex-wrap gap-2">

@@ -44,3 +44,13 @@ export type SiteWeather = {
 
 /** Keyed by asset id. An asset with no resolvable location is simply absent. */
 export type WeatherResult = { weather: Record<string, SiteWeather>; error: string | null };
+
+/** One outside-temperature reading, for the ambient trace on a 24h chart. */
+export type AmbientPoint = { t: string; tempF: number };
+
+export type AmbientResult = {
+  points: AmbientPoint[];
+  /** Which station the trace came from, for the chart's footnote. */
+  station: string | null;
+  error: string | null;
+};

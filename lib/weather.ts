@@ -1,10 +1,10 @@
 import "server-only";
 
 import { supabaseAdmin } from "./supabaseServer";
-import type { SiteWeather, WeatherIconKey, WeatherResult } from "./weatherTypes";
+import type { AmbientPoint, AmbientResult, SiteWeather, WeatherIconKey, WeatherResult } from "./weatherTypes";
 import { addressKey, cToF, compass, iconKey, kmhToMph, parseWindSpeed, round } from "./weatherFormat";
 
-export type { SiteWeather, WeatherIconKey, WeatherResult };
+export type { AmbientPoint, AmbientResult, SiteWeather, WeatherIconKey, WeatherResult };
 export { addressKey } from "./weatherFormat";
 
 // Outside weather at each site, for the dashboard cards and the asset page.
@@ -50,6 +50,10 @@ const UPSTREAM_TIMEOUT_MS = 6000;
 // Five covers a metro grid comfortably; past that the stations are far enough
 // away that the gridded analysis at the site is the better answer anyway.
 const MAX_STATIONS = 5;
+// NWS caps an observations query at 500 rows, and the busiest stations report
+// every five minutes (~288/day). 24 hours is the largest window that cannot be
+// silently clipped, and it is exactly the window the asset page charts.
+const AMBIENT_MAX_HOURS = 24;
 
 
 // ---- upstream fetch -------------------------------------------------------
@@ -236,6 +240,17 @@ async function fetchWeather(coords: Coords): Promise<SiteWeather | null> {
   return fetchGridHour(point.properties.forecastHourly, place);
 }
 
+/** The nearby stations, nearest first. Shared by current conditions and the
+ *  ambient history so both end up quoting the same thermometer. */
+async function nearbyStations(stationsUrl: string | undefined): Promise<string[]> {
+  if (!stationsUrl) return [];
+  const stations = await getJson<StationsResponse>(stationsUrl, GEOGRAPHY_TTL_S);
+  return (stations?.features ?? [])
+    .map((f) => f.properties?.stationIdentifier)
+    .filter((id): id is string => !!id)
+    .slice(0, MAX_STATIONS);
+}
+
 /** First nearby station carrying BOTH a temperature and a sky description.
  *  Half-populated stations are skipped rather than blended: a measured
  *  temperature under someone else's cloud cover is worse than neither. */
@@ -243,13 +258,7 @@ async function fetchObservation(
   stationsUrl: string | undefined,
   place: string | null
 ): Promise<SiteWeather | null> {
-  if (!stationsUrl) return null;
-
-  const stations = await getJson<StationsResponse>(stationsUrl, GEOGRAPHY_TTL_S);
-  const ids = (stations?.features ?? [])
-    .map((f) => f.properties?.stationIdentifier)
-    .filter((id): id is string => !!id)
-    .slice(0, MAX_STATIONS);
+  const ids = await nearbyStations(stationsUrl);
 
   for (const id of ids) {
     const obs = await getJson<ObservationResponse>(
@@ -314,6 +323,67 @@ async function fetchGridHour(
   };
 }
 
+type ObservationsResponse = {
+  features?: { properties?: { timestamp?: string; temperature?: Quantity } }[];
+};
+
+/**
+ * Outside temperature over the last `hours`, for the ambient trace behind the
+ * water-temperature chart.
+ *
+ * NWS serves observation HISTORY, not just the latest reading, so this needs no
+ * stored weather of its own. The catch is a hard 500-row cap per request: a
+ * five-minute station like KDTO emits ~300 rows a day, so 24 hours fits and
+ * much more than that would silently truncate from the far end. Hence the
+ * clamp in AMBIENT_MAX_HOURS rather than an `hours` the caller picks freely.
+ */
+async function fetchAmbientSeries(coords: Coords, hours: number): Promise<AmbientResult> {
+  const point = await getJson<PointsResponse>(
+    `${NWS_BASE}/points/${round4(coords.latitude)},${round4(coords.longitude)}`,
+    GEOGRAPHY_TTL_S
+  );
+  const stationsUrl = point?.properties?.observationStations;
+  const nearby = await nearbyStations(stationsUrl);
+  if (nearby.length === 0) return { points: [], station: null, error: null };
+
+  // Try the panel's station FIRST. The two walks apply different tests — the
+  // panel insists on a sky description it can draw, the trace only needs
+  // temperatures — so left alone they can settle on different thermometers and
+  // the page would show "93F at KMGM" above a line drawn from KALX. Resolving
+  // the panel's choice here is close to free: the weather route has already
+  // fetched these exact URLs, so they come from the data cache.
+  const panel = await fetchObservation(stationsUrl, null);
+  const ids = panel?.station
+    ? [panel.station, ...nearby.filter((id) => id !== panel.station)]
+    : nearby;
+
+  const end = new Date();
+  const start = new Date(end.getTime() - hours * 3600_000);
+
+  // Falling back down the list matters for the same reason it does above: the
+  // nearest station is often a RAWS site that publishes no temperature at all.
+  for (const id of ids) {
+    const body = await getJson<ObservationsResponse>(
+      `${NWS_BASE}/stations/${encodeURIComponent(id)}/observations` +
+        `?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`,
+      OBSERVATION_TTL_S
+    );
+    const points: AmbientPoint[] = [];
+    for (const f of body?.features ?? []) {
+      const t = f.properties?.timestamp;
+      const c = f.properties?.temperature?.value ?? null;
+      const tempF = cToF(c);
+      if (t && tempF !== null) points.push({ t, tempF });
+    }
+    // NWS returns newest-first; charts want oldest-first.
+    if (points.length > 0) {
+      points.sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+      return { points, station: id, error: null };
+    }
+  }
+  return { points: [], station: null, error: null };
+}
+
 // ---- the org-scoped entry point -------------------------------------------
 
 type SiteRow = { id: string; site_address: string | null };
@@ -357,4 +427,28 @@ export async function loadWeatherForOrg(orgId: string): Promise<WeatherResult> {
   );
 
   return { weather, error: null };
+}
+
+/**
+ * Outside-temperature history for ONE asset, org-scoped by the caller.
+ *
+ * Separate from loadWeatherForOrg because it is a per-asset, per-page read:
+ * the fleet needs one current reading each, an open asset page needs a day of
+ * history for exactly one site.
+ */
+export async function loadAmbientForAsset(assetId: string, hours: number): Promise<AmbientResult> {
+  const { data, error } = await supabaseAdmin
+    .from("assets")
+    .select("site_address")
+    .eq("id", assetId)
+    .maybeSingle();
+  if (error) return { points: [], station: null, error: error.message };
+
+  const address = (data as { site_address: string | null } | null)?.site_address?.trim();
+  if (!address) return { points: [], station: null, error: null };
+
+  const coords = (await resolveCoords([address])).get(addressKey(address));
+  if (!coords) return { points: [], station: null, error: null };
+
+  return fetchAmbientSeries(coords, Math.min(Math.max(1, hours), AMBIENT_MAX_HOURS));
 }

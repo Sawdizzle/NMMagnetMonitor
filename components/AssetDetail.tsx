@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent, type AlertRule } from "@/lib/supabase";
 import { getDataSource, type FleetAlertEvent, type FleetAsset } from "@/lib/dataSource";
@@ -17,6 +17,8 @@ import {
 } from "@/lib/sentinel";
 import { activeErrorCodes, errorText, compressorStatusText, COMMON_CODES } from "@/lib/magmonCodes";
 import { useWeather } from "@/lib/useWeather";
+import { useAmbient } from "@/lib/useAmbient";
+import { alignAmbient } from "@/lib/ambientAlign";
 import FieldRing from "@/components/FieldRing";
 import { WeatherChip, WeatherPanel } from "@/components/SiteWeather";
 import MetricLineChart from "@/components/MetricLineChart";
@@ -78,6 +80,15 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   // call the dashboard makes, so navigating here is usually a cache hit) and we
   // pick out this asset's entry.
   const weather = useWeather(demo)[assetId] ?? null;
+
+  // Outside temperature over the same 24h the charts cover, so the water trend
+  // can be read against the weather that drove it. Only the water-temperature
+  // chart uses it — the other five channels have nothing to do with the sky.
+  const ambient = useAmbient(assetId, demo, HISTORY_HOURS);
+  const ambientByBucket = useMemo(
+    () => alignAmbient(buckets.map((b) => b.created_at), ambient.points),
+    [buckets, ambient.points]
+  );
 
   // Helium boil-off forecast — its own slow-cadence load over a week-long window,
   // independent of the 30s value poll above.
@@ -258,6 +269,8 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
             unit={m.unit}
             color={m.color}
             emptyNote={chartNote(m.key)}
+            ambient={m.key === "h2o_temp" ? ambientByBucket : null}
+            ambientStation={ambient.station}
           />
         ))}
       </div>

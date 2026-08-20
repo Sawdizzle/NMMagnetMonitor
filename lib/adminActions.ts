@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { supabaseAdmin } from "./supabaseServer";
 import { SESSION_COOKIE } from "./session";
 import type { SupabaseLikeError } from "./errors";
+import { addressKey } from "./weatherFormat";
 
 // Server actions for the admin panel.
 //
@@ -121,6 +122,60 @@ export async function adminSetAssetMaintenance(assetId: string, maintenance: boo
     p_asset_id: assetId,
     p_maintenance: maintenance,
   });
+  revalidatePath("/admin");
+  return res;
+}
+
+// ---- site location (site_geocode) -----------------------------------------
+
+/** One unit's resolved map position. `source` null = never looked up yet. */
+export type SiteGeocodeRow = {
+  asset_id: string;
+  asset_name: string;
+  address: string | null;
+  address_key: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  source: string | null;
+  resolved_at: string | null;
+  attempts: number | null;
+};
+
+export async function adminListSiteGeocodes() {
+  return call<SiteGeocodeRow[]>("admin_list_site_geocodes");
+}
+
+/**
+ * Pin one site's coordinates by hand, overriding the geocoder for good.
+ *
+ * The key is computed HERE, in the same code the weather reader uses to look
+ * rows up, and the RPC recomputes it in SQL and refuses the write if the two
+ * disagree. That is the whole point of passing it: the pin is only useful if it
+ * lands on the key the reader will search for, and a silent mismatch would look
+ * like the override simply did nothing.
+ *
+ * Null coordinates are a real setting, not a clear: they say "this site has no
+ * weather" and stop the resolver retrying. Use adminClearSiteGeocode to undo.
+ */
+export async function adminSetSiteGeocode(args: {
+  assetId: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+}) {
+  const res = await call<unknown>("admin_set_site_geocode", {
+    p_asset_id: args.assetId,
+    p_address_key: addressKey(args.address),
+    p_latitude: args.latitude,
+    p_longitude: args.longitude,
+  });
+  revalidatePath("/admin");
+  return res;
+}
+
+/** Forget the cached position so the address is looked up again. */
+export async function adminClearSiteGeocode(assetId: string) {
+  const res = await call<boolean>("admin_clear_site_geocode", { p_asset_id: assetId });
   revalidatePath("/admin");
   return res;
 }

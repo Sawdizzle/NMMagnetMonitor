@@ -107,3 +107,56 @@ test("compass bearings land on the right of sixteen points", () => {
   assert.equal(compass(292.5), "WNW");
   assert.equal(compass(null), null);
 });
+
+// ---- ambient alignment ----------------------------------------------------
+
+const { alignAmbient } = await import("../lib/ambientAlign.ts");
+
+const at = (minutes: number) => new Date(Date.UTC(2026, 7, 20, 12, 0) + minutes * 60_000).toISOString();
+
+test("each bucket takes the nearest observation, not the last one seen", () => {
+  // 15-minute buckets against an hourly station. The 12:45 bucket is closer to
+  // the 13:00 reading than to the 12:00 one, so carrying 12:00 forward would
+  // draw a staircase that never happened outside.
+  //
+  // The 12:30 bucket sits exactly between the two. A tie goes BACKWARDS, to the
+  // reading that had already been taken — a trace of what the afternoon was
+  // like should not reach forward for a temperature nobody had measured yet.
+  const buckets = [at(0), at(15), at(30), at(45), at(60)];
+  const points = [
+    { t: at(0), tempF: 80 },
+    { t: at(60), tempF: 90 },
+  ];
+  assert.deepEqual(alignAmbient(buckets, points), [80, 80, 80, 90, 90]);
+});
+
+test("a gap in reporting leaves a hole rather than a flat line", () => {
+  // Two readings six hours apart: the buckets in between get nothing, so the
+  // chart shows a break instead of implying the temperature held all afternoon.
+  const buckets = [at(0), at(120), at(240), at(360)];
+  const points = [
+    { t: at(0), tempF: 75 },
+    { t: at(360), tempF: 95 },
+  ];
+  assert.deepEqual(alignAmbient(buckets, points), [75, null, null, 95]);
+});
+
+test("alignment survives the shapes that actually turn up", () => {
+  // No weather at all: every bucket blank, same length as the input.
+  assert.deepEqual(alignAmbient([at(0), at(15)], []), [null, null]);
+  // No telemetry yet, but weather exists.
+  assert.deepEqual(alignAmbient([], [{ t: at(0), tempF: 80 }]), []);
+  // A station denser than the buckets — the common case at an airport.
+  const dense = Array.from({ length: 13 }, (_, i) => ({ t: at(i * 5), tempF: 70 + i }));
+  assert.deepEqual(alignAmbient([at(0), at(30), at(60)], dense), [70, 76, 82]);
+  // An unparseable bucket timestamp must not poison the ones after it.
+  assert.deepEqual(alignAmbient(["not-a-date", at(0)], [{ t: at(0), tempF: 88 }]), [null, 88]);
+});
+
+test("observations that start after the window still attach to later buckets", () => {
+  // Telemetry running before the station's first reading of the window: the
+  // early buckets are blank rather than back-filled from the future.
+  const buckets = [at(0), at(15), at(180), at(195)];
+  const points = [{ t: at(180), tempF: 91 }, { t: at(195), tempF: 92 }];
+  assert.deepEqual(alignAmbient(buckets, points), [null, null, 91, 92]);
+});

@@ -22,7 +22,7 @@
 
 import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
 import type { HeliumPoint } from "./forecast";
-import type { WeatherResult } from "./weatherTypes";
+import type { AmbientResult, WeatherResult } from "./weatherTypes";
 
 /**
  * An open server-side alert, carried onto the fleet card.
@@ -138,6 +138,9 @@ export interface DataSource {
   // than a field on loadFleet: the fleet poll is every 30s and must not wait on
   // api.weather.gov, and weather that is ten minutes old is still weather.
   loadWeather(): Promise<WeatherResult>;
+  // Outside temperature over the same window the asset page charts, so the
+  // water trend can be read against the weather that drove it.
+  loadAmbient(assetId: string, historyHours: number): Promise<AmbientResult>;
 }
 
 // ---- one implementation, two prefixes ------------------------------------
@@ -213,6 +216,13 @@ function makeDataSource(base: string): DataSource {
 
     async loadWeather() {
       return getJson<WeatherResult>(`${base}/weather`, (error) => ({ weather: {}, error }));
+    },
+
+    async loadAmbient(assetId, historyHours) {
+      return getJson<AmbientResult>(
+        `${base}/asset/${encodeURIComponent(assetId)}/ambient?hours=${historyHours}`,
+        (error) => ({ points: [], station: null, error })
+      );
     },
 
     async loadDebrief() {

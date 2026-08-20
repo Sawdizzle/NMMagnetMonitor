@@ -3038,3 +3038,31 @@ alter table public.site_geocode enable row level security;  -- no policy: servic
 -- range Census does not carry) plus all twelve Demo Company sites, whose street
 -- addresses are invented and therefore unplaceable. See the migration for the
 -- reasoning on pointing demo sites at real US cities.
+
+-- --- site location: admin control -------------------------------------
+-- Applied to live DB 2026-08-20 (migrations admin_site_geocode_rpcs,
+-- lock_down_site_geocode_rpcs, admin_list_site_geocodes).
+--
+-- These take an ASSET ID and resolve the address themselves. site_geocode is
+-- keyed by address and shared across tenants, so accepting a bare address
+-- string would let one org write coordinates for another org's site; resolving
+-- through an org-scoped asset lookup is what prevents that.
+--
+--   _site_address_key(text)                -> the SQL half of addressKey()
+--   admin_set_site_geocode(...)            -> pin coordinates by hand
+--   admin_clear_site_geocode(token, asset) -> forget them and look up again
+--   admin_list_site_geocodes(token)        -> where each unit resolved to
+--
+-- NB on the normalization: addressKey() exists in BOTH lib/weatherFormat.ts
+-- (which the reader uses to look rows up) and _site_address_key (which the
+-- writer uses to key them). admin_set_site_geocode is handed the TypeScript
+-- key and refuses the write when the two disagree, so drift shows up as a loud
+-- failure on the next pin rather than as a row nothing ever reads.
+--
+-- NB on grants: Supabase's ALTER DEFAULT PRIVILEGES grants EXECUTE on every new
+-- public function to anon and authenticated, and "revoke ... from public" does
+-- NOT undo it — PUBLIC is a pseudo-role and those are explicit per-role grants.
+-- Both roles must be named, or a SECURITY DEFINER admin write ends up reachable
+-- with the anon key. Check any new admin_* function with:
+--   select proname, proacl from pg_proc where proname like 'admin_%';
+-- The correct ACL is postgres + service_role and nothing else.
