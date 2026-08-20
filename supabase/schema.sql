@@ -2382,9 +2382,20 @@ grant execute on function public.unacknowledge_alert(text, bigint) to authentica
 create or replace function public._upsert_finding(
   p_asset uuid, p_kind text, p_channel text,
   p_severity text, p_message text, p_detail jsonb
-) returns void language plpgsql security definer set search_path to 'public'
+) returns void
+language plpgsql security definer set search_path to 'public'
 as $function$
-declare v_id bigint; v_sev text;
+declare
+  v_id bigint;
+  v_sev text;
+  -- Findings that are recorded and displayed but never notified. Handled HERE
+  -- rather than in the two notifiers because "does this page a person" is a
+  -- property of the finding, not of the transport — and it keeps notify-alerts
+  -- and send-push identical instead of teaching both the same list. The
+  -- mechanism is the one the notifier already uses for muted orgs: stamp
+  -- notified_at at insert, meaning "there is nobody this should be sent to".
+  v_non_paging constant text[] := array['anomaly'];
+  v_silent boolean := p_kind = any(v_non_paging);
 begin
   select id, severity into v_id, v_sev
   from alert_events
@@ -2393,18 +2404,26 @@ begin
   limit 1;
 
   if v_id is null then
-    insert into alert_events (asset_id, kind, channel, severity, message, detail)
-    values (p_asset, p_kind, p_channel, p_severity, p_message, p_detail);
+    insert into alert_events (asset_id, kind, channel, severity, message, detail,
+                              notified_at, push_notified_at)
+    values (p_asset, p_kind, p_channel, p_severity, p_message, p_detail,
+            case when v_silent then now() end,
+            case when v_silent then now() end);
     return;
   end if;
 
-  if p_severity = 'critical' and v_sev is distinct from 'critical' then
+  -- Escalation re-arms the alert: a warning somebody acknowledged must not
+  -- silence the critical it becomes. Clearing notified_at is what makes the
+  -- existing notifier pick it up again. A non-paging kind is NOT re-armed —
+  -- re-arming it would page, which is the one thing it must never do.
+  if p_severity = 'critical' and v_sev is distinct from 'critical' and not v_silent then
     update alert_events
        set severity = 'critical', message = p_message, detail = p_detail,
            notified_at = null, push_notified_at = null,
            acknowledged_at = null, acknowledged_by = null, disposition = null
      where id = v_id;
   else
+    -- De-escalation keeps the ack: someone already owns it and it is improving.
     update alert_events set severity = p_severity, message = p_message, detail = p_detail
      where id = v_id;
   end if;
@@ -2626,6 +2645,74 @@ begin
                            'recon_ruo', r.recon_ruo, 'recon_si', r.recon_si));
     else
       perform _resolve_finding(r.asset_id, 'bound', 'coldhead');
+    end if;
+  end loop;
+
+  -- 5. FLEET OUTLIER on the device's own error registers (EC1-EC4).
+  -- We do not have the MagMon code list, so we cannot say what any EC value
+  -- MEANS. We can say what is unlike the rest of the fleet, and that needs no
+  -- code list at all.
+  --
+  -- Measured before building, because the obvious approach does not work.
+  -- Alerting on EC TRANSITIONS is unusable: the registers are rock-steady on 10
+  -- of 15 units (a single value across two days) but NM1027's EC2 oscillates
+  -- 0<->5<->6 sixty-plus times in two days, which would page somebody hourly.
+  -- Comparing across the fleet instead yields two flags on fifteen units.
+  --
+  -- Validation: of the twelve fleet-unique values, ten belonged to units already
+  -- flagged `maintenance` — it rediscovers the known-abnormal units knowing
+  -- nothing about the codes. Maintenance units are excluded (abnormal by
+  -- definition, and would otherwise be all this ever reported).
+  --
+  -- Deliberately weak claims: fifteen units is small, so "unique" may mean
+  -- uncommon rather than wrong, and it would NOT flag NM1027, whose EC values
+  -- are ordinary while it runs a real cooling fault. It complements the other
+  -- detections; it does not replace them. Non-paging (see _upsert_finding).
+  -- Compared WITHIN an org, never across tenants.
+  for r in
+    with live as (
+      select a.id, a.name, a.org_id
+      from assets a
+      where a.maintenance = false
+        and a.last_sample_at is not null
+        and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+    ),
+    per_unit as (
+      -- Modal value over 24h, not the current one: on a unit whose register
+      -- churns, "what does it usually say" is stable where "what does it say
+      -- right now" is a coin flip.
+      select l.org_id, l.id as asset_id, l.name, f.field,
+             mode() within group (order by t.data->>f.field) as val
+      from live l
+      join telemetry_samples t on t.asset_id = l.id
+        and t.created_at >= now() - interval '24 hours'
+      cross join (values ('EC1'),('EC2'),('EC3'),('EC4')) as f(field)
+      where t.data ? f.field
+      group by l.org_id, l.id, l.name, f.field
+    ),
+    sized as (
+      select org_id, count(distinct asset_id) as fleet_n from per_unit group by org_id
+    ),
+    freq as (
+      select p.org_id, p.field, p.val, count(*) as n_units
+      from per_unit p group by p.org_id, p.field, p.val
+    )
+    select p.asset_id, p.name, p.field, p.val, fq.n_units, s.fleet_n
+    from per_unit p
+    join freq fq on fq.org_id = p.org_id and fq.field = p.field
+                and fq.val is not distinct from p.val
+    join sized s on s.org_id = p.org_id
+  loop
+    -- Below eight reporting units "unique in the fleet" means nothing, so a
+    -- small or half-offline fleet reports nothing rather than noise.
+    if r.val is not null and r.fleet_n >= 8 and r.n_units = 1 then
+      perform _upsert_finding(r.asset_id, 'anomaly', r.field, 'warning',
+        format('%s error register %s reads %s — no other unit in the fleet reports that value. Unusual rather than proven faulty; the MagMon code list would say what it means.',
+               r.name, r.field, r.val),
+        jsonb_build_object('field', r.field, 'value', r.val,
+                           'units_sharing_value', r.n_units, 'fleet_size', r.fleet_n));
+    else
+      perform _resolve_finding(r.asset_id, 'anomaly', r.field);
     end if;
   end loop;
 end;

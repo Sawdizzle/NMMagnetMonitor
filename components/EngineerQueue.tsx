@@ -30,6 +30,9 @@ const KIND_LABELS: Record<string, string> = {
   trend: "Trend",
   flatline: "Flatlined",
   bound: "Out of range",
+  // Non-paging by design (see _upsert_finding): recorded and shown here, never
+  // emailed or pushed, because it is deliberately weak evidence.
+  anomaly: "Unlike the fleet",
 };
 
 const DISPOSITIONS: { value: Disposition; label: string; hint: string }[] = [

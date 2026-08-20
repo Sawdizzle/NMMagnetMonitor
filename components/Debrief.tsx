@@ -298,6 +298,8 @@ function kindLabel(kind: string): string {
       return "Flatlined";
     case "bound":
       return "Out of range";
+    case "anomaly":
+      return "Unlike the fleet";
     case "never_reported":
       return "Never reported";
     default:
