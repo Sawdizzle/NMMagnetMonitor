@@ -6,6 +6,10 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // Node's test runner strips types and resolves the specifier literally, so
+    // tests/*.mts must import "../lib/x.ts" with the extension. Safe alongside
+    // noEmit — nothing here is compiled to a file that could keep the .ts path.
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

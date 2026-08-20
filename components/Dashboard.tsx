@@ -9,8 +9,11 @@ import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
+import { useWeather } from "@/lib/useWeather";
+import type { SiteWeather } from "@/lib/weatherTypes";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import FieldRing from "./FieldRing";
+import { WeatherChip } from "./SiteWeather";
 import MiniLineChart from "./MiniLineChart";
 import OrgMark from "./OrgMark";
 import DebriefLink from "./DebriefLink";
@@ -95,6 +98,9 @@ export default function Dashboard() {
   const ordered = sortByAlarmPriority(assets);
   const alertItems = buildAlertItems(ordered);
   const forecasts = useFleetForecasts(assets.map((a) => a.id), demo);
+  // Outside conditions per site. Loads independently of the 30s status poll and
+  // is simply absent until it arrives — no skeleton, no layout shift.
+  const weather = useWeather(demo);
   const filteredAssets =
     statusFilter === "all" ? ordered : ordered.filter((a) => computeAssetHealth(a) === statusFilter);
 
@@ -304,7 +310,13 @@ export default function Dashboard() {
           {view === "cards" ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {filteredAssets.map((a) => (
-                <AssetCard key={a.id} asset={a} basePath={basePath} forecast={forecasts[a.id] ?? null} />
+                <AssetCard
+                  key={a.id}
+                  asset={a}
+                  basePath={basePath}
+                  forecast={forecasts[a.id] ?? null}
+                  weather={weather[a.id] ?? null}
+                />
               ))}
             </div>
           ) : (
@@ -490,10 +502,12 @@ function AssetCard({
   asset,
   basePath,
   forecast,
+  weather,
 }: {
   asset: AssetWithTelemetry;
   basePath: string;
   forecast: HeliumForecast | null;
+  weather: SiteWeather | null;
 }) {
   const status = computeAssetHealth(asset);
   const alarm = computeAssetAlarm(asset);
@@ -511,8 +525,9 @@ function AssetCard({
       <div className="flex items-start justify-between">
         <div>
           <p className="font-semibold text-base">{asset.name}</p>
-          <p className="text-xs text-[var(--text-dim)] mt-0.5">
-            {asset.site_name?.trim() || "No location set"}
+          <p className="text-xs text-[var(--text-dim)] mt-0.5 flex items-center gap-1.5">
+            <span className="truncate">{asset.site_name?.trim() || "No location set"}</span>
+            <WeatherChip weather={weather} />
           </p>
         </div>
         <FieldRing status={status} />

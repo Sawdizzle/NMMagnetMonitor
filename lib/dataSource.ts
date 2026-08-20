@@ -22,6 +22,7 @@
 
 import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
 import type { HeliumPoint } from "./forecast";
+import type { WeatherResult } from "./weatherTypes";
 
 /**
  * An open server-side alert, carried onto the fleet card.
@@ -133,6 +134,10 @@ export interface DataSource {
   // The 9am-to-9am alert digest for the whole org. Derived on read from
   // alert_events — no snapshot table, no nightly job.
   loadDebrief(): Promise<DebriefResult>;
+  // Outside conditions at each site, keyed by asset id. Its own call rather
+  // than a field on loadFleet: the fleet poll is every 30s and must not wait on
+  // api.weather.gov, and weather that is ten minutes old is still weather.
+  loadWeather(): Promise<WeatherResult>;
 }
 
 // ---- one implementation, two prefixes ------------------------------------
@@ -204,6 +209,10 @@ function makeDataSource(base: string): DataSource {
         `${base}/asset/${encodeURIComponent(assetId)}/alerts?limit=${limit}`,
         (error) => ({ events: [], error })
       );
+    },
+
+    async loadWeather() {
+      return getJson<WeatherResult>(`${base}/weather`, (error) => ({ weather: {}, error }));
     },
 
     async loadDebrief() {

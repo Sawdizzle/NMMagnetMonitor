@@ -16,7 +16,9 @@ import {
   type SentinelField,
 } from "@/lib/sentinel";
 import { activeErrorCodes, errorText, compressorStatusText, COMMON_CODES } from "@/lib/magmonCodes";
+import { useWeather } from "@/lib/useWeather";
 import FieldRing from "@/components/FieldRing";
+import { WeatherChip, WeatherPanel } from "@/components/SiteWeather";
 import MetricLineChart from "@/components/MetricLineChart";
 
 const POLL_MS = 30_000;
@@ -71,6 +73,11 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     const interval = setInterval(load, POLL_MS);
     return () => clearInterval(interval);
   }, [load]);
+
+  // Outside conditions at this site. Loads fleet-wide in one request (the same
+  // call the dashboard makes, so navigating here is usually a cache hit) and we
+  // pick out this asset's entry.
+  const weather = useWeather(demo)[assetId] ?? null;
 
   // Helium boil-off forecast — its own slow-cadence load over a week-long window,
   // independent of the 30s value poll above.
@@ -181,7 +188,10 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           <p className="eyebrow mb-1.5">{asset.site_name?.trim() || "No location set"}</p>
           <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">{asset.name}</h1>
           {asset.site_address?.trim() && (
-            <p className="text-xs text-[var(--text-dim)] mt-1">{asset.site_address}</p>
+            <p className="text-xs text-[var(--text-dim)] mt-1 flex items-center gap-2">
+              <span>{asset.site_address}</span>
+              <WeatherChip weather={weather} />
+            </p>
           )}
           <div className="flex flex-wrap items-center gap-2.5 mt-2.5">
             <span className="status-chip" style={{ ["--sc" as string]: STATUS_COLORS[status] }}>
@@ -228,6 +238,8 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       )}
 
       <DeviceCodesCard latest={latest} />
+
+      <WeatherPanel weather={weather} />
 
       <ForecastCard forecast={forecast} loaded={forecastLoaded} />
 

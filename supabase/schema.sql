@@ -3003,3 +3003,38 @@ grant execute on function public.evaluate_diagnostics_ec_outliers() to service_r
 -- The copies earlier in this file still carry the retired
 -- (p_actor_username, p_actor_pin) signature — see the "IN PROGRESS" note at the
 -- top of the admin section; that drift predates this work.
+
+-- --- site_geocode (address -> lat/lon, for local weather) -------------------
+-- Applied to live DB 2026-08-20 (migrations site_geocode_cache,
+-- seed_manual_site_geocodes).
+--
+-- Keyed by the NORMALIZED address text, not by asset id: five Numed units share
+-- the Denton service-center address, and they are not five weather stations.
+-- The key is lib/weather.ts addressKey() — lowercased, punctuation to spaces,
+-- whitespace collapsed — so any hand-seeded row must be written the same way.
+--
+-- Nothing here is per-tenant (an address resolves to the same point whoever owns
+-- the magnet), so there is no org_id. RLS is on with no policy: the weather
+-- reader runs service-role, and nothing else touches this table.
+--
+-- source='census'  resolved automatically; retried weekly while unresolved.
+-- source='manual'  a hand-pinned fix. NEVER overwritten and never retried —
+--                  including a manual row with NULL coordinates, which is how
+--                  you say "this site has no weather" permanently.
+create table if not exists public.site_geocode (
+  address_key  text        primary key,
+  address      text        not null,
+  latitude     double precision,
+  longitude    double precision,
+  place_label  text,
+  source       text        not null default 'census',
+  resolved_at  timestamptz,
+  attempted_at timestamptz not null default now(),
+  attempts     integer     not null default 0
+);
+alter table public.site_geocode enable row level security;  -- no policy: service_role only
+
+-- Manually pinned at seed time: NMMC West Point (a real site on a TIGER address
+-- range Census does not carry) plus all twelve Demo Company sites, whose street
+-- addresses are invented and therefore unplaceable. See the migration for the
+-- reasoning on pointing demo sites at real US cities.
