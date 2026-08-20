@@ -77,3 +77,30 @@ export function iconKey(iconUrl: string | null, description: string | null): Wea
   return "unknown";
 }
 
+
+// ---- warmth cue -----------------------------------------------------------
+
+// Where the outside-temperature tint starts and where it saturates. A single
+// cutoff put 94F and 95F in different visual categories while showing 93F and
+// 99F as the same thing, which is backwards — those are the same kind of hot
+// and those are not. A ramp says "more" instead of "yes/no".
+//
+// Both ends are guesses calibrated against a Texas summer, and they are the
+// only two numbers to change if the fleet's climate does. Nothing downstream
+// alarms on them; see lib/faults.ts for the thresholds that do.
+export const WARM_START_F = 85;
+export const WARM_FULL_F = 105;
+
+/**
+ * How warm to draw a site's temperature, 0 (neutral) to 1 (fully tinted).
+ *
+ * Returns 0 rather than null below the ramp so callers can treat it as a plain
+ * intensity; there is no "unknown" case here because a site with no reading
+ * shows no chip at all.
+ */
+export function warmthRatio(tempF: number | null): number {
+  if (tempF === null || !Number.isFinite(tempF)) return 0;
+  if (tempF <= WARM_START_F) return 0;
+  if (tempF >= WARM_FULL_F) return 1;
+  return (tempF - WARM_START_F) / (WARM_FULL_F - WARM_START_F);
+}

@@ -2,6 +2,7 @@
 
 import WeatherIcon from "./WeatherIcon";
 import type { SiteWeather } from "@/lib/weatherTypes";
+import { warmthRatio } from "@/lib/weatherFormat";
 
 // Outside conditions at the site, in two sizes: a chip beside the site name on
 // a fleet card, and a panel on the asset page.
@@ -9,13 +10,25 @@ import type { SiteWeather } from "@/lib/weatherTypes";
 // Both are informational only. Nothing here ever raises an alert or colours a
 // status — a hot day is context for a rising H2O Temp, not a fault in itself.
 
-// Purely a visual cue for "the chiller is working today", not a threshold: the
-// compressor's own limits live in lib/faults.ts and are the ones that alarm.
-// Tuned by eye against a Texas summer; move it freely.
-const WARM_F = 95;
-
-function accentFor(weather: SiteWeather): string | undefined {
-  return weather.tempF !== null && weather.tempF >= WARM_F ? "var(--status-warning)" : undefined;
+/**
+ * A continuous "the chiller is working today" cue, not a threshold — the
+ * compressor's own limits live in lib/faults.ts and are the ones that alarm.
+ *
+ * Mixes toward `neutral` — the colour the element would wear with no tint at
+ * all — so that a barely-warm site is indistinguishable from a cool one on
+ * every surface. The default of currentColor covers the two text cases (a
+ * card chip inherits dim text, the asset page's big temperature inherits full
+ * brightness); the panel's icon passes its own, because its untinted state is
+ * neither of those.
+ *
+ * Returns undefined below the ramp so nothing is painted at all — a 0% mix
+ * computes to the same colour, but leaving the property unset means a cool
+ * site carries no inline style to reason about.
+ */
+function accentFor(weather: SiteWeather, neutral = "currentColor"): string | undefined {
+  const ratio = warmthRatio(weather.tempF);
+  if (ratio <= 0) return undefined;
+  return `color-mix(in srgb, var(--status-warning) ${Math.round(ratio * 100)}%, ${neutral})`;
 }
 
 /** How stale an observation is, in the station's own terms. Hourly reporting is
@@ -64,6 +77,10 @@ export function WeatherChip({ weather }: { weather: SiteWeather | null }) {
   );
 }
 
+// The panel icon sits dimmer than the temperature beside it when untinted, so
+// its ramp has to start from there rather than from the inherited text colour.
+const ICON_NEUTRAL = "var(--text-muted)";
+
 /** Full panel for the asset page. */
 export function WeatherPanel({ weather }: { weather: SiteWeather | null }) {
   if (!weather || weather.tempF === null) return null;
@@ -89,7 +106,7 @@ export function WeatherPanel({ weather }: { weather: SiteWeather | null }) {
 
       <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
         <div className="flex items-center gap-3 min-w-0">
-          <span style={{ color: accent ?? "var(--text-muted)" }}>
+          <span style={{ color: accentFor(weather, ICON_NEUTRAL) ?? ICON_NEUTRAL }}>
             <WeatherIcon icon={weather.icon} size={34} title={weather.condition ?? "Current conditions"} />
           </span>
           <div className="min-w-0">

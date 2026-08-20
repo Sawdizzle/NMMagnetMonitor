@@ -160,3 +160,34 @@ test("observations that start after the window still attach to later buckets", (
   const points = [{ t: at(180), tempF: 91 }, { t: at(195), tempF: 92 }];
   assert.deepEqual(alignAmbient(buckets, points), [null, null, 91, 92]);
 });
+
+// ---- warmth ramp ----------------------------------------------------------
+
+const { warmthRatio, WARM_START_F, WARM_FULL_F } = await import("../lib/weatherFormat.ts");
+
+test("the warmth ramp has no cliff in the middle of it", () => {
+  // The whole reason this replaced a 95F cutoff: 94 and 95 must not look like
+  // different categories, and 93 and 99 must not look identical.
+  assert.ok(warmthRatio(95) - warmthRatio(94) < 0.1, "neighbouring degrees jump");
+  assert.ok(warmthRatio(99) - warmthRatio(93) > 0.2, "a six-degree spread is invisible");
+  // Monotonic across the whole plausible range, ends included.
+  for (let t = -40; t < 130; t++) {
+    assert.ok(warmthRatio(t + 1) >= warmthRatio(t), `ramp goes backwards at ${t}F`);
+  }
+});
+
+test("the ramp is flat outside its ends and never leaves 0..1", () => {
+  assert.equal(warmthRatio(WARM_START_F), 0);
+  assert.equal(warmthRatio(WARM_START_F - 30), 0);
+  assert.equal(warmthRatio(WARM_FULL_F), 1);
+  // Phoenix in July must not compute past full tint.
+  assert.equal(warmthRatio(122), 1);
+  // A cold site is neutral, not negatively tinted.
+  assert.equal(warmthRatio(-20), 0);
+  assert.equal(warmthRatio(null), 0);
+  assert.equal(warmthRatio(Number.NaN), 0);
+});
+
+test("the midpoint of the ramp is halfway tinted", () => {
+  assert.equal(warmthRatio((WARM_START_F + WARM_FULL_F) / 2), 0.5);
+});
