@@ -295,8 +295,15 @@ LABEL_MAP_NORMALIZE = {
     "Coldhead_RuO": "ColdheadRuO", "ColdheadRuO": "ColdheadRuO",
     "He_Pressure": "HePress", "He_Press": "HePress", "HePress": "HePress",
 }
+# CS2/CDC2 are the SECOND compressor, present only on dual-compressor units
+# (/minlog_help.html: "CS2 is the status of compressor 2 (if installed)"). No
+# unit on the fleet emits them today, so this is latent rather than a live fix --
+# but without the names here a dual-compressor unit's second compressor would be
+# parsed and then silently dropped, and the error codes for it (127-132) would
+# arrive with nothing to explain them.
 ALL_NUMERIC = ["HeLvl", "H20_Flow", "H2O_Temp", "Shield", "ReconRuO", "ReconSi410", "ColdheadRuO",
-               "HePress", "CS1", "CDC1", "HT", "HDC", "RF", "FM", "SM", "EC1", "EC2", "EC3", "EC4"]
+               "HePress", "CS1", "CDC1", "CS2", "CDC2", "HT", "HDC", "RF", "FM", "SM",
+               "EC1", "EC2", "EC3", "EC4"]
 
 def _to_float(x):
     try:
@@ -382,7 +389,8 @@ def parse_minutes(raw_html):
                 if pos is not None and pos < len(parts):
                     rec[k] = _to_float(parts[pos])
         else:
-            for code in ["CS1", "CDC1", "HT", "HDC", "RF", "FM", "SM", "EC1", "EC2", "EC3", "EC4"]:
+            for code in ["CS1", "CDC1", "CS2", "CDC2", "HT", "HDC", "RF", "FM", "SM",
+                         "EC1", "EC2", "EC3", "EC4"]:
                 pos = colpos.get(code)
                 if pos is not None and pos < len(parts):
                     rec[code] = _to_float(parts[pos])

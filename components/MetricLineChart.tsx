@@ -17,12 +17,17 @@ export default function MetricLineChart({
   label,
   unit,
   color,
+  emptyNote,
 }: {
   samples: TelemetryBucket[]; // oldest-first, one row per 15-minute bucket
   metricKey: keyof Omit<TelemetryBucket, "created_at" | "sample_count">;
   label: string;
   unit: string;
   color: string;
+  // Why this chart is empty, when the caller knows. A blind water channel plots
+  // nothing because nullify_sentinel() blanked a placeholder reading, and "No
+  // data in this window" makes that look like the app dropped it.
+  emptyNote?: string | null;
 }) {
   const chartData = samples.map((s) => ({
     time: new Date(s.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -41,8 +46,8 @@ export default function MetricLineChart({
         <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wide">{unit || "—"}</span>
       </div>
       {!hasData ? (
-        <div className="h-[140px] flex items-center justify-center text-[var(--text-dim)] text-xs">
-          No data in this window
+        <div className="h-[140px] flex items-center justify-center px-3 text-center text-[var(--text-dim)] text-xs">
+          {emptyNote || "No data in this window"}
         </div>
       ) : (
         <ResponsiveContainer width="100%" height={140}>

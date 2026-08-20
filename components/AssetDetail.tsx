@@ -8,6 +8,14 @@ import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, NO_TELEMETRY_KINDS, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm, fieldFromMessage } from "@/lib/faults";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
+import {
+  suppressedReading,
+  formatSuppressed,
+  sentinelExplanation,
+  SENTINEL_SHORT,
+  type SentinelField,
+} from "@/lib/sentinel";
+import { activeErrorCodes, errorText, compressorStatusText, COMMON_CODES } from "@/lib/magmonCodes";
 import FieldRing from "@/components/FieldRing";
 import MetricLineChart from "@/components/MetricLineChart";
 
@@ -130,6 +138,35 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   const fleetShape: FleetAsset = { ...asset, latest, history: [], alertRules, openAlerts };
   const alarm = computeAssetAlarm(fleetShape);
 
+  // Water channels the database blanked because the device is sending its
+  // no-sensor placeholder. Shown rather than hidden: the number is right there
+  // in the MagMon's own web interface, and an unexplained em-dash next to it
+  // looks like lost data instead of a refused reading.
+  const suppressed: Record<SentinelField, number | null> = {
+    h2o_flow: suppressedReading("h2o_flow", latest?.h2o_flow, latest?.data),
+    h2o_temp: suppressedReading("h2o_temp", latest?.h2o_temp, latest?.data),
+  };
+  // A channel stuck on the placeholder now has been stuck on it all window, so
+  // its (empty) 24h chart gets the same explanation as the tile.
+  const chartNote = (key: string): string | null => {
+    const value = key === "h2o_flow" || key === "h2o_temp" ? suppressed[key] : null;
+    return value === null
+      ? null
+      : `Device reports a constant ${formatSuppressed(value)} on this input — a ${SENTINEL_SHORT}, not a live sensor. Held out of the trend on purpose.`;
+  };
+  // One line under the table naming every blank water column and the constant
+  // behind it, e.g. "H2O Flow (5.024) and H2O Temp (100.476) read blank here".
+  const suppressedLabels: Record<SentinelField, string> = { h2o_flow: "H2O Flow", h2o_temp: "H2O Temp" };
+  const blankChannels = (Object.keys(suppressed) as SentinelField[])
+    .filter((f) => suppressed[f] !== null)
+    .map((f) => `${suppressedLabels[f]} (${formatSuppressed(suppressed[f] as number)})`);
+  const suppressedNote =
+    blankChannels.length === 0
+      ? null
+      : `${blankChannels.join(" and ")} ${blankChannels.length > 1 ? "read" : "reads"} blank below: ` +
+        `the MagMon sends ${blankChannels.length > 1 ? "those constants" : "that constant"} on every ` +
+        `sample — a ${SENTINEL_SHORT}, not a measurement.`;
+
   return (
     <div id="main-content" className="min-h-screen p-6 md:p-10" role="main">
       <Link href={basePath || "/"} className="back-link">
@@ -183,12 +220,14 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-10">
           <MetricCard label="He Level" value={latest.he_lvl} unit="%" />
           <MetricCard label="He Pressure" value={latest.he_press} unit="psi" />
-          <MetricCard label="H2O Flow" value={latest.h2o_flow} unit="gpm" />
-          <MetricCard label="H2O Temp" value={latest.h2o_temp} unit="°F" />
+          <MetricCard label="H2O Flow" value={latest.h2o_flow} unit="gpm" suppressed={suppressed.h2o_flow} />
+          <MetricCard label="H2O Temp" value={latest.h2o_temp} unit="°F" suppressed={suppressed.h2o_temp} />
           <MetricCard label="Shield" value={latest.shield} unit="" />
           <MetricCard label="CS1" value={latest.cs1} unit="" />
         </div>
       )}
+
+      <DeviceCodesCard latest={latest} />
 
       <ForecastCard forecast={forecast} loaded={forecastLoaded} />
 
@@ -206,6 +245,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
             label={m.label}
             unit={m.unit}
             color={m.color}
+            emptyNote={chartNote(m.key)}
           />
         ))}
       </div>
@@ -213,6 +253,10 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
         Recent readings ({tableRows.length} &middot; 15-min averages, last 24h)
       </h2>
+
+      {/* The blank column would otherwise be the one thing on the page that
+          still disagrees with the MagMon's web interface without saying why. */}
+      {suppressedNote && <p className="text-xs text-[var(--text-dim)] mb-3">{suppressedNote}</p>}
 
       {/* Mobile: stacked cards, no horizontal scroll needed */}
       <div className="flex flex-col gap-2 md:hidden">
@@ -354,6 +398,62 @@ function alertTiming(e: AlertEvent): string {
   return `resolved ${fmtDur(now - res)} ago · lasted ${fmtDur(res - trig)}`;
 }
 
+/**
+ * What the MagMon itself says is wrong, in its own words.
+ *
+ * The device has always sent EC1-EC4 and CS1; until we had its code tables
+ * these were four opaque numbers nobody could act on, and the fleet-outlier
+ * finding had to admit as much ("the MagMon code list would say what it
+ * means"). Now they decode, and they carry information our own thresholds
+ * cannot: NM1006's dead water sensors show up here as the device's OWN
+ * "flow too high / temp too hot", which is what an unconnected input reading
+ * full scale looks like from the inside.
+ *
+ * Rendered as a SET, ascending. EC1-EC4 are severity-ranked slots, so the slot
+ * a code sits in says nothing about the code — see lib/magmonCodes.
+ */
+function DeviceCodesCard({ latest }: { latest: TelemetrySample | null }) {
+  if (!latest) return null;
+  const codes = activeErrorCodes(latest.data);
+  const cs1 = latest.cs1;
+  // CS1 = 0 is "compressor running", the healthy case, and saying so on every
+  // unit forever is noise. Only a non-zero status earns a line.
+  const compressorFault = cs1 !== null && cs1 !== undefined && cs1 !== 0;
+  if (codes.length === 0 && !compressorFault) return null;
+
+  return (
+    <section className="mb-10">
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
+        Device error codes
+        <span className="text-[10px] normal-case tracking-normal text-[var(--text-dim)] ml-2">
+          reported by the MagMon itself
+        </span>
+      </h2>
+      <div className="flex flex-col gap-2">
+        {compressorFault && (
+          <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-4 py-2.5 text-sm">
+            <span className="font-mono-data text-[var(--text-dim)] mr-2">CS1 {cs1}</span>
+            {compressorStatusText(Number(cs1))}
+          </div>
+        )}
+        {codes.map((c) => (
+          <div
+            key={c}
+            className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-4 py-2.5 text-sm"
+            style={{ opacity: COMMON_CODES.has(c) ? 0.6 : 1 }}
+          >
+            <span className="font-mono-data text-[var(--text-dim)] mr-2">{c}</span>
+            {errorText(c)}
+            {COMMON_CODES.has(c) && (
+              <span className="text-[10px] text-[var(--text-dim)] ml-2">common across the fleet</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 const CONFIDENCE_STYLE: Record<HeliumForecast["confidence"], { label: string; color: string }> = {
   high: { label: "high confidence", color: "#4ade80" },
   medium: { label: "medium confidence", color: "#fbbf24" },
@@ -438,13 +538,36 @@ function ReadingCell({ label, value }: { label: string; value: number | null | u
   );
 }
 
-function MetricCard({ label, value, unit }: { label: string; value: number | null | undefined; unit: string }) {
+function MetricCard({
+  label,
+  value,
+  unit,
+  suppressed,
+}: {
+  label: string;
+  value: number | null | undefined;
+  unit: string;
+  // The placeholder the device is stuck on, when that is why `value` is blank.
+  suppressed?: number | null;
+}) {
   return (
-    <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-3 py-3">
+    <div
+      className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-3 py-3"
+      title={suppressed !== null && suppressed !== undefined ? sentinelExplanation(suppressed) : undefined}
+    >
       <p className="text-[10px] uppercase tracking-wide text-[var(--text-dim)]">{label}</p>
       <p className="font-mono-data text-lg mt-0.5">
         {value ?? "—"} <span className="text-xs text-[var(--text-dim)]">{unit}</span>
       </p>
+      {/* The device's own number, kept visible so this tile can be reconciled
+          against the MagMon's web interface instead of contradicting it. */}
+      {suppressed !== null && suppressed !== undefined && (
+        <p className="text-[10px] leading-tight text-[var(--text-dim)] mt-1">
+          device reports <span className="font-mono-data">{formatSuppressed(suppressed)}</span>
+          <br />
+          {SENTINEL_SHORT}
+        </p>
+      )}
     </div>
   );
 }

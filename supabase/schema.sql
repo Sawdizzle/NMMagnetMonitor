@@ -308,6 +308,17 @@ create table if not exists public.assets (
   tailscale_device_id        text,
   tailscale_online           boolean,
   tailscale_status_at        timestamptz,
+  -- The Pi's MagicDNS name, stamped by tailscale-poll alongside the flags above.
+  -- We held only the numeric node id, which is the one thing you cannot type
+  -- into an ssh command. It matters because monitor_host is a PRIVATE address
+  -- that several sites reuse -- NM1027 (NMMC Hamilton) and NM1029 (Limestone)
+  -- are both 192.168.14.199, NM1003 (Iuka) and NM1035 (Numed DSC) are both
+  -- 192.168.0.1 -- so browsing that address over a tailnet subnet route reaches
+  -- whichever Pi owns the route, with nothing on screen to say which. An
+  -- engineer read a week of NM1027 minute data believing it was NM1029. Naming
+  -- the Pi lets /docs print a tunnel that can only land on one unit.
+  -- Applied 2026-08-20 (migration assets_tailscale_hostname).
+  tailscale_hostname         text,
   -- Owning tenant. Every unit belongs to exactly one company, so this is NOT
   -- NULL; the default keeps pre-Phase-3 RPCs (which don't pass it) working.
   -- Applied 2026-08-17 (multi_tenant_phase0_orgs_and_backfill).
@@ -1489,7 +1500,13 @@ begin
     or (r.comparator='=' and r.value=r.threshold) or (r.comparator='!=' and r.value<>r.threshold) then
       if not exists (select 1 from alert_events e where e.alert_rule_id=r.rule_id and e.asset_id=r.asset_id and e.resolved_at is null) then
         insert into alert_events (asset_id, alert_rule_id, kind, message)
-        values (r.asset_id, r.rule_id, 'threshold', format('%s %s %s %s (now %s)', r.name, r.field, r.comparator, r.threshold, r.value));
+        -- cs1 carries a STATUS CODE, not a magnitude: "cs1 > 0 (now 11.0)"
+        -- told an on-call engineer nothing, where 11 is "compressor stopped due
+        -- to overheat" -- a different night entirely. Decoded here so both the
+        -- email and the push carry it. Applied 2026-08-20 (migration
+        -- decode_compressor_status_in_threshold_message).
+        values (r.asset_id, r.rule_id, 'threshold', format('%s %s %s %s (now %s)%s', r.name, r.field, r.comparator, r.threshold, r.value,
+                case when r.field = 'cs1' then ' -- ' || magmon_compressor_status_text(r.value) else '' end));
       end if;
     else
       update alert_events set resolved_at=now() where alert_rule_id=r.rule_id and asset_id=r.asset_id and resolved_at is null;
@@ -2438,6 +2455,164 @@ as $function$
      and channel is not distinct from p_channel and resolved_at is null;
 $function$;
 
+-- --- MagMon device code tables ---------------------------------------
+-- APPLIED to live DB 2026-08-20 (migration magmon_device_code_tables).
+-- Mirrored for the browser in lib/magmonCodes.ts -- the asset page decodes the
+-- raw EC1-EC4 columns client-side and must not round-trip for a lookup. The SQL
+-- side here is the source of truth; keep the two in step.
+-- MagMon device code tables, transcribed from the device's own help pages
+-- (http://<device>/errors_help.html and /minlog_help.html). Captured from
+-- NM1027 on 2026-08-20. Until now we had neither table and said so in the
+-- findings ("the MagMon code list would say what it means"); we have it now.
+--
+-- Transcribed VERBATIM, including the vendor's own apparent typo at 51/52
+-- (both read "Recondensor Si410 (2A) cable disconnected"; 52 is presumably 2B).
+-- Left as published rather than silently corrected -- if a unit ever raises 52
+-- we want to match what the device's own page tells the engineer standing at it.
+create or replace function public.magmon_error_text(p_code numeric)
+returns text
+language sql
+immutable
+as $function$
+  select coalesce(
+    (select d from (values
+      (0,  'No error'),
+      (1,  'He level too high'),
+      (2,  'He level too low'),
+      (3,  'He level top too high'),
+      (4,  'He level top too low'),
+      (5,  'Water flow for compressor 1 too low'),
+      (6,  'Water flow for compressor 1 too high'),
+      (7,  'Water temp for compressor 1 too cold'),
+      (8,  'Water temp for compressor 1 too hot'),
+      (9,  'Water flow for compressor 2 too low'),
+      (10, 'Water flow for compressor 2 too high'),
+      (11, 'Water temp for compressor 2 too cold'),
+      (12, 'Water temp for compressor 2 too hot'),
+      (13, 'Shield temp too cold'),
+      (14, 'Shield temp too hot'),
+      (15, 'Recondensor RuO temp too low'),
+      (16, 'Recondensor RuO temp too high'),
+      (17, 'Recondensor Si410 temp too low'),
+      (18, 'Recondensor Si410 temp too high'),
+      (19, 'Recondensor Si410 (2A) temp too low'),
+      (20, 'Recondensor Si410 (2A) temp too high'),
+      (21, 'Recondensor Si410 (2B) temp too low'),
+      (22, 'Recondensor Si410 (2B) temp too high'),
+      (23, 'Coldhead RuO temp too hot'),
+      (24, 'Coldhead RuO temp too cold'),
+      (25, 'Vessel pressure too high'),
+      (26, 'Vessel pressure too low'),
+      (27, 'Spare SR1A high'),
+      (28, 'Spare SR1A low'),
+      (29, 'Spare SR1B high'),
+      (30, 'Spare SR1B low'),
+      (31, 'SC pressure too high'),
+      (32, 'SC pressure too low'),
+      (33, 'Spare CMP1B high'),
+      (34, 'Spare CMP1B low'),
+      (35, 'Spare CMP1C high'),
+      (36, 'Spare CMP1C low'),
+      (37, 'Single-stage temp too low'),
+      (38, 'Single-stage temp too high'),
+      (44, 'Vessel pressure sensor cable disconnected'),
+      (45, 'He level cable disconnected'),
+      (46, 'He level top cable disconnected'),
+      (47, 'Recondensor RuO cable disconnected'),
+      (48, 'Coldhead RuO sensor cable disconnected'),
+      (49, 'Shield temp sensor cable disconnected'),
+      (50, 'Recondensor Si410 cable disconnected'),
+      (51, 'Recondensor Si410 (2A) cable disconnected'),
+      (52, 'Recondensor Si410 (2A) cable disconnected'),
+      (53, 'The RuO buffer is drawing too much current from Magmon'),
+      (54, 'The remote alarm is drawing too much current from Magmon'),
+      (55, 'The 12v heater is drawing too much current from Magmon'),
+      (56, 'Water meter 1 is drawing too much current from Magmon'),
+      (57, 'Water meter 2 is drawing too much current from Magmon'),
+      (58, 'The 12v heater is under voltage when turned on'),
+      (65, 'Magmon driving too much current into the He level sensor'),
+      (66, 'Magmon not driving enough current into the He level sensor'),
+      (67, 'Magmon driving too much current into the He level top sensor'),
+      (68, 'Magmon not driving enough current into the He level top sensor'),
+      (69, 'Magmon driving too much current into the Recondensor RuO sensor'),
+      (70, 'Magmon not driving enough current into the Recondensor RuO sensor'),
+      (71, 'Magmon driving too much current into the coldhead RuO sensor'),
+      (72, 'Magmon not driving enough current into the coldhead RuO sensor'),
+      (73, 'Magmon driving too much current into the Recondensor Si410 sensor'),
+      (74, 'Magmon not driving enough current into the Recondensor Si410 sensor'),
+      (75, 'Magmon driving too much current into the Recondensor Si410 (2A) sensor'),
+      (76, 'Magmon not driving enough current into the Recondensor Si410 (2A) sensor'),
+      (77, 'Magmon driving too much current into the Recondensor Si410 (2B) sensor'),
+      (78, 'Magmon not driving enough current into the Recondensor Si410 (2B) sensor'),
+      (79, 'Magmon driving too much current into the Shield Si410 sensor'),
+      (80, 'Magmon not driving enough current into the Shield Si410 sensor'),
+      (81, 'Magmon supplied 12v for the RuO buffer is too high'),
+      (82, 'Magmon supplied 12v for the RuO buffer is too low'),
+      (83, 'Magmon internal 12v supply is too high'),
+      (84, 'Magmon internal 12v supply is too low'),
+      (85, 'Magmon internal -12v supply is too high'),
+      (86, 'Magmon internal -12v supply is too low'),
+      (87, 'Magmon supplied -12v for the RuO buffer is too high'),
+      (88, 'Magmon supplied -12v for the RuO buffer is too low'),
+      (91, 'Magnet monitor internal temp too hot'),
+      (92, 'Magnet monitor internal temp too cold'),
+      (100,'The heater has been on too long'),
+      (101,'The He pressure is not changing'),
+      (102,'The RfUnblank signal from the system cabinet is always on'),
+      (110,'System cabinet coolant leak detected'),
+      (120,'The magnet field reed switch is open'),
+      (121,'Compressor 1 is not running'),
+      (122,'Compressor 1 reports a tripped fuse'),
+      (123,'Compressor 1 reports an overtemp shutdown'),
+      (124,'Compressor 1 reports a low He pressure shutdown'),
+      (125,'No 24v supply from compressor 1'),
+      (126,'Compressor 1 reports a klixon error'),
+      (127,'Compressor 2 is not running'),
+      (128,'Compressor 2 reports a tripped fuse'),
+      (129,'Compressor 2 reports an overtemp shutdown'),
+      (130,'Compressor 2 reports a low He pressure shutdown'),
+      (131,'No 24v supply from compressor 2'),
+      (132,'Compressor 2 reports a klixon error')
+    ) as t(c, d) where c = p_code::int),
+    'undocumented code'
+  );
+$function$;
+
+-- Compressor status codes (the CS1/CS2 minute-data columns), from
+-- /minlog_help.html. This is what turns "cs1 > 0 (now 11.0)" -- which tells an
+-- on-call engineer nothing at 2am -- into "compressor stopped due to overheat".
+-- Note the vendor lists the fuse and klixon codes in both a one- and two-digit
+-- form (8/18, 4/14); both are carried here.
+create or replace function public.magmon_compressor_status_text(p_code numeric)
+returns text
+language sql
+immutable
+as $function$
+  select coalesce(
+    (select d from (values
+      (0,  'normal operation, compressor running'),
+      (4,  'klixon error'),
+      (8,  'compressor fuse tripped'),
+      (10, 'compressor stopped, reason unknown'),
+      (11, 'compressor stopped due to overheat'),
+      (12, 'compressor stopped due to low He pressure'),
+      (13, 'compressor stopped due to overheat and low pressure'),
+      (14, 'klixon error'),
+      (18, 'compressor fuse tripped'),
+      (20, 'compressor powered off or cable disconnected (no 24v signal)'),
+      (30, 'compressor powered off or cable disconnected (no 24v signal)'),
+      (31, 'compressor powered off or cable disconnected (no 24v signal)'),
+      (32, 'compressor powered off or cable disconnected (no 24v signal)'),
+      (33, 'compressor powered off or cable disconnected (no 24v signal)')
+    ) as t(c, d) where c = p_code::int),
+    'undocumented status code'
+  );
+$function$;
+
+grant execute on function public.magmon_error_text(numeric) to anon, authenticated, service_role;
+grant execute on function public.magmon_compressor_status_text(numeric) to anon, authenticated, service_role;
+
+
 -- --- evaluate_diagnostics --------------------------------------------
 -- evaluate_alerts answers "is a value over a line right now". This answers the
 -- questions an engineer actually asks: is it MOVING, is it STUCK, and do several
@@ -2665,58 +2840,110 @@ begin
   -- definition, and would otherwise be all this ever reported).
   --
   -- Deliberately weak claims: fifteen units is small, so "unique" may mean
-  -- uncommon rather than wrong, and it would NOT flag NM1027, whose EC values
-  -- are ordinary while it runs a real cooling fault. It complements the other
-  -- detections; it does not replace them. Non-paging (see _upsert_finding).
-  -- Compared WITHIN an org, never across tenants.
-  for r in
-    with live as (
-      select a.id, a.name, a.org_id
-      from assets a
-      where a.maintenance = false
-        and a.last_sample_at is not null
-        and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
-    ),
-    per_unit as (
-      -- Modal value over 24h, not the current one: on a unit whose register
-      -- churns, "what does it usually say" is stable where "what does it say
-      -- right now" is a coin flip.
-      select l.org_id, l.id as asset_id, l.name, f.field,
-             mode() within group (order by t.data->>f.field) as val
-      from live l
-      join telemetry_samples t on t.asset_id = l.id
-        and t.created_at >= now() - interval '24 hours'
-      cross join (values ('EC1'),('EC2'),('EC3'),('EC4')) as f(field)
-      where t.data ? f.field
-      group by l.org_id, l.id, l.name, f.field
-    ),
-    sized as (
-      select org_id, count(distinct asset_id) as fleet_n from per_unit group by org_id
-    ),
-    freq as (
-      select p.org_id, p.field, p.val, count(*) as n_units
-      from per_unit p group by p.org_id, p.field, p.val
-    )
-    select p.asset_id, p.name, p.field, p.val, fq.n_units, s.fleet_n
-    from per_unit p
-    join freq fq on fq.org_id = p.org_id and fq.field = p.field
-                and fq.val is not distinct from p.val
-    join sized s on s.org_id = p.org_id
-  loop
-    -- Below eight reporting units "unique in the fleet" means nothing, so a
-    -- small or half-offline fleet reports nothing rather than noise.
-    if r.val is not null and r.fleet_n >= 8 and r.n_units = 1 then
-      perform _upsert_finding(r.asset_id, 'anomaly', r.field, 'warning',
-        format('%s error register %s reads %s — no other unit in the fleet reports that value. Unusual rather than proven faulty; the MagMon code list would say what it means.',
-               r.name, r.field, r.val),
-        jsonb_build_object('field', r.field, 'value', r.val,
-                           'units_sharing_value', r.n_units, 'fleet_size', r.fleet_n));
-    else
-      perform _resolve_finding(r.asset_id, 'anomaly', r.field);
-    end if;
-  end loop;
+  -- uncommon rather than wrong. It complements the other detections; it does not
+  -- replace them. Non-paging (see _upsert_finding). Compared WITHIN an org,
+  -- never across tenants.
+  --
+  -- CORRECTION 2026-08-20: this used to say NM1027 "runs a real cooling fault".
+  -- It does not, and did not. Its coldhead has been flat at 4.21-4.23 K with a
+  -- steady 44.9 K shield and 60-62 F water for as long as we have retention;
+  -- what it has is a dead flow SENSOR, raising the device's own codes 5 (flow
+  -- too low) and 6 (flow too high) in nearly equal numbers, which no real flow
+  -- can do. Left recorded rather than deleted: the wrong reading was load-
+  -- bearing for a while.
+  perform evaluate_diagnostics_ec_outliers();
 end;
 $function$;
+
+-- Section 5, extracted so the comparison it performs can be stated plainly.
+--
+-- The previous version compared EC1-to-EC1, EC2-to-EC2 across units. The
+-- device's own /minlog_help.html says EC1-EC4 are "the four worst error codes
+-- active during this minute", severity-ranked and zero-padded -- so which SLOT
+-- a code lands in depends on how many OTHER codes happen to be active on that
+-- unit at that moment, and a slot-wise comparison compares nothing. Live proof
+-- at the time of writing: code 6 sat in EC2 on CA1012/NM1027 but EC3 on
+-- NM1006/NM1029, and code 26 was split 3 units in EC1 against 4 in EC2.
+--
+-- Membership is the only stable identity, so this compares the SET of codes a
+-- unit raises and keys the finding on the CODE. That also removes a churn bug:
+-- keyed on the slot, an unrelated code clearing would slide a code into a
+-- different slot, resolve the finding and open a duplicate for the same
+-- condition. APPLIED to live DB 2026-08-20 (migrations magmon_device_code_tables,
+-- ec_codes_as_set_not_slots, evaluate_diagnostics_delegates_ec_outliers).
+create or replace function public.evaluate_diagnostics_ec_outliers()
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare r record;
+begin
+  -- Materialized because it is needed twice: once to raise findings, once to
+  -- sweep findings whose code is no longer raised (a loop over current codes
+  -- cannot see a code that has gone away).
+  drop table if exists _ec_now;
+  create temp table _ec_now on commit drop as
+  with live as (
+    select a.id, a.name, a.org_id
+    from assets a
+    where a.maintenance = false
+      and a.last_sample_at is not null
+      and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
+  ),
+  totals as (
+    select l.org_id, l.id as asset_id, count(*) as n_total
+    from live l
+    join telemetry_samples t on t.asset_id = l.id and t.created_at >= now() - interval '24 hours'
+    where t.data ? 'EC1'
+    group by 1, 2
+  ),
+  -- PERSISTENT codes only. A code present on a fifth of a unit's samples is its
+  -- steady state; a one-minute blip (CA1012 showed code 72 exactly once in a
+  -- week) is not something to compare fleets on, and would flap a finding.
+  persistent as (
+    select tt.org_id, tt.asset_id, l.name, (v.code::numeric)::int as code
+    from totals tt
+    join live l on l.id = tt.asset_id
+    join telemetry_samples t on t.asset_id = tt.asset_id and t.created_at >= now() - interval '24 hours'
+    cross join lateral (values
+      (t.data->>'EC1'), (t.data->>'EC2'), (t.data->>'EC3'), (t.data->>'EC4')) as v(code)
+    where v.code is not null and v.code <> '0.0'
+      and v.code ~ '^[0-9]+(\.[0-9]+)?$' and (v.code::numeric)::int <> 0
+    group by tt.org_id, tt.asset_id, l.name, (v.code::numeric)::int, tt.n_total
+    having count(*) >= greatest(10, tt.n_total / 5)
+  ),
+  sized as (select org_id, count(distinct asset_id) as fleet_n from totals group by 1),
+  freq as (select org_id, code, count(distinct asset_id) as n_units from persistent group by 1, 2)
+  select p.asset_id, p.name, p.code, f.n_units, s.fleet_n
+  from persistent p
+  join freq f on f.org_id = p.org_id and f.code = p.code
+  join sized s on s.org_id = p.org_id;
+
+  -- Below eight reporting units "unique in the fleet" means nothing, so a small
+  -- or half-offline fleet reports nothing rather than noise.
+  for r in select * from _ec_now where fleet_n >= 8 and n_units = 1
+  loop
+    perform _upsert_finding(r.asset_id, 'anomaly', 'EC' || r.code, 'warning',
+      format('%s reports error code %s -- %s. No other unit in the fleet raises it.',
+             r.name, r.code, magmon_error_text(r.code)),
+      jsonb_build_object('code', r.code, 'meaning', magmon_error_text(r.code),
+                         'units_sharing_code', r.n_units, 'fleet_size', r.fleet_n));
+  end loop;
+
+  -- One sweep retires everything the loop above did not raise: codes that
+  -- stopped being unique, codes no longer raised at all, and the findings the
+  -- previous SLOT-keyed version left behind on channels 'EC1'..'EC4'.
+  update alert_events e set resolved_at = now()
+  where e.kind = 'anomaly' and e.resolved_at is null
+    and not exists (
+      select 1 from _ec_now n
+      where n.asset_id = e.asset_id and n.fleet_n >= 8 and n.n_units = 1
+        and e.channel = 'EC' || n.code
+    );
+end;
+$function$;
+grant execute on function public.evaluate_diagnostics_ec_outliers() to service_role;
 
 -- NOTE: generate_demo_telemetry now jitters ColdheadRuO instead of emitting
 -- demo_asset_specs.coldhead_k as a bare constant. It was the only channel

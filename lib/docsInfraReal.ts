@@ -36,4 +36,9 @@ export const realInfra: DocsInfra = {
   processMatch: "magmon-gateway",
   reportHost: "wxygirzfxutvtfkxxcvw.supabase.co",
   assets: ["CA1012", "NM1001", "NM1019", "NM1027", "NM1034", "NM1037"],
+  // Filled in per request by app/docs/page.tsx from the caller's own org — a
+  // static list would go stale the moment a unit is added or a Pi renamed, and
+  // it must never show another tenant's estate. Empty here is the safe default:
+  // if a caller ever renders realInfra directly, they get no unit addresses.
+  unitAccess: [],
 };

@@ -31,6 +31,7 @@ const PARTS: { part: string; blurb: string; sections: { id: string; label: strin
       { id: "ir305", label: "iR305 remote access" },
       { id: "tailscale", label: "Tailscale setup" },
       { id: "tailscale-ssh", label: "SSH over Tailscale" },
+      { id: "reach-magmon", label: "Open a unit's MagMon" },
       { id: "pi-server", label: "The shared Pi server" },
     ],
   },
@@ -387,6 +388,76 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             <P>
               List every machine on the tailnet and its IP with{" "}
               <code className="doc-code">tailscale status</code> from any joined device.
+            </P>
+          </Section>
+
+          {/* ---------------- Reaching one unit's MagMon ---------------- */}
+          <Section id="reach-magmon" title="Open a unit's MagMon web interface">
+            <P>
+              <b>Do not browse the MagMon&rsquo;s LAN address directly.</b> That address is private
+              and several sites reuse it, so over a tailnet subnet route it reaches whichever Pi
+              currently owns that route — with nothing on screen to tell you which unit you got.
+              This is not hypothetical: a week of minute data was read from one unit while believed
+              to be another, and only the readings themselves gave it away.
+            </P>
+            <P>
+              Tunnel through a <i>named</i> Pi instead. The Pi is at exactly one site, so the tunnel
+              can only land on one MagMon. Pick a different local port per unit and you can hold
+              several open at once:
+            </P>
+            <CodeBlock
+              code={`ssh -L 8080:<magmon-host>:80 <user>@<pi-host>\n# then open http://localhost:8080`}
+            />
+            {infra.unitAccess.length > 0 && (
+              <>
+                <P>
+                  Ready-made per unit. A <span className="text-[var(--status-warning)]">shared</span>{" "}
+                  address is one another unit also uses — for those the tunnel is the only safe route.
+                </P>
+                <div className="overflow-x-auto">
+                  <table className="cheat-table my-1">
+                    <tbody>
+                      {infra.unitAccess.map((u, i) => (
+                        <tr key={u.name}>
+                          <td className="desc">
+                            {u.name}
+                            {u.site && (
+                              <span className="block text-[10px] text-[var(--text-dim)]">{u.site}</span>
+                            )}
+                            {u.ambiguousHost && (
+                              <span className="block text-[10px] text-[var(--status-warning)]">
+                                shared address
+                              </span>
+                            )}
+                          </td>
+                          <td className="cmd">
+                            {u.piHost && u.magmonHost ? (
+                              <>
+                                ssh -L {8080 + i}:{u.magmonHost}:80 {u.piUser}@{u.piHost}
+                                <span className="block text-[10px] text-[var(--text-dim)]">
+                                  then http://localhost:{8080 + i}
+                                </span>
+                              </>
+                            ) : !u.magmonHost ? (
+                              <span className="text-[var(--text-dim)]">no MagMon address on record</span>
+                            ) : (
+                              <span className="text-[var(--text-dim)]">
+                                no Tailscale node matched yet — {u.magmonHost} on its own LAN
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            <P>
+              To see which Pi currently owns a route from your own machine:{" "}
+              <code className="doc-code">
+                tailscale status --json | jq -r &apos;.Peer[] | select(.PrimaryRoutes) | &quot;\(.HostName)\t\(.PrimaryRoutes | join(&quot;,&quot;))&quot;&apos;
+              </code>
             </P>
           </Section>
 

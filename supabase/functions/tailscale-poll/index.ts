@@ -119,6 +119,11 @@ Deno.serve(async () => {
         tailscale_online: r.online,
         tailscale_status_at: nowIso,
         tailscale_device_id: r.device.id, // self-heal to exact for next poll
+        // The MagicDNS name, which is the part a human can actually type. Several
+        // sites reuse the same private monitor_host (NM1027/NM1029 are both
+        // 192.168.14.199), so naming the Pi is the only way to build a command
+        // that can reach one specific unit. Falls back to the bare hostname.
+        tailscale_hostname: r.device.name ?? r.device.hostname ?? null,
       })
       .eq("id", r.assetId);
     r.online ? up++ : down++;

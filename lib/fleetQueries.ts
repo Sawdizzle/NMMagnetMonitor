@@ -10,6 +10,7 @@ import type {
   HeliumSeriesResult,
   AssetAlertsResult,
 } from "./dataSource";
+import type { UnitAccess } from "./docsInfra";
 
 // The org-scoped read layer. Every function here takes an explicit orgId and
 // filters by it — there is deliberately no "load everything" variant, so a
@@ -374,4 +375,50 @@ export async function loadOpenAlertsForOrg(orgId: string): Promise<{
     alerts: rows.map((r) => ({ ...r, assetName: nameOf.get(r.asset_id) ?? "unknown" })),
     error: null,
   };
+}
+
+/**
+ * How to reach each unit's MagMon directly, for the gated /docs runbook.
+ *
+ * NOT part of PUBLIC_ASSET_COLUMNS and deliberately kept out of it:
+ * monitor_host and the Pi's hostname are infrastructure, and the runbook is the
+ * one surface already gated on admin-or-docs_access.
+ *
+ * The `ambiguousHost` flag is the reason this exists at all. Several sites hand
+ * their MagMon the same private address — NM1027 (NMMC Hamilton) and NM1029
+ * (Limestone) are both 192.168.14.199, NM1003 (Iuka) and NM1035 (Numed DSC) are
+ * both 192.168.0.1 — so browsing that address over a tailnet subnet route
+ * reaches whichever Pi currently owns the route, with nothing on screen to say
+ * which. Marking the collisions turns a silent trap into a visible one.
+ */
+export async function loadUnitAccessForOrg(orgId: string): Promise<UnitAccess[]> {
+  const { data, error } = await supabaseAdmin
+    .from("assets")
+    .select("name, site_name, monitor_host, tailscale_hostname, service_user")
+    .eq("org_id", orgId)
+    .order("name");
+  if (error || !data) return [];
+
+  const rows = data as unknown as {
+    name: string;
+    site_name: string | null;
+    monitor_host: string | null;
+    tailscale_hostname: string | null;
+    service_user: string | null;
+  }[];
+
+  // Count each host so a shared one can be flagged on every unit that shares it.
+  const hostCount = new Map<string, number>();
+  for (const r of rows) {
+    if (r.monitor_host) hostCount.set(r.monitor_host, (hostCount.get(r.monitor_host) ?? 0) + 1);
+  }
+
+  return rows.map((r) => ({
+    name: r.name,
+    site: r.site_name,
+    magmonHost: r.monitor_host,
+    piHost: r.tailscale_hostname,
+    piUser: r.service_user || "pi",
+    ambiguousHost: !!r.monitor_host && (hostCount.get(r.monitor_host) ?? 0) > 1,
+  }));
 }

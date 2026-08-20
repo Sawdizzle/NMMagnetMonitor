@@ -1,5 +1,6 @@
 import { getSession } from "@/lib/session";
 import { realInfra } from "@/lib/docsInfraReal";
+import { loadUnitAccessForOrg } from "@/lib/fleetQueries";
 import DocsGated from "@/components/DocsGated";
 
 /**
@@ -23,5 +24,13 @@ export default async function DocsPage() {
   // Same rule as TV access: admins always qualify, viewers need the grant.
   const allowed = !!session && (session.role === "admin" || session.docsAccess);
 
-  return <DocsGated infra={allowed ? realInfra : null} />;
+  // The per-unit access table is the one part of the runbook that cannot be a
+  // static literal — it has to reflect the units that exist right now, and it
+  // must be scoped to the caller's OWN org. Queried only after `allowed`, so an
+  // unauthorized caller's response carries no addresses to find.
+  const infra = allowed
+    ? { ...realInfra, unitAccess: session.activeOrgId ? await loadUnitAccessForOrg(session.activeOrgId) : [] }
+    : null;
+
+  return <DocsGated infra={infra} />;
 }
