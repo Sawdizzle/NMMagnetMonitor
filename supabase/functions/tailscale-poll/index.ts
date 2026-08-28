@@ -126,7 +126,8 @@ Deno.serve(async () => {
         tailscale_hostname: r.device.name ?? r.device.hostname ?? null,
       })
       .eq("id", r.assetId);
-    r.online ? up++ : down++;
+    if (r.online) up++;
+    else down++;
   }
 
   return json({

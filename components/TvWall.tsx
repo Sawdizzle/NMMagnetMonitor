@@ -87,6 +87,9 @@ export default function TvWall() {
 
   // ---- a ticking clock (also refreshes "x min ago" + re-derives health) ---
   useEffect(() => {
+    // seeds the clock on mount. Date.now() cannot be rendered on the
+    // server without a hydration mismatch, so the first value has to land here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
@@ -135,6 +138,9 @@ export default function TvWall() {
   // user gesture, so the AudioContext is created/resumed inside the toggle.
   const [soundOn, setSoundOn] = useState(false);
   useEffect(() => {
+    // reads the remembered sound preference after hydration;
+    // localStorage does not exist during SSR.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSoundOn(localStorage.getItem("tv-sound") === "on");
   }, []);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -200,6 +206,10 @@ export default function TvWall() {
   const rowCount = clampInt(params.get("rows"), 1, 4, Math.max(1, fittedRows));
 
   // ---- ordering (recomputed as `now` ticks so status stays live) ---------
+  // `now` is listed on purpose. It is not read in the callback, but the
+  // helpers called here derive status from the current time, so the tick is
+  // what keeps the wall live; drop it and the display freezes at first paint.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const ordered = useMemo(() => sortByAlarmPriority(assets), [assets, now]);
 
   // Fleet helium forecasts (days-to-refill), on their own slow cadence.
@@ -223,6 +233,10 @@ export default function TvWall() {
       clearInterval(id);
     };
   }, [handoffMin, handoffSecs]);
+  // `now` is listed on purpose. It is not read in the callback, but the
+  // helpers called here derive status from the current time, so the tick is
+  // what keeps the wall live; drop it and the display freezes at first paint.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const summary = useMemo(() => buildShiftSummary(ordered, forecasts), [ordered, forecasts, now]);
 
   // One uniform, edge-to-edge grid of equal cards. Critical (red) units hold the
@@ -231,6 +245,10 @@ export default function TvWall() {
   // (blue) — a page at a time. Warnings still stay surfaced via the ticker.
   const criticalUnits = useMemo(
     () => ordered.filter((a) => computeAssetAlarm(a).level === "critical"),
+    // `now` is listed on purpose. It is not read in the callback, but the
+    // helpers called here derive status from the current time, so the tick is
+    // what keeps the wall live; drop it and the display freezes at first paint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [ordered, now]
   );
 
@@ -283,23 +301,26 @@ export default function TvWall() {
   // Every open issue as its own "ASSET — error" line for the scrolling ticker:
   // criticals and warnings both, so a warning stays visible until it's cleared
   // or accepted (maintenance). Maintenance units are excluded by design.
+  // `now` is listed on purpose. It is not read in the callback, but the
+  // helpers called here derive status from the current time, so the tick is
+  // what keeps the wall live; drop it and the display freezes at first paint.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const alertItems = useMemo(() => buildAlertItems(ordered), [ordered, now]);
   const anyCritical = alertItems.some((it) => it.severity === "critical");
 
   // ---- rotation ----------------------------------------------------------
   const [page, setPage] = useState(0);
   useEffect(() => {
-    if (pageCount <= 1) {
-      setPage(0);
-      return;
-    }
+    if (pageCount <= 1) return;
     const id = setInterval(() => setPage((p) => (p + 1) % pageCount), dwellMs);
     return () => clearInterval(id);
   }, [pageCount, dwellMs]);
-  // Clamp if the page count shrank under us (assets dropped off).
-  useEffect(() => {
-    if (page >= pageCount) setPage(0);
-  }, [page, pageCount]);
+  // Derive the effective page instead of clamping through state. If pageCount
+  // shrinks under us (assets dropped off, or the grid grew enough to fit them
+  // all), a stale `page` would otherwise render one blank frame before an
+  // effect corrected it — and that correction was a setState-in-effect, i.e. a
+  // cascading render on a screen that repaints every second.
+  const safePage = pageCount > 0 ? page % pageCount : 0;
 
   const clockDate = now ? new Date(now) : null;
   const dateStr = clockDate
@@ -308,7 +329,7 @@ export default function TvWall() {
   const clockStr = clockDate ? clockDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
   const maxStart = Math.max(0, rotating.length - rotCells);
-  const rotStart = rotCells > 0 ? Math.min(page * rotCells, maxStart) : 0;
+  const rotStart = rotCells > 0 ? Math.min(safePage * rotCells, maxStart) : 0;
   const rotWindow = rotCells > 0 ? rotating.slice(rotStart, rotStart + rotCells) : [];
 
   return (
@@ -444,7 +465,7 @@ export default function TvWall() {
           {/* Remaining cells: the current rotation page (keyed by page so they
               animate in when the page turns). */}
           {rotWindow.map((a) => (
-            <TvCard key={`rot-${page}-${a.id}`} asset={a} forecast={forecasts[a.id] ?? null} enterAnim={enterAnim} />
+            <TvCard key={`rot-${safePage}-${a.id}`} asset={a} forecast={forecasts[a.id] ?? null} enterAnim={enterAnim} />
           ))}
         </div>
       )}
@@ -452,7 +473,7 @@ export default function TvWall() {
       {pageCount > 1 && (
         <div className="tv-dots" aria-hidden="true">
           {Array.from({ length: pageCount }).map((_, i) => (
-            <span key={i} className={`tv-dot${i === page ? " on" : ""}`} />
+            <span key={i} className={`tv-dot${i === safePage ? " on" : ""}`} />
           ))}
         </div>
       )}

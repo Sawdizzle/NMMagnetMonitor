@@ -71,6 +71,9 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   }, [assetId, demo]);
 
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     const interval = setInterval(load, POLL_MS);
     return () => clearInterval(interval);

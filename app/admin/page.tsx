@@ -2,13 +2,12 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
-import { supabase, type Asset } from "@/lib/supabase";
+import { type Asset } from "@/lib/supabase";
 import { generatePiScript, generateSystemdUnit, COLLECTOR_VERSION } from "@/lib/piScript";
 import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
 import { NO_TELEMETRY_KINDS } from "@/lib/health";
 import Protected from "@/components/Protected";
-import type { Session } from "@/lib/auth";
 // Admin mutations go through server actions now: the httpOnly session cookie
 // travels with the call and the server resolves both the actor and the active
 // org. The browser sends no credential, and the RPCs are org-scoped, so an
@@ -129,10 +128,10 @@ type PromptReq = {
 };
 
 export default function AdminPage() {
-  return <Protected requireAdmin>{(session) => <AdminPanel me={session} />}</Protected>;
+  return <Protected requireAdmin>{() => <AdminPanel />}</Protected>;
 }
 
-function AdminPanel({ me }: { me: Session }) {
+function AdminPanel() {
   const [activeTab, setActiveTab] = useState<TabId>("assets");
 
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -254,6 +253,9 @@ function AdminPanel({ me }: { me: Session }) {
   }, [loadAuditLog]);
 
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
@@ -817,14 +819,13 @@ function AdminPanel({ me }: { me: Session }) {
             handleDeleteRule={handleDeleteRule}
           />
           <AlertRecipientsSection
-            me={me}
             isDemoOrg={isDemoOrg}
             notify={notify}
             fail={fail}
             askConfirm={askConfirm}
           />
-          <AlertSenderSection me={me} notify={notify} fail={fail} />
-          <AlertEventsSection me={me} />
+          <AlertSenderSection notify={notify} fail={fail} />
+          <AlertEventsSection />
         </>
       )}
 
@@ -1307,13 +1308,11 @@ function AlertsTab(props: {
 /* -------------------------------------------------- Alert recipients section */
 
 function AlertRecipientsSection({
-  me,
   isDemoOrg,
   notify,
   fail,
   askConfirm,
 }: {
-  me: Session;
   isDemoOrg: boolean;
   notify: (msg: string) => void;
   fail: (msg: string) => void;
@@ -1331,6 +1330,9 @@ function AlertRecipientsSection({
     setRecipients((data as AlertRecipient[]) ?? []);
   }, []);
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
@@ -1487,11 +1489,9 @@ function AlertRecipientsSection({
 // hospital junks anything without them.
 
 function AlertSenderSection({
-  me,
   notify,
   fail,
 }: {
-  me: Session;
   notify: (msg: string) => void;
   fail: (msg: string) => void;
 }) {
@@ -1513,6 +1513,9 @@ function AlertSenderSection({
     setPlatformFrom(data.platform_from ?? "");
   }, []);
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
@@ -1665,13 +1668,16 @@ function AlertSenderSection({
 
 /* ------------------------------------------------------ Recent alerts section */
 
-function AlertEventsSection({ me }: { me: Session }) {
+function AlertEventsSection() {
   const [events, setEvents] = useState<AlertEventRow[]>([]);
   const load = useCallback(async () => {
     const { data } = await adminListAlertEvents(100);
     setEvents((data as AlertEventRow[]) ?? []);
   }, []);
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 

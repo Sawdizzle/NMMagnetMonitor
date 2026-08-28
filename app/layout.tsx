@@ -32,6 +32,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             so first paint isn't blocked on the font arriving. */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        {/* eslint-disable-next-line @next/next/no-page-custom-font -- the rule
+            targets the pages/ router; this is the app router's root layout, so the
+            stylesheet is emitted once for every route, not per page. */}
         <link
           rel="stylesheet"
           href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap"

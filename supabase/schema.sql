@@ -2412,9 +2412,12 @@ begin
 end;
 $function$;
 
-revoke execute on function public._engineer_actor(text) from anon, authenticated;
-revoke execute on function public.acknowledge_alert(text, bigint, text, text) from anon;
-revoke execute on function public.unacknowledge_alert(text, bigint) from anon;
+-- NOTE: these three omitted `public` and were therefore no-ops while PUBLIC
+-- held the default EXECUTE -- the exact trap documented at the top of this file.
+-- Corrected by migration revoke_public_execute_on_alerting_internals (F-5).
+revoke execute on function public._engineer_actor(text) from public, anon, authenticated;
+revoke execute on function public.acknowledge_alert(text, bigint, text, text) from public, anon;
+revoke execute on function public.unacknowledge_alert(text, bigint) from public, anon;
 grant execute on function public.acknowledge_alert(text, bigint, text, text) to authenticated, service_role;
 grant execute on function public.unacknowledge_alert(text, bigint) to authenticated, service_role;
 
@@ -3497,3 +3500,56 @@ returns void language sql security definer set search_path to 'public' as $funct
   delete from alert_suppressions
    where coalesce(revoked_at, expires_at) < now() - interval '180 days';
 $function$;
+
+-- ---------------------------------------------------------------------------
+-- F-5 (2026-08-28, migration revoke_public_execute_on_alerting_internals)
+--
+-- The whole alerting/diagnostics generation was created without revokes, so
+-- every function below was EXECUTE-able by anon -- i.e. by anyone holding the
+-- anon key that ships in the browser bundle. The one that mattered:
+-- _upsert_finding let an unauthenticated caller insert an arbitrary `critical`
+-- alert_event on any asset, which the notify-alerts cron (every minute) then
+-- emailed and pushed to real recipients. _resolve_finding was the inverse --
+-- silence a genuine alert. cleanup_old_rollups() would delete rollups.
+--
+-- Verified safe before applying: every pg_cron job that calls these runs as
+-- `postgres` (cron.job.username), which owns them; the _* helpers are only
+-- called from inside other SECURITY DEFINER functions, where the nested call
+-- runs as the owner regardless of the caller's ACL; and nothing in app/, lib/,
+-- components/ or supabase/functions/ calls any of them.
+--
+-- Reminder, since this is the third time it has bitten: `revoke ... from anon`
+-- on a FUNCTION is a NO-OP while PUBLIC holds EXECUTE. Always revoke from
+-- `public` too.
+
+-- Internal helpers. No service_role grant -- nothing outside the DB calls
+-- these, matching the _record_audit precedent.
+revoke execute on function public._upsert_finding(uuid, text, text, text, text, jsonb)
+  from public, anon, authenticated;
+revoke execute on function public._resolve_finding(uuid, text, text)
+  from public, anon, authenticated;
+
+-- Cron-driven evaluation and maintenance. service_role keeps EXECUTE so a
+-- server-side "run now" stays possible; that key is server-only.
+revoke execute on function public.evaluate_alerts()                  from public, anon, authenticated;
+revoke execute on function public.evaluate_diagnostics()             from public, anon, authenticated;
+revoke execute on function public.evaluate_diagnostics_ec_outliers() from public, anon, authenticated;
+revoke execute on function public.rollup_telemetry_daily(integer)    from public, anon, authenticated;
+revoke execute on function public.cleanup_old_rollups()              from public, anon, authenticated;
+revoke execute on function public.cleanup_old_suppressions()         from public, anon, authenticated;
+
+grant  execute on function public.evaluate_alerts()                  to service_role;
+grant  execute on function public.evaluate_diagnostics()             to service_role;
+grant  execute on function public.evaluate_diagnostics_ec_outliers() to service_role;
+grant  execute on function public.rollup_telemetry_daily(integer)    to service_role;
+grant  execute on function public.cleanup_old_rollups()              to service_role;
+grant  execute on function public.cleanup_old_suppressions()         to service_role;
+
+-- default_org_id() backs the org_id column default on assets, alert_rules,
+-- alert_recipients and audit_log. A column default is evaluated as the
+-- INSERTing role, so service_role must keep EXECUTE even though every insert
+-- today goes through a SECURITY DEFINER admin_*/_record_audit function. anon
+-- and authenticated already have INSERT revoked on all four tables, so they
+-- could never reach the default.
+revoke execute on function public.default_org_id() from public, anon, authenticated;
+grant  execute on function public.default_org_id() to service_role;

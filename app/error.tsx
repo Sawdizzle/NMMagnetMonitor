@@ -32,6 +32,11 @@ export default function Error({
         <button onClick={reset} className="btn-primary">
           Try again
         </button>
+        {/* A hard navigation, not next/link, and deliberately so: this is the
+            error boundary. Whatever broke may have left the router or the React
+            tree in a bad state, and a client-side transition would carry that
+            state along. A full document load is the reliable way out. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a href="/" className="btn-secondary inline-flex items-center">
           Back to fleet
         </a>

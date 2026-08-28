@@ -63,6 +63,10 @@ export default function Dashboard() {
   useEffect(() => {
     const saved = localStorage.getItem(VIEW_KEY);
     if (saved === "cards" || saved === "table") {
+      // deliberate: the real view preference lives in localStorage and a
+      // media query, neither of which exists on the server. Resolving it during
+      // render would hydration-mismatch; see the `view` state comment above.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setView(saved);
     } else if (window.matchMedia("(max-width: 767px)").matches) {
       setView("table");
@@ -87,6 +91,9 @@ export default function Dashboard() {
   }, [demo]);
 
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     const interval = setInterval(load, POLL_MS);
     return () => clearInterval(interval);

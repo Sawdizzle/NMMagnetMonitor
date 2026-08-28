@@ -97,6 +97,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const parsed = readStoredSession();
     if (!parsed) {
+      // restores the stored session after hydration;
+      // localStorage does not exist during SSR.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
       return;
     }

@@ -57,6 +57,9 @@ export default function GlobalUsersTab({
   }, [fail]);
 
   useEffect(() => {
+    // load() is async: every setState in it runs after an await, on a
+    // later tick, not synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
