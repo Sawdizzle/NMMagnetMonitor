@@ -11,6 +11,7 @@ import type {
   AssetAlertsResult,
 } from "./dataSource";
 import type { UnitAccess } from "./docsInfra";
+import type { SuppressionRow } from "./alertTriage";
 
 // The org-scoped read layer. Every function here takes an explicit orgId and
 // filters by it — there is deliberately no "load everything" variant, so a
@@ -45,6 +46,8 @@ export type OpenAlertRow = {
   acknowledged_by: string | null;
   disposition: "accepted" | "ignored" | "false_alarm" | null;
   ack_note: string | null;
+  /** The mute covering this event, if one is. Non-null means it never paged. */
+  suppression_id: string | null;
 };
 
 /**
@@ -366,7 +369,7 @@ export async function loadOpenAlertsForOrg(orgId: string): Promise<{
     .from("alert_events")
     .select(
       "id, asset_id, kind, channel, severity, message, detail, triggered_at, " +
-        "acknowledged_at, acknowledged_by, disposition, ack_note"
+        "acknowledged_at, acknowledged_by, disposition, ack_note, suppression_id"
     )
     .in("asset_id", assets.map((a) => a.id))
     .is("resolved_at", null)
@@ -378,6 +381,41 @@ export async function loadOpenAlertsForOrg(orgId: string): Promise<{
     alerts: rows.map((r) => ({ ...r, assetName: nameOf.get(r.asset_id) ?? "unknown" })),
     error: null,
   };
+}
+
+/**
+ * Every mute currently in force for one org.
+ *
+ * Read with the service role and scoped by org_id on the row itself —
+ * alert_suppressions carries its own org_id (unlike alert_events), so no asset
+ * join is needed to keep tenants apart.
+ *
+ * "In force" means not revoked AND not expired. Expiry is evaluated at read
+ * time in both places that care (here and _active_suppression), which is why a
+ * mute needs no scheduled job to lapse: it simply stops matching.
+ */
+export async function loadSuppressionsForOrg(orgId: string): Promise<SuppressionRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from("alert_suppressions")
+    .select("id, asset_id, kind, channel, reason, severity_at_mute, created_by, created_at, expires_at")
+    .eq("org_id", orgId)
+    .is("revoked_at", null)
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .order("created_at", { ascending: false });
+  if (error || !data) return [];
+
+  const assetIds = [...new Set(data.map((r) => r.asset_id as string | null).filter(Boolean))] as string[];
+  const nameOf = new Map<string, string>();
+  if (assetIds.length > 0) {
+    const { data: assets } = await supabaseAdmin.from("assets").select("id, name").in("id", assetIds);
+    for (const a of assets ?? []) nameOf.set(a.id as string, a.name as string);
+  }
+  return data.map((r) => ({
+    ...(r as Omit<SuppressionRow, "assetName">),
+    // A null asset_id is a fleet-wide mute — the wildcard the schema allows and
+    // the UI does not yet write.
+    assetName: r.asset_id ? nameOf.get(r.asset_id as string) ?? "unknown" : "every unit",
+  }));
 }
 
 /**

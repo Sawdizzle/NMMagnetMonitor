@@ -261,6 +261,14 @@ function DebriefRow({
             </span>
           )}
           {e.resolvedAfterWindow && <span className="debrief-since">cleared since</span>}
+          {/* Never emailed or pushed, because somebody had already muted this
+              condition. Worth saying here: without it the morning review reads
+              a known, owned fault as overnight news. */}
+          {e.muted && (
+            <span className="debrief-muted" title="Muted — this one never emailed or pushed">
+              muted
+            </span>
+          )}
         </div>
         <p className="debrief-msg">{e.message}</p>
       </div>

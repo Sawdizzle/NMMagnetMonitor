@@ -145,7 +145,7 @@ export async function loadDebriefForOrg(
 
   const { data, error } = await supabaseAdmin
     .from("alert_events")
-    .select("id, asset_id, alert_rule_id, kind, message, triggered_at, resolved_at")
+    .select("id, asset_id, alert_rule_id, kind, message, triggered_at, resolved_at, suppression_id")
     .in("asset_id", [...names.keys()])
     .lt("triggered_at", endIso)
     .or(`triggered_at.gte.${startIso},resolved_at.gte.${startIso},resolved_at.is.null`)
@@ -171,6 +171,10 @@ export async function loadDebriefForOrg(
       triggeredAt: e.triggered_at as string,
       resolvedAt: (e.resolved_at as string | null) ?? null,
       bucket: bucketFor(openedInWindow, resolvedInWindow),
+      // Set at insert by the alert_event_suppress trigger, so this is the
+      // historical truth about whether the event paged — not whether the mute
+      // happens to still be standing when the debrief is read.
+      muted: (e.suppression_id as string | null) !== null,
       // An event that recovered after the boundary is still reported as it stood
       // at 9am (bucket "new"/"ongoing"), but the reader is told it has since
       // cleared — otherwise the page insists a unit is down that plainly isn't.

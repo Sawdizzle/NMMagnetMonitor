@@ -3066,3 +3066,434 @@ alter table public.site_geocode enable row level security;  -- no policy: servic
 -- with the anon key. Check any new admin_* function with:
 --   select proname, proacl from pg_proc where proname like 'admin_%';
 -- The correct ACL is postgres + service_role and nothing else.
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- ALERT MUTING  (migration alert_suppressions_mute_and_flap_dampener,
+-- APPLIED to the live DB 2026-08-20)
+--
+-- The measurement that prompted it: in the 7 days to 2026-08-20 the fleet
+-- opened 232 alert events and emailed 179 of them, and NOT ONE had ever been
+-- acknowledged since acknowledgement shipped. The feature existed and went
+-- unused, which is the shape of a feature that does not fit the job.
+--
+-- What did not fit: an ack is a property of one alert_events ROW. A flapping
+-- condition opens a NEW row every cycle -- NM1035's h2o_temp against a dead
+-- sensor opened 95 of them in a week, averaging 49 minutes each -- and every
+-- new row is unacknowledged and pages again. "We know, we're waiting on a
+-- part" is a fact about a UNIT AND A FAULT, and there was nowhere to put it.
+--
+-- Three things below, in order of how much noise each removes:
+--   1. alert_suppressions -- a mute on (asset, kind, channel), with a required
+--      reason and an expiry. Quiets, never hides.
+--   2. the BEFORE INSERT trigger -- one interception point for every path that
+--      opens an alert, present and future.
+--   3. the flap dampener, in that same trigger -- carries a recent ack across a
+--      re-fire even when nobody muted anything, and expires itself.
+-- ═══════════════════════════════════════════════════════════════════════
+
+create table if not exists public.alert_suppressions (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null references public.orgs(id) on delete cascade,
+  -- NULL asset_id = every unit in the org; NULL kind = every kind; NULL
+  -- channel = every channel of that kind. The UI only ever writes the most
+  -- specific form (one unit, one kind, one channel) -- the wildcards exist so
+  -- a fleet-wide "stop paging about water flow while the chiller is out" is
+  -- one row rather than seventeen.
+  asset_id    uuid references public.assets(id) on delete cascade,
+  kind        text,
+  channel     text,
+  reason      text not null,
+  -- The severity the muter was looking at. A mute is not a blank cheque: an
+  -- alert that climbs ABOVE this breaks through and pages (see the trigger and
+  -- _upsert_finding). Muting a warning still lets the critical through; muting
+  -- a known critical -- NM1034 warm at the service centre -- stays muted.
+  severity_at_mute text not null default 'warning'
+    check (severity_at_mute in ('warning','critical')),
+  created_by  text not null,
+  created_at  timestamptz not null default now(),
+  -- NULL = indefinite, which only an admin may set. An engineer is capped at
+  -- two weeks by mute_alert(), because "muted forever in 2026 and nobody
+  -- remembers why" is the failure mode this whole table exists to avoid.
+  expires_at  timestamptz,
+  revoked_at  timestamptz,
+  revoked_by  text,
+  revoked_reason text
+);
+create index if not exists alert_suppressions_lookup_idx
+  on public.alert_suppressions (org_id, asset_id, kind)
+  where revoked_at is null;
+alter table public.alert_suppressions enable row level security;
+-- No policy: reached only through SECURITY DEFINER RPCs and the service role,
+-- exactly like alert_recipients.
+
+-- Which suppression (if any) covers this event. Most specific wins: a rule
+-- naming this asset beats a fleet-wide one, and a rule naming this kind beats
+-- a catch-all, so a narrow "unmute just this" is expressible later.
+create or replace function public._active_suppression(
+  p_asset uuid, p_kind text, p_channel text, p_severity text default 'warning'
+) returns uuid
+language sql stable security definer set search_path to 'public' as $function$
+  select s.id
+  from alert_suppressions s
+  join assets a on a.id = p_asset
+  where s.org_id = a.org_id
+    and s.revoked_at is null
+    and (s.expires_at is null or s.expires_at > now())
+    and (s.asset_id is null or s.asset_id = p_asset)
+    and (s.kind    is null or s.kind    = p_kind)
+    and (s.channel is null or s.channel is not distinct from p_channel)
+    -- Escalation breaks through: only cover severities at or below what was
+    -- muted. 'warning' < 'critical'.
+    and not (p_severity = 'critical' and s.severity_at_mute <> 'critical')
+  order by (s.asset_id is null), (s.kind is null), (s.channel is null), s.created_at desc
+  limit 1;
+$function$;
+
+alter table public.alert_events
+  add column if not exists suppression_id uuid
+    references public.alert_suppressions(id) on delete set null;
+
+-- ---------------------------------------------------------------------
+-- One interception point for every path that opens an alert.
+--
+-- A trigger rather than an edit to each `insert into alert_events` site:
+-- evaluate_alerts has six of them, _upsert_finding has a seventh, and the next
+-- detector will have an eighth. Suppression is a property of the EVENT, so it
+-- belongs where events are born.
+--
+-- Suppressing means stamping notified_at / push_notified_at at insert -- the
+-- same mechanism _upsert_finding already uses for non-paging 'anomaly'
+-- findings, and the same one notify-alerts uses for demo orgs. It means "there
+-- is nobody this should be sent to", and needs no change in either notifier.
+-- ---------------------------------------------------------------------
+create or replace function public._alert_event_suppress()
+returns trigger language plpgsql security definer set search_path to 'public'
+as $function$
+declare
+  v_sup  uuid;
+  v_prev record;
+begin
+  v_sup := public._active_suppression(new.asset_id, new.kind, new.channel,
+                                      coalesce(new.severity, 'warning'));
+  if v_sup is not null then
+    new.suppression_id  := v_sup;
+    new.notified_at     := coalesce(new.notified_at, now());
+    new.push_notified_at := coalesce(new.push_notified_at, now());
+    return new;
+  end if;
+
+  -- FLAP DAMPENER. Nobody muted anything, but somebody acknowledged this exact
+  -- fault on this exact unit within the last few hours and it has flapped shut
+  -- and open again. Re-paging them is the NM1035 pattern: 95 mails in a week
+  -- for one condition a human had already looked at.
+  --
+  -- The ack is carried forward VERBATIM, timestamp included, which is what
+  -- makes this self-limiting: the chain cannot outlive the window measured
+  -- from the ORIGINAL ack, so a genuinely persistent flapping fault goes back
+  -- to paging a few hours later instead of being silenced forever.
+  select e.acknowledged_at, e.acknowledged_by, e.disposition, e.ack_note
+    into v_prev
+  from alert_events e
+  where e.asset_id = new.asset_id
+    and e.kind = new.kind
+    and e.channel is not distinct from new.channel
+    and e.resolved_at is not null
+    and e.acknowledged_at is not null
+    and e.acknowledged_at > now() - interval '4 hours'
+  order by e.resolved_at desc
+  limit 1;
+
+  if found then
+    new.acknowledged_at  := v_prev.acknowledged_at;
+    new.acknowledged_by  := v_prev.acknowledged_by;
+    new.disposition      := v_prev.disposition;
+    new.ack_note         := v_prev.ack_note;
+    new.notified_at      := coalesce(new.notified_at, now());
+    new.push_notified_at := coalesce(new.push_notified_at, now());
+  end if;
+
+  return new;
+end;
+$function$;
+
+drop trigger if exists alert_event_suppress on public.alert_events;
+create trigger alert_event_suppress
+  before insert on public.alert_events
+  for each row execute function public._alert_event_suppress();
+
+-- ---------------------------------------------------------------------
+-- Triage actor. _engineer_actor is left exactly as it is -- the existing
+-- acknowledge RPCs depend on its signature, and DROPping a function to widen
+-- its return type silently resets its ACL. This is the same gate plus the one
+-- extra fact muting needs: WHICH of the two roles is calling, because an
+-- indefinite mute is admin-only.
+-- ---------------------------------------------------------------------
+create or replace function public._triage_actor(p_token text)
+returns table(user_id uuid, username text, org_id uuid, role text)
+language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_row record;
+begin
+  select r.user_id, r.username, r.active_org, r.effective_role into v_row
+  from public.resolve_session(p_token) r;
+  if v_row.user_id is null then raise exception 'not authenticated'; end if;
+  if v_row.effective_role is distinct from 'admin'
+     and v_row.effective_role is distinct from 'engineer' then
+    raise exception 'not authorized';
+  end if;
+  if v_row.active_org is null then raise exception 'no active organization'; end if;
+  return query select v_row.user_id, v_row.username, v_row.active_org, v_row.effective_role;
+end;
+$function$;
+
+-- Mute the CONDITION behind an open alert, and acknowledge the alert itself.
+--
+-- One call, because they are one thought: "yes, this is real, we are waiting on
+-- a part, stop telling me until Thursday." Splitting them produced the state
+-- nobody wants -- a muted condition nobody has claimed.
+--
+-- p_hours NULL means indefinite and is refused to engineers. 336h (two weeks)
+-- is the engineer ceiling; anything longer is a decision someone should have to
+-- own explicitly.
+create or replace function public.mute_alert(
+  p_token text, p_event_id bigint, p_hours integer, p_reason text
+) returns uuid
+language plpgsql security definer set search_path to 'public'
+as $function$
+declare
+  v_actor record;
+  v_ev    record;
+  v_reason text := btrim(coalesce(p_reason, ''));
+  v_expires timestamptz;
+  v_id    uuid;
+begin
+  select * into v_actor from public._triage_actor(p_token);
+  if v_reason = '' then
+    raise exception 'a reason is required to mute an alert';
+  end if;
+
+  -- Scoped through the asset join, like every other alert RPC: alert_events
+  -- carries no org_id, so this is what stands between an event id and another
+  -- tenant's fleet.
+  select e.id, e.asset_id, e.kind, e.channel, e.severity, a.name as asset_name
+    into v_ev
+  from alert_events e
+  join assets a on a.id = e.asset_id
+  where e.id = p_event_id and a.org_id = v_actor.org_id and e.resolved_at is null;
+  if not found then return null; end if;
+
+  if p_hours is null then
+    if v_actor.role <> 'admin' then
+      raise exception 'only an admin can mute an alert indefinitely';
+    end if;
+    v_expires := null;
+  else
+    if p_hours < 1 then raise exception 'a mute must last at least an hour'; end if;
+    if p_hours > 336 and v_actor.role <> 'admin' then
+      raise exception 'an engineer may mute for at most two weeks';
+    end if;
+    v_expires := now() + make_interval(hours => p_hours);
+  end if;
+
+  -- Supersede rather than stack: a second mute on the same condition is a
+  -- revision of the first, and two overlapping rows would make "when does this
+  -- come back?" unanswerable.
+  update alert_suppressions
+     set revoked_at = now(), revoked_by = v_actor.username,
+         revoked_reason = 'replaced by a newer mute'
+   where org_id = v_actor.org_id and revoked_at is null
+     and asset_id is not distinct from v_ev.asset_id
+     and kind     is not distinct from v_ev.kind
+     and channel  is not distinct from v_ev.channel;
+
+  insert into alert_suppressions
+    (org_id, asset_id, kind, channel, reason, severity_at_mute, created_by, expires_at)
+  values
+    (v_actor.org_id, v_ev.asset_id, v_ev.kind, v_ev.channel, v_reason,
+     coalesce(v_ev.severity, 'warning'), v_actor.username, v_expires)
+  returning id into v_id;
+
+  -- The open event stops paging immediately -- the trigger only fires on
+  -- INSERT, and this one already exists -- and is acknowledged as 'ignored',
+  -- which is exactly what a mute means: real, and we are living with it.
+  update alert_events
+     set suppression_id   = v_id,
+         notified_at      = coalesce(notified_at, now()),
+         push_notified_at = coalesce(push_notified_at, now()),
+         acknowledged_at  = coalesce(acknowledged_at, now()),
+         acknowledged_by  = coalesce(acknowledged_by, v_actor.username),
+         disposition      = 'ignored',
+         ack_note         = v_reason
+   where id = p_event_id;
+
+  perform _record_audit(v_actor.username, 'mute_alert', 'alert_event', p_event_id::text,
+    format('Muted %s on %s%s until %s — %s',
+           v_ev.kind, v_ev.asset_name,
+           case when v_ev.channel is null then '' else ' (' || v_ev.channel || ')' end,
+           coalesce(to_char(v_expires, 'YYYY-MM-DD HH24:MI UTC'), 'cleared by hand'),
+           v_reason),
+    v_actor.org_id);
+  return v_id;
+end;
+$function$;
+
+-- Lift a mute early. The events it was covering stay as they are -- already
+-- notified, already acknowledged -- and the NEXT time the condition opens an
+-- event it pages normally. That is the intended shape: un-muting restores the
+-- future, it does not re-litigate the past.
+create or replace function public.unmute_alert(p_token text, p_suppression_id uuid)
+returns boolean language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_actor record; v_row record;
+begin
+  select * into v_actor from public._triage_actor(p_token);
+  update alert_suppressions s
+     set revoked_at = now(), revoked_by = v_actor.username,
+         revoked_reason = 'lifted by hand'
+   where s.id = p_suppression_id and s.org_id = v_actor.org_id and s.revoked_at is null
+  returning s.* into v_row;
+  if not found then return false; end if;
+  perform _record_audit(v_actor.username, 'unmute_alert', 'alert_suppression',
+    p_suppression_id::text, format('Lifted the mute on %s', coalesce(v_row.kind, 'all alerts')),
+    v_actor.org_id);
+  return true;
+end;
+$function$;
+
+-- Edit the note on an alert already triaged, and optionally change the call.
+-- The original ack stands (who, when); what changes is what we now know. An
+-- engineer who wrote "chasing it" at 2am should be able to make it say "flow
+-- sensor, part on order" without un-acknowledging and re-acknowledging, which
+-- would lose the ack time and re-arm the page.
+create or replace function public.update_alert_note(
+  p_token text, p_event_id bigint, p_note text, p_disposition text default null
+) returns boolean language plpgsql security definer set search_path to 'public'
+as $function$
+declare v_actor record;
+begin
+  select * into v_actor from public._triage_actor(p_token);
+  if p_disposition is not null
+     and p_disposition not in ('accepted','ignored','false_alarm') then
+    raise exception 'invalid disposition';
+  end if;
+  update alert_events e
+     set ack_note    = nullif(btrim(coalesce(p_note, '')), ''),
+         disposition = coalesce(p_disposition, e.disposition)
+    from assets a
+   where e.id = p_event_id and e.asset_id = a.id
+     and a.org_id = v_actor.org_id
+     and e.acknowledged_at is not null;
+  return found;
+end;
+$function$;
+
+revoke execute on function public._triage_actor(text)            from anon, authenticated, public;
+revoke execute on function public._active_suppression(uuid, text, text, text) from anon, authenticated, public;
+revoke execute on function public._alert_event_suppress()        from anon, authenticated, public;
+-- NB: `from anon` alone is NOT enough, and the first cut of this migration got
+-- it wrong. Supabase's ALTER DEFAULT PRIVILEGES grants EXECUTE on every new
+-- public function to PUBLIC, anon is a member of PUBLIC, and revoking from anon
+-- leaves that pseudo-role grant standing (`=X/postgres` in proacl). Both must
+-- be named. Fixed by migration revoke_public_from_alert_triage_rpcs, which also
+-- swept up acknowledge_alert / unacknowledge_alert — they shipped with the same
+-- gap and nobody caught it. Check with:
+--   select proname, proacl from pg_proc where proname like '%alert%';
+revoke execute on function public.mute_alert(text, bigint, integer, text) from anon, public;
+revoke execute on function public.unmute_alert(text, uuid)       from anon, public;
+revoke execute on function public.update_alert_note(text, bigint, text, text) from anon, public;
+revoke execute on function public.acknowledge_alert(text, bigint, text, text) from public;
+revoke execute on function public.unacknowledge_alert(text, bigint) from public;
+grant  execute on function public.mute_alert(text, bigint, integer, text) to authenticated, service_role;
+grant  execute on function public.unmute_alert(text, uuid)       to authenticated, service_role;
+grant  execute on function public.update_alert_note(text, bigint, text, text) to authenticated, service_role;
+
+-- ---------------------------------------------------------------------
+-- _upsert_finding: escalation now breaks a mute as well as an ack.
+--
+-- Unchanged except for the escalation branch. A mute taken out against a
+-- WARNING must not swallow the CRITICAL that warning turns into -- the whole
+-- reason severity_at_mute is recorded. The mute is revoked (not merely
+-- ignored) so the queue can say why it ended and who had set it; a mute taken
+-- out against a critical in the first place is left alone, because that is a
+-- known-bad unit somebody deliberately silenced.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public._upsert_finding(p_asset uuid, p_kind text, p_channel text, p_severity text, p_message text, p_detail jsonb)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_id bigint;
+  v_sev text;
+  v_sup uuid;
+  v_broke uuid;
+  -- Findings that are recorded and displayed but never notified.
+  v_non_paging constant text[] := array['anomaly'];
+  v_silent boolean := p_kind = any(v_non_paging);
+begin
+  select id, severity, suppression_id into v_id, v_sev, v_sup
+  from alert_events
+  where asset_id = p_asset and kind = p_kind
+    and channel is not distinct from p_channel
+    and resolved_at is null
+  limit 1;
+
+  if v_id is null then
+    -- The BEFORE INSERT trigger applies any active suppression and the flap
+    -- dampener; the notified_at set here is the non-paging-kind rule, which
+    -- the trigger deliberately leaves alone (it only ever coalesces).
+    insert into alert_events (asset_id, kind, channel, severity, message, detail,
+                              notified_at, push_notified_at)
+    values (p_asset, p_kind, p_channel, p_severity, p_message, p_detail,
+            case when v_silent then now() end,
+            case when v_silent then now() end);
+    return;
+  end if;
+
+  -- Escalation re-arms the alert: a warning somebody acknowledged must not
+  -- silence the critical it becomes. Clearing notified_at is what makes the
+  -- existing notifier pick it up again. A non-paging kind is NOT re-armed —
+  -- re-arming it would page, which is the one thing it must never do.
+  if p_severity = 'critical' and v_sev is distinct from 'critical' and not v_silent then
+    -- Break the mute too -- unless it was taken out against a critical in the
+    -- first place, in which case this is not news and the mute holds.
+    update alert_suppressions
+       set revoked_at = now(), revoked_by = 'system',
+           revoked_reason = 'escalated to critical'
+     where id = v_sup and revoked_at is null and severity_at_mute <> 'critical'
+    returning id into v_broke;
+
+    if v_sup is not null and v_broke is null then
+      -- A surviving mute: record the escalation, keep the silence. Re-arming
+      -- here would page about the very thing somebody deliberately muted at
+      -- this severity.
+      update alert_events
+         set severity = 'critical', message = p_message, detail = p_detail
+       where id = v_id;
+    else
+      update alert_events
+         set severity = 'critical', message = p_message, detail = p_detail,
+             notified_at = null, push_notified_at = null,
+             acknowledged_at = null, acknowledged_by = null, disposition = null,
+             suppression_id = null
+       where id = v_id;
+    end if;
+  else
+    -- De-escalation keeps the ack: someone already owns it and it is improving.
+    update alert_events
+       set severity = p_severity, message = p_message, detail = p_detail
+     where id = v_id;
+  end if;
+end;
+$function$;
+
+-- Expired and revoked mutes stop mattering the moment they lapse (both are
+-- checked at read time), so there is nothing to schedule. This just keeps the
+-- table from growing without bound.
+create or replace function public.cleanup_old_suppressions()
+returns void language sql security definer set search_path to 'public' as $function$
+  delete from alert_suppressions
+   where coalesce(revoked_at, expires_at) < now() - interval '180 days';
+$function$;

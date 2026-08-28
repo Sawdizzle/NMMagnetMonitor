@@ -315,4 +315,109 @@ harder to batch/rate-limit. Prefer A.
   open/resolved model makes them easy to add later.
 - **Multi-tenant:** when orgs arrive, `alert_recipients` (and rules) get an
   `org_id` and the notifier scopes per org. Designed to extend, not rewrite.
-```
+
+
+---
+
+## Phase 5 — triage that survives the churn (2026-08-20)
+
+**The measurement that prompted it.** In the seven days to 2026-08-20 the fleet
+opened **232 alert events** and emailed **179** of them — 20 to 39 mails a day —
+and **not one alert had ever been acknowledged** since acknowledgement shipped
+in `3b910e1`. A feature that exists and is used zero times is not a discoverable
+problem; it is the wrong shape.
+
+The wrong shape was this: an ack is a property of one `alert_events` **row**. A
+flapping condition opens a **new row** every cycle, and every new row is
+unacknowledged and pages again. `NM1035 h2o_temp > 75`, firing against the
+100.4756 sentinel of a dead water sensor, opened **95 separate events in seven
+days**, averaging 49 minutes open each. "We know, we're waiting on a part" is a
+fact about a *unit and a fault*, and there was nowhere in the schema to put it.
+
+(The sentinel fix has since nulled NM1035's channel, so those 95 have stopped.
+The mechanism that produced them had not.)
+
+### What shipped
+
+| | |
+|---|---|
+| `alert_suppressions` | A mute on `(asset, kind, channel)`, NULL meaning "any". Required `reason`, an `expires_at`, `created_by`, revocable. |
+| `alert_event_suppress` | A **BEFORE INSERT trigger** on `alert_events` — one interception point for all seven `insert into alert_events` sites and the eighth nobody has written yet. |
+| the flap dampener | In that same trigger: carries a **recent** ack across a re-fire even with no mute set. |
+| `mute_alert` / `unmute_alert` / `update_alert_note` | Session-token RPCs behind `_triage_actor` (admin **or** engineer). |
+| `/engineer` | A Mute flow on each card, an **Edit note** flow on acknowledged ones, and a **Muted** section listing every mute in force. |
+
+### The four decisions
+
+**Quiet, not hidden.** A muted alert still opens, still resolves, still colours
+the fleet card and the TV, and still holds its place in the queue with a `muted`
+badge. Only email and push stop. The alternative — hiding them — makes a muted
+unit indistinguishable from a healthy one, *including to whoever did not set the
+mute*, and that is how a fleet goes quietly dark.
+
+**Suppression is stamping, not filtering.** The trigger sets `notified_at` and
+`push_notified_at` at insert. That is the mechanism `_upsert_finding` already
+uses for non-paging `anomaly` findings and `notify-alerts` uses for demo orgs,
+and it means "there is nobody this should be sent to". **Neither notifier
+changed.** It also makes the record honest: `suppression_id` on the row is the
+historical truth about whether that event ever paged, independent of whether the
+mute is still standing when you read it.
+
+**Escalation breaks a mute — above the severity that was muted.** The severity
+in front of the muter is recorded as `severity_at_mute`. Mute a warning and the
+critical it becomes still pages (the mute is revoked, recorded as *escalated to
+critical*). Mute a known critical — NM1034 warm at the service centre — and it
+stays muted, because that is not news. Without `severity_at_mute` you get to
+choose between a mute that cannot silence a known-bad unit and a mute that can
+swallow a quench.
+
+**Bounded by default, indefinite by exception.** An engineer may mute for up to
+two weeks; only an admin may set `expires_at = null`. Every mute carries a reason
+and lands in the audit log. "Muted forever in 2026 and nobody remembers why" is
+the failure mode the whole table exists to avoid, so the *absence* of an expiry
+is the privileged act, not the presence of one.
+
+### The flap dampener, and why it expires itself
+
+The mute covers the deliberate case. The dampener covers the one nobody thought
+to act on: an ack on this exact `(asset, kind, channel)` within the last **four
+hours**, and the condition has flapped shut and open again. The ack is carried
+forward **verbatim, timestamp included** — which is precisely what bounds it. The
+window is measured from the *original* ack, so the chain cannot extend itself; a
+genuinely persistent flapping fault goes back to paging a few hours later rather
+than being silenced forever by a single click.
+
+### Traps hit on the way
+
+- **`revoke ... from anon` is not enough.** Supabase's `ALTER DEFAULT
+  PRIVILEGES` grants EXECUTE on every new public function to **PUBLIC**, and anon
+  is a member of PUBLIC — so the first cut left `=X/postgres` in the ACL on all
+  three new RPCs. Both roles must be named. `acknowledge_alert` and
+  `unacknowledge_alert` turned out to have shipped with the same gap; migration
+  `revoke_public_from_alert_triage_rpcs` swept up all five. Not a leak on its own
+  (every one resolves a session token first), but it is the F-4 shape.
+- **`_engineer_actor` was left alone.** Muting needs to know *which* role is
+  calling, and widening a function's return type means DROP — which silently
+  resets its ACL. `_triage_actor` is a new function beside it rather than a
+  rewrite of it.
+- **A `"use server"` module may only export async functions.** `MUTE_DURATIONS`
+  lives in `lib/alertTriage.ts` for that reason, not as a style choice.
+
+### Still open
+
+- **The people receiving the mail cannot act on it.** `alert_recipients` are
+  addresses, not users; a VP of Service can take 20 emails a day and have no
+  button in any of them. A per-event action token (`alert_events.action_token`),
+  a confirm-then-POST page — mail scanners prefetch GET links — and Ack / Snooze
+  24h links in the digest would close it. Needs the app's public URL reachable
+  from `notify-alerts`; `app_settings.app_url` avoids a new secret.
+- **`false_alarm` is still write-only.** It is the only signal that a *bound*
+  needs tuning rather than a magnet needing a visit, and nothing reads it. A
+  count per `(kind, channel)` on the Admin → Alerts tab would make it worth
+  having recorded.
+- **`assets.maintenance` is now the odd one out.** It is a whole-unit,
+  admin-only, no-reason, no-expiry mute that **resolves** open events — it
+  destroys the history rather than quieting it. It could become an indefinite
+  fleet-of-one suppression and inherit the reason, the expiry and the audit
+  trail. Deliberately not folded in here: it changes the behaviour of a flag
+  that is live on real units.

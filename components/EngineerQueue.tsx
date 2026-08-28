@@ -3,7 +3,15 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { acknowledgeAlert, unacknowledgeAlert, type Disposition } from "@/lib/engineerActions";
+import {
+  acknowledgeAlert,
+  unacknowledgeAlert,
+  muteAlert,
+  unmuteAlert,
+  updateAlertNote,
+  type Disposition,
+} from "@/lib/engineerActions";
+import { MUTE_DURATIONS, muteRemaining, type SuppressionRow } from "@/lib/alertTriage";
 import { NO_TELEMETRY_KINDS } from "@/lib/health";
 import type { OpenAlertRow } from "@/lib/fleetQueries";
 
@@ -18,7 +26,8 @@ import type { OpenAlertRow } from "@/lib/fleetQueries";
 // Acknowledging does NOT remove the row. The unit is still faulted; the row
 // just stops being unowned. That is deliberate: a triage screen where acting on
 // something makes it vanish teaches people that the list is a to-do rather than
-// a picture of the fleet.
+// a picture of the fleet. Muting does not remove it either — a muted row keeps
+// its place and gains a badge saying who silenced it and until when.
 
 const KIND_LABELS: Record<string, string> = {
   offline: "Offline",
@@ -35,11 +44,19 @@ const KIND_LABELS: Record<string, string> = {
   anomaly: "Unlike the fleet",
 };
 
-const DISPOSITIONS: { value: Disposition; label: string; hint: string }[] = [
-  { value: "accepted", label: "Accept", hint: "Real, and I own it" },
-  { value: "ignored", label: "Ignore", hint: "Real, but we're living with it for now" },
-  { value: "false_alarm", label: "False alarm", hint: "The alert itself is wrong — the bound needs tuning" },
-];
+function kindLabel(kind: string | null): string {
+  if (!kind) return "every alert";
+  return KIND_LABELS[kind] ?? kind.replace(/_/g, " ");
+}
+
+// Three calls, and they are not interchangeable. `false_alarm` is kept apart
+// from the other two because it is the only signal that a BOUND needs tuning
+// rather than a magnet needing a visit.
+const DISPOSITION_LABELS: Record<Disposition, string> = {
+  accepted: "accepted",
+  ignored: "muted",
+  false_alarm: "flagged false alarm",
+};
 
 function severityRank(a: OpenAlertRow): number {
   // Unacknowledged always outranks acknowledged, whatever the severity: an
@@ -50,12 +67,16 @@ function severityRank(a: OpenAlertRow): number {
 
 export default function EngineerQueue({
   alerts,
+  mutes,
   error,
   viewer,
+  isAdmin,
 }: {
   alerts: OpenAlertRow[];
+  mutes: SuppressionRow[];
   error: string | null;
   viewer: string;
+  isAdmin: boolean;
 }) {
   const sorted = [...alerts].sort(
     (a, b) =>
@@ -96,9 +117,10 @@ export default function EngineerQueue({
           label="critical"
           color="var(--status-offline)"
         />
+        <Tile n={mutes.length} label="muted" color="var(--text-dim)" />
       </div>
 
-      {alerts.length === 0 && !error ? (
+      {alerts.length === 0 && mutes.length === 0 && !error ? (
         <div className="debrief-quiet">
           <div>
             <p className="text-sm font-semibold">Nothing open.</p>
@@ -109,19 +131,36 @@ export default function EngineerQueue({
         </div>
       ) : (
         <>
-          <Section title="Needs someone" blurb="Open and unowned — nobody has picked these up." rows={open} />
+          <Section
+            title="Needs someone"
+            blurb="Open and unowned — nobody has picked these up."
+            rows={open}
+            isAdmin={isAdmin}
+          />
           <Section
             title="Acknowledged"
             blurb="Still faulted, but someone owns them. They re-notify if they get worse."
             rows={owned}
+            isAdmin={isAdmin}
           />
+          <MuteSection mutes={mutes} />
         </>
       )}
     </div>
   );
 }
 
-function Section({ title, blurb, rows }: { title: string; blurb: string; rows: OpenAlertRow[] }) {
+function Section({
+  title,
+  blurb,
+  rows,
+  isAdmin,
+}: {
+  title: string;
+  blurb: string;
+  rows: OpenAlertRow[];
+  isAdmin: boolean;
+}) {
   if (rows.length === 0) return null;
   return (
     <section className="mb-8">
@@ -131,21 +170,112 @@ function Section({ title, blurb, rows }: { title: string; blurb: string; rows: O
       <p className="text-xs text-[var(--text-dim)] mb-3">{blurb}</p>
       <div className="flex flex-col gap-2">
         {rows.map((a) => (
-          <AlertCard key={a.id} alert={a} />
+          <AlertCard key={a.id} alert={a} isAdmin={isAdmin} />
         ))}
       </div>
     </section>
   );
 }
 
-function AlertCard({ alert }: { alert: OpenAlertRow }) {
+/**
+ * Every mute in force, listed on its own.
+ *
+ * It has to be its own section rather than a badge on the queue rows, because
+ * the dangerous mute is the one whose alert has since RESOLVED: the row is gone
+ * from the queue, the mute is still standing, and the next firing of that
+ * condition will be silent. This is the only screen that will tell you.
+ */
+function MuteSection({ mutes }: { mutes: SuppressionRow[] }) {
+  if (mutes.length === 0) return null;
+  return (
+    <section className="mb-8">
+      <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-1">
+        Muted <span className="alert-count">{mutes.length}</span>
+      </h2>
+      <p className="text-xs text-[var(--text-dim)] mb-3">
+        These conditions still open alerts and still show on the fleet — they just don&rsquo;t email or
+        push. Anything that escalates to critical breaks through anyway.
+      </p>
+      <div className="flex flex-col gap-2">
+        {mutes.map((m) => (
+          <MuteCard key={m.id} mute={m} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MuteCard({ mute }: { mute: SuppressionRow }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [note, setNote] = useState("");
-  const [showNote, setShowNote] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const indefinite = mute.expires_at === null;
+
+  return (
+    <div
+      className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-4 py-3"
+      style={{ borderLeft: "3px solid var(--text-dim)" }}
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            {mute.asset_id ? (
+              <Link href={`/asset/${mute.asset_id}`} className="font-semibold text-sm hover:underline">
+                {mute.assetName}
+              </Link>
+            ) : (
+              <span className="font-semibold text-sm">{mute.assetName}</span>
+            )}
+            <span className="debrief-kind">{kindLabel(mute.kind)}</span>
+            {mute.channel && <span className="debrief-kind">{mute.channel}</span>}
+            <span
+              className="fault-pill"
+              style={{ fontSize: "10px", color: indefinite ? "var(--status-warning)" : undefined }}
+            >
+              {muteRemaining(mute.expires_at)}
+            </span>
+          </div>
+          <p className="text-sm text-[var(--text-muted)] mt-1 italic">&ldquo;{mute.reason}&rdquo;</p>
+          <p className="text-[11px] text-[var(--text-dim)] mt-1">
+            muted by {mute.created_by} on {new Date(mute.created_at).toLocaleDateString()}
+            {mute.severity_at_mute === "critical" && " · muted at critical, so escalation will not break it"}
+          </p>
+        </div>
+        <button
+          className="btn-secondary shrink-0"
+          disabled={pending}
+          onClick={() =>
+            startTransition(async () => {
+              const result = await unmuteAlert(mute.id);
+              if (!result.ok) return setFailure(result.error);
+              setFailure(null);
+              router.refresh();
+            })
+          }
+        >
+          Un-mute
+        </button>
+      </div>
+      {failure && (
+        <p className="text-[11px] mt-2" style={{ color: "var(--status-offline)" }} role="alert">
+          {failure}
+        </p>
+      )}
+    </div>
+  );
+}
+
+type Panel = "none" | "triage" | "mute" | "edit";
+
+function AlertCard({ alert, isAdmin }: { alert: OpenAlertRow; isAdmin: boolean }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [panel, setPanel] = useState<Panel>("none");
+  const [note, setNote] = useState(alert.ack_note ?? "");
   const [failure, setFailure] = useState<string | null>(null);
 
   const critical = alert.severity === "critical";
+  const muted = alert.suppression_id !== null;
   const color = critical || NO_TELEMETRY_KINDS.has(alert.kind)
     ? "var(--status-offline)"
     : "var(--status-warning)";
@@ -158,17 +288,18 @@ function AlertCard({ alert }: { alert: OpenAlertRow }) {
         return;
       }
       setFailure(null);
-      setNote("");
-      setShowNote(false);
+      setPanel("none");
       // The server action revalidates /engineer; refresh pulls the new render
       // so the row moves between sections without a manual reload.
       router.refresh();
     });
 
+  const durations = MUTE_DURATIONS.filter((d) => !d.adminOnly || isAdmin);
+
   return (
     <div
       className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] px-4 py-3"
-      style={{ borderLeft: `3px solid ${color}` }}
+      style={{ borderLeft: `3px solid ${muted ? "var(--text-dim)" : color}` }}
     >
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
@@ -176,10 +307,15 @@ function AlertCard({ alert }: { alert: OpenAlertRow }) {
             <Link href={`/asset/${alert.asset_id}`} className="font-semibold text-sm hover:underline">
               {alert.assetName}
             </Link>
-            <span className="debrief-kind">{KIND_LABELS[alert.kind] ?? alert.kind.replace(/_/g, " ")}</span>
+            <span className="debrief-kind">{kindLabel(alert.kind)}</span>
             {critical && (
               <span className="fault-pill critical" style={{ fontSize: "10px" }}>
                 critical
+              </span>
+            )}
+            {muted && (
+              <span className="fault-pill" style={{ fontSize: "10px" }} title="Not emailed or pushed">
+                muted
               </span>
             )}
           </div>
@@ -189,62 +325,154 @@ function AlertCard({ alert }: { alert: OpenAlertRow }) {
             {alert.acknowledged_at && (
               <>
                 {" · "}
-                <b>{alert.disposition === "false_alarm" ? "flagged false alarm" : alert.disposition === "ignored" ? "ignored" : "accepted"}</b>
+                <b>{DISPOSITION_LABELS[alert.disposition ?? "accepted"]}</b>
                 {" by "}
                 {alert.acknowledged_by}
               </>
             )}
           </p>
           {alert.ack_note && (
-            <p className="text-[11px] text-[var(--text-muted)] mt-1 italic">“{alert.ack_note}”</p>
+            <p className="text-[11px] text-[var(--text-muted)] mt-1 italic">&ldquo;{alert.ack_note}&rdquo;</p>
           )}
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
           {alert.acknowledged_at ? (
-            <button
-              className="btn-secondary"
-              disabled={pending}
-              onClick={() => act(() => unacknowledgeAlert(alert.id))}
-            >
-              Un-acknowledge
-            </button>
-          ) : (
             <>
-              {!showNote && (
-                <button className="btn-secondary" disabled={pending} onClick={() => setShowNote(true)}>
-                  Triage
+              {panel === "none" && (
+                <button className="btn-secondary" disabled={pending} onClick={() => setPanel("edit")}>
+                  Edit note
                 </button>
               )}
+              <button
+                className="btn-secondary"
+                disabled={pending}
+                onClick={() => act(() => unacknowledgeAlert(alert.id))}
+              >
+                Un-acknowledge
+              </button>
             </>
+          ) : (
+            panel === "none" && (
+              <button className="btn-secondary" disabled={pending} onClick={() => setPanel("triage")}>
+                Triage
+              </button>
+            )
           )}
         </div>
       </div>
 
-      {showNote && !alert.acknowledged_at && (
+      {panel === "triage" && (
         <div className="mt-3 pt-3 border-t border-[var(--border)]">
-          <label className="text-[11px] uppercase tracking-wide text-[var(--text-dim)]">
-            Note (optional — what did you find?)
+          <label className="block text-[11px] uppercase tracking-wide text-[var(--text-dim)]">
+            Note (what did you find?)
           </label>
           <input
-            className="input mt-1"
+            className="input mt-1 w-full"
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="e.g. flow sensor loose at the pump, service booked Thursday"
           />
           <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-            {DISPOSITIONS.map((d) => (
+            <button
+              className="btn-secondary"
+              title="Real, and I own it. Still pages if it gets worse."
+              disabled={pending}
+              onClick={() => act(() => acknowledgeAlert(alert.id, "accepted", note))}
+            >
+              Accept
+            </button>
+            <button
+              className="btn-secondary"
+              title="Real, and we're living with it — stop paging about it for a while"
+              disabled={pending}
+              onClick={() => setPanel("mute")}
+            >
+              Mute…
+            </button>
+            <button
+              className="btn-secondary"
+              title="The alert itself is wrong — the bound needs tuning"
+              disabled={pending}
+              onClick={() => act(() => acknowledgeAlert(alert.id, "false_alarm", note))}
+            >
+              False alarm
+            </button>
+            <button className="btn-secondary" disabled={pending} onClick={() => setPanel("none")}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {panel === "mute" && (
+        <div className="mt-3 pt-3 border-t border-[var(--border)]">
+          <label className="block text-[11px] uppercase tracking-wide text-[var(--text-dim)]">
+            Why? (required — this is what the next person reads)
+          </label>
+          <input
+            className="input mt-1 w-full"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. compressor on order, ETA Sept 3"
+            autoFocus
+          />
+          <p className="text-[11px] text-[var(--text-dim)] mt-2">
+            Stops email and push for <b>{kindLabel(alert.kind)}</b>
+            {alert.channel && <> ({alert.channel})</>} on <b>{alert.assetName}</b>. The unit still shows as
+            faulted.{" "}
+            {/* The escalation escape hatch only exists above the severity being muted, so
+                promising it on an already-critical alert would be a lie. */}
+            {critical
+              ? "This one is already critical, so nothing will break the mute — it runs until it expires or you lift it."
+              : "A rise to critical breaks the mute and pages anyway."}
+          </p>
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            {durations.map((d) => (
               <button
-                key={d.value}
+                key={d.label}
                 className="btn-secondary"
-                title={d.hint}
-                disabled={pending}
-                onClick={() => act(() => acknowledgeAlert(alert.id, d.value, note))}
+                disabled={pending || !note.trim()}
+                onClick={() => act(() => muteAlert(alert.id, d.hours, note))}
               >
                 {d.label}
               </button>
             ))}
-            <button className="btn-secondary" disabled={pending} onClick={() => setShowNote(false)}>
+            <button className="btn-secondary" disabled={pending} onClick={() => setPanel("triage")}>
+              Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {panel === "edit" && (
+        <div className="mt-3 pt-3 border-t border-[var(--border)]">
+          <label className="block text-[11px] uppercase tracking-wide text-[var(--text-dim)]">
+            Revise the note — {alert.acknowledged_by}&rsquo;s original acknowledgement stands
+          </label>
+          <input
+            className="input mt-1 w-full"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. part arrived, swapping it Friday"
+            autoFocus
+          />
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            <button
+              className="btn-secondary"
+              disabled={pending}
+              onClick={() => act(() => updateAlertNote(alert.id, note))}
+            >
+              Save
+            </button>
+            <button
+              className="btn-secondary"
+              disabled={pending}
+              onClick={() => {
+                setNote(alert.ack_note ?? "");
+                setPanel("none");
+              }}
+            >
               Cancel
             </button>
           </div>

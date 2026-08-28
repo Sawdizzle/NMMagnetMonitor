@@ -536,6 +536,13 @@ button {
   letter-spacing: 0.03em;
   color: color-mix(in srgb, var(--status-online) 60%, var(--text));
 }
+.debrief-muted {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+}
 .debrief-msg {
   color: var(--text-muted);
   font-size: 0.8rem;

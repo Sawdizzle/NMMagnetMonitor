@@ -105,6 +105,14 @@ export type DebriefEntry = {
   bucket: DebriefBucket;
   /** Resolved after the 9am cutoff — reported as it stood, flagged as since-cleared. */
   resolvedAfterWindow: boolean;
+  /**
+   * Covered by a mute, so it never emailed or pushed.
+   *
+   * The debrief still lists it — muting quiets an alert, it does not hide one —
+   * but a review that presents a known, owned, deliberately-silenced condition
+   * as if it were this morning's news is the fatigue this is meant to reduce.
+   */
+  muted: boolean;
 };
 
 export type DebriefResult = {

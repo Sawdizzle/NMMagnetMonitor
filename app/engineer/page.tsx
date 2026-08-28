@@ -1,5 +1,5 @@
 import { getSession, activeOrgId } from "@/lib/session";
-import { loadOpenAlertsForOrg } from "@/lib/fleetQueries";
+import { loadOpenAlertsForOrg, loadSuppressionsForOrg } from "@/lib/fleetQueries";
 import EngineerQueue from "@/components/EngineerQueue";
 
 /**
@@ -33,6 +33,20 @@ export default async function EngineerPage() {
     );
   }
 
-  const { alerts, error } = await loadOpenAlertsForOrg(orgId);
-  return <EngineerQueue alerts={alerts} error={error} viewer={session.username} />;
+  const [{ alerts, error }, mutes] = await Promise.all([
+    loadOpenAlertsForOrg(orgId),
+    loadSuppressionsForOrg(orgId),
+  ]);
+  // isAdmin gates only the "until I clear it" option in the mute menu. The DB
+  // refuses an indefinite mute to an engineer regardless — this just keeps the
+  // UI from offering a button that would be rejected.
+  return (
+    <EngineerQueue
+      alerts={alerts}
+      mutes={mutes}
+      error={error}
+      viewer={session.username}
+      isAdmin={session.role === "admin"}
+    />
+  );
 }
