@@ -7,7 +7,7 @@ import { type TelemetrySample } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
-import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
+import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, groupAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { useWeather } from "@/lib/useWeather";
 import type { SiteWeather } from "@/lib/weatherTypes";
@@ -104,6 +104,8 @@ export default function Dashboard() {
   // ticker — same alert logic the TV uses.
   const ordered = sortByAlarmPriority(assets);
   const alertItems = buildAlertItems(ordered);
+  // Rendered one row per asset, not one per fault — see groupAlertItems.
+  const alertGroups = groupAlertItems(alertItems);
   const forecasts = useFleetForecasts(assets.map((a) => a.id), demo);
   // Outside conditions per site. Loads independently of the 30s status poll and
   // is simply absent until it arrives — no skeleton, no layout shift.
@@ -273,17 +275,22 @@ export default function Dashboard() {
               className="dash-ticker-track"
               style={{ animationDuration: `${Math.max(20, alertItems.length * 7)}s` }}
             >
-              {[...alertItems, ...alertItems].map((it, i) => (
+              {[...alertGroups, ...alertGroups].map((g, i) => (
                 <Link
                   key={i}
-                  href={`${basePath}/asset/${it.assetId}`}
-                  className={`dash-ticker-item ${it.severity}`}
+                  href={`${basePath}/asset/${g.assetId}`}
+                  className={`dash-ticker-item ${g.severity}`}
                 >
                   <span className="dash-ticker-dot" aria-hidden="true" />
-                  <b>{it.asset}</b>
+                  <b>{g.asset}</b>
                   <span className="dash-ticker-sep">—</span>
-                  {it.label}
-                  {it.detail && <span className="dash-ticker-detail font-mono-data">{it.detail}</span>}
+                  {g.items.map((it, j) => (
+                    <span key={it.key} className={`dash-ticker-fault ${it.severity}`}>
+                      {j > 0 && <span className="dash-ticker-div" aria-hidden="true">&middot;</span>}
+                      {it.label}
+                      {it.detail && <span className="dash-ticker-detail font-mono-data">{it.detail}</span>}
+                    </span>
+                  ))}
                 </Link>
               ))}
             </div>

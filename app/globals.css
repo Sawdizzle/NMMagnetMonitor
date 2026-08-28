@@ -339,6 +339,13 @@ button {
 .dash-ticker-item:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .dash-ticker-item b { font-weight: 700; color: var(--text); }
 .dash-ticker-sep { opacity: 0.5; }
+/* Faults on one asset run inline after its name, separated by a middot. */
+.dash-ticker-fault {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.dash-ticker-div { opacity: 0.45; margin-right: 0.1rem; }
 .dash-ticker-detail { opacity: 0.85; }
 .dash-ticker-dot { width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; }
 .dash-ticker-item.critical .dash-ticker-dot { background: var(--status-offline); }
@@ -1413,6 +1420,15 @@ button {
 }
 .tv-ticker-item b { font-weight: 750; }
 .tv-ticker-sep { opacity: 0.5; }
+/* Faults on one asset run inline after its name, separated by a middot; each
+   keeps its own severity colour so a warning does not read as a critical just
+   because it shares an asset with one. */
+.tv-ticker-fault {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.tv-ticker-div { opacity: 0.45; margin-right: 0.15rem; }
 .tv-ticker-detail { opacity: 0.85; }
 .tv-ticker-dot {
   width: 0.6rem;
@@ -1424,6 +1440,8 @@ button {
 .tv-ticker-item.critical .tv-ticker-dot { background: var(--status-offline); }
 .tv-ticker-item.warning { color: #ffedbf; }
 .tv-ticker-item.warning .tv-ticker-dot { background: var(--status-warning); }
+.tv-ticker-fault.critical { color: #ffdcdd; }
+.tv-ticker-fault.warning { color: #ffedbf; }
 
 /* Small wall panels (800x480, 1024x600). The header lays out brand + five
    tallies + controls + clock on one row, which simply does not fit at these

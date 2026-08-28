@@ -26,6 +26,7 @@ import {
   computeAssetAlarm,
   sortByAlarmPriority,
   buildAlertItems,
+  groupAlertItems,
   ALARM_COLORS,
   ALARM_LABELS,
   type AlarmLevel,
@@ -306,6 +307,8 @@ export default function TvWall() {
   // what keeps the wall live; drop it and the display freezes at first paint.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const alertItems = useMemo(() => buildAlertItems(ordered), [ordered, now]);
+  // One line per asset, faults joined — see groupAlertItems.
+  const alertGroups = useMemo(() => groupAlertItems(alertItems), [alertItems]);
   const anyCritical = alertItems.some((it) => it.severity === "critical");
 
   // ---- rotation ----------------------------------------------------------
@@ -433,13 +436,18 @@ export default function TvWall() {
               className="tv-ticker-track"
               style={{ animationDuration: `${Math.max(18, alertItems.length * 7)}s` }}
             >
-              {[...alertItems, ...alertItems].map((it, i) => (
-                <span key={i} className={`tv-ticker-item ${it.severity}`}>
+              {[...alertGroups, ...alertGroups].map((g, i) => (
+                <span key={i} className={`tv-ticker-item ${g.severity}`}>
                   <span className="tv-ticker-dot" aria-hidden="true" />
-                  <b>{it.asset}</b>
+                  <b>{g.asset}</b>
                   <span className="tv-ticker-sep">—</span>
-                  {it.label}
-                  {it.detail && <span className="tv-ticker-detail font-mono-data">{it.detail}</span>}
+                  {g.items.map((it, j) => (
+                    <span key={it.key} className={`tv-ticker-fault ${it.severity}`}>
+                      {j > 0 && <span className="tv-ticker-div" aria-hidden="true">&middot;</span>}
+                      {it.label}
+                      {it.detail && <span className="tv-ticker-detail font-mono-data">{it.detail}</span>}
+                    </span>
+                  ))}
                 </span>
               ))}
             </div>

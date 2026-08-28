@@ -438,3 +438,32 @@ export function buildAlertItems(assets: FleetAsset[]): AlertItem[] {
   }
   return items;
 }
+
+// One entry per alerting asset, carrying every open fault on it. The tickers
+// render "NM1001 — warm coldhead · compressor off" instead of repeating the
+// asset name once per fault, which on a bad day was most of the crawl.
+export type AlertGroup = {
+  key: string;
+  assetId: string;
+  asset: string;
+  severity: FaultSeverity; // worst fault on the asset — drives the dot
+  items: AlertItem[];
+};
+
+// Collapse a flat alert list by asset, preserving the order assets first
+// appear in (the caller has already sorted by alarm priority).
+export function groupAlertItems(items: AlertItem[]): AlertGroup[] {
+  const groups: AlertGroup[] = [];
+  const byAsset = new Map<string, AlertGroup>();
+  for (const it of items) {
+    let g = byAsset.get(it.assetId);
+    if (!g) {
+      g = { key: it.assetId, assetId: it.assetId, asset: it.asset, severity: it.severity, items: [] };
+      byAsset.set(it.assetId, g);
+      groups.push(g);
+    }
+    g.items.push(it);
+    if (it.severity === "critical") g.severity = "critical";
+  }
+  return groups;
+}
