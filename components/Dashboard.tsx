@@ -12,6 +12,16 @@ import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { useWeather } from "@/lib/useWeather";
 import type { SiteWeather } from "@/lib/weatherTypes";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
+import {
+  envNum,
+  showsPower,
+  usesMagmon,
+  zonesToShow,
+  type EnvZone,
+  POWER_COLORS,
+  POWER_LABELS,
+  powerState,
+} from "@/lib/modality";
 import FieldRing from "./FieldRing";
 import { WeatherChip } from "./SiteWeather";
 import MiniLineChart from "./MiniLineChart";
@@ -305,7 +315,7 @@ export default function Dashboard() {
 
       {!loading && !error && assets.length === 0 && (
         <div className="rounded-lg border border-dashed border-[var(--border)] p-10 text-center text-[var(--text-muted)]" aria-live="polite">
-          No MagMon assets yet. Add a site and asset in the admin panel to see it here.
+          No assets yet. Add a site and asset in the admin panel to see it here.
         </div>
       )}
 
@@ -449,17 +459,62 @@ function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: st
         </Link>
         <div className="ft-sub">{sub}</div>
       </td>
-      {METRICS.map((m) => {
-        const value = asset.latest?.[m.key] as number | null | undefined;
-        const sev = faultCell[m.key];
-        const cls = alarm.maintenance ? "dim" : sev === "critical" ? "bad" : sev === "warning" ? "warn" : "";
-        return (
-          <td key={m.key as string} className={`ft-m ${cls}`.trim()}>
-            {value ?? "—"}
-          </td>
-        );
-      })}
+      {/* The table's columns are the MagMon channels, so a unit with no magnet
+          takes the whole span for its own readings rather than printing six
+          em-dashes across a row that then looks like a dead magnet. A unit that
+          HAS a magnet keeps these columns whatever else it reports — its zone
+          and power detail lives on the card and the asset page, and a lost
+          mains supply still reaches this row as a red edge via the alarm. */}
+      {!usesMagmon(asset.modality) ? (
+        <EnvRowCells asset={asset} span={METRICS.length} dim={alarm.maintenance} />
+      ) : (
+        METRICS.map((m) => {
+          const value = asset.latest?.[m.key] as number | null | undefined;
+          const sev = faultCell[m.key];
+          const cls = alarm.maintenance ? "dim" : sev === "critical" ? "bad" : sev === "warning" ? "warn" : "";
+          return (
+            <td key={m.key as string} className={`ft-m ${cls}`.trim()}>
+              {value ?? "—"}
+            </td>
+          );
+        })
+      )}
     </tr>
+  );
+}
+
+/** A no-magnet unit's readings folded into the table's metric columns, as one cell. */
+function EnvRowCells({
+  asset,
+  span,
+  dim,
+}: {
+  asset: AssetWithTelemetry;
+  span: number;
+  dim: boolean;
+}) {
+  const t = asset.latest as unknown as Record<string, unknown> | null;
+  const power = powerState(t?.ups_on_battery);
+  const zones = zonesToShow(asset.modality, [asset.latest, ...asset.history]);
+  return (
+    <td className={`ft-m ${dim ? "dim" : ""}`.trim()} colSpan={span}>
+      <span className="inline-flex flex-wrap items-center justify-end gap-x-3 gap-y-0.5">
+        {zones.map((z) => {
+          const temp = envNum(t?.[`${z.key}_temp_f`]);
+          const rh = envNum(t?.[`${z.key}_rh`]);
+          return (
+            <span key={z.key} title={z.label}>
+              <span className="text-[var(--text-dim)]">{z.zone}</span>{" "}
+              {temp === null ? "—" : `${temp.toFixed(1)}°`}
+              <span className="text-[var(--text-dim)]">
+                {rh === null ? "" : ` ${rh.toFixed(0)}%`}
+              </span>
+            </span>
+          );
+        })}
+        <span style={{ color: dim ? undefined : POWER_COLORS[power] }}>{POWER_LABELS[power]}</span>
+      </span>
+    </td>
   );
 }
 
@@ -512,6 +567,80 @@ function DropletIcon() {
   );
 }
 
+/**
+ * One tile per zone that this asset reports.
+ *
+ * Its own block rather than part of a "PET/CT card", because a magnet that gets
+ * zone sensors fitted must grow this section alongside its helium tiles rather
+ * than trading them for it. Which zones appear is decided by zonesToShow, not
+ * by the modality.
+ *
+ * Readings go through envNum because PostgREST serialises numeric columns as
+ * strings; toFixed on "70.0" would throw.
+ */
+function ZoneTiles({ zones, latest }: { zones: EnvZone[]; latest: TelemetrySample | null }) {
+  // Indexed through a Record rather than typed keys: the zones differ only by a
+  // column-name prefix, and spelling out six accessors to satisfy the type
+  // system would bury that.
+  const t = latest as unknown as Record<string, unknown> | null;
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {zones.map((z) => {
+        const temp = envNum(t?.[`${z.key}_temp_f`]);
+        const rh = envNum(t?.[`${z.key}_rh`]);
+        return (
+          <div key={z.key} className="metric-tile flex flex-col gap-0.5">
+            <p
+              className="text-[var(--text-dim)] text-[10px] uppercase tracking-wide truncate"
+              title={z.label}
+            >
+              {z.short}
+            </p>
+            <p className="font-mono-data text-sm text-[var(--text)]">
+              {temp === null ? "—" : temp.toFixed(1)}
+              <span className="text-[var(--text-dim)] text-[10px]"> °F</span>
+            </p>
+            <p className="font-mono-data text-xs text-[var(--text-muted)]">
+              {rh === null ? "—" : rh.toFixed(0)}
+              <span className="text-[var(--text-dim)] text-[10px]"> %RH</span>
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Mains power state, for any asset with a UPS on it. */
+function PowerRow({ latest }: { latest: TelemetrySample | null }) {
+  const t = latest as unknown as Record<string, unknown> | null;
+  const power = powerState(t?.ups_on_battery);
+  const batt = envNum(t?.ups_batt_pct);
+  const volts = envNum(t?.ups_input_v);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+      {/* Grey for unknown is deliberate and is NOT a synonym for "fine": a null
+          ups_on_battery means the UPS link is not answering, so the one thing
+          this hardware exists to detect is what we cannot currently see. */}
+      <span className="status-chip" style={{ ["--sc" as string]: POWER_COLORS[power] }}>
+        <span className="cd" aria-hidden="true" />
+        {POWER_LABELS[power]}
+      </span>
+      {batt !== null && (
+        <span className="text-[11px] text-[var(--text-dim)] font-mono-data">
+          {batt.toFixed(0)}% batt
+        </span>
+      )}
+      {volts !== null && (
+        <span className="text-[11px] text-[var(--text-dim)] font-mono-data">
+          {volts.toFixed(0)} V in
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AssetCard({
   asset,
   basePath,
@@ -526,7 +655,17 @@ function AssetCard({
   const status = computeAssetHealth(asset);
   const alarm = computeAssetAlarm(asset);
   const mins = minutesSince(asset.last_sample_at);
-  const refillLabel = refillChipLabel(forecast);
+  // A boil-off refill projection needs helium, which a unit with no magnet does
+  // not have — the forecast for one comes back empty anyway, but gating here
+  // says why rather than relying on that.
+  const showMagmon = usesMagmon(asset.modality);
+  const refillLabel = showMagmon ? refillChipLabel(forecast) : null;
+  // Presence is judged over the whole 1h window, not just the newest reading,
+  // so a sensor that dropped off the bus twenty minutes ago keeps its tile and
+  // shows a blank instead of quietly vanishing from the card.
+  const rows = [asset.latest, ...asset.history];
+  const zones = zonesToShow(asset.modality, rows);
+  const showPower = showsPower(asset.modality, rows);
   const refillColor = forecast && refillUrgency(forecast) === "soon" ? "var(--status-warning)" : "#38bdf8";
 
   return (
@@ -563,20 +702,30 @@ function AssetCard({
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-2">
-        {METRICS.map((m) => {
-          const value = asset.latest?.[m.key] as number | null | undefined;
-          const series = asset.history.map((h) => h[m.key] as number | null | undefined);
-          return (
-            <div key={m.key} className="metric-tile flex flex-col gap-1">
-              <p className="text-[var(--text-dim)] text-[10px] uppercase tracking-wide">{m.label}</p>
-              <p className="font-mono-data text-sm text-[var(--text)]">
-                {value ?? "—"} <span className="text-[var(--text-dim)] text-[10px]">{m.unit}</span>
-              </p>
-              <MiniLineChart values={series} width={90} height={22} color={m.color} />
-            </div>
-          );
-        })}
+      {/* Three independent sections, each drawn on its own terms. A magnet
+          shows the MagMon grid; a trailer shows zones and power; a magnet that
+          later gets a UPS and sensors fitted shows all three, with no change
+          here. */}
+      <div className="flex flex-col gap-2.5">
+        {showMagmon && (
+          <div className="grid grid-cols-3 gap-2">
+            {METRICS.map((m) => {
+              const value = asset.latest?.[m.key] as number | null | undefined;
+              const series = asset.history.map((h) => h[m.key] as number | null | undefined);
+              return (
+                <div key={m.key} className="metric-tile flex flex-col gap-1">
+                  <p className="text-[var(--text-dim)] text-[10px] uppercase tracking-wide">{m.label}</p>
+                  <p className="font-mono-data text-sm text-[var(--text)]">
+                    {value ?? "—"} <span className="text-[var(--text-dim)] text-[10px]">{m.unit}</span>
+                  </p>
+                  <MiniLineChart values={series} width={90} height={22} color={m.color} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {zones.length > 0 && <ZoneTiles zones={zones} latest={asset.latest} />}
+        {showPower && <PowerRow latest={asset.latest} />}
       </div>
 
       <div className="flex items-center justify-between text-xs text-[var(--text-dim)] pt-3 border-t border-[var(--border-soft)]">

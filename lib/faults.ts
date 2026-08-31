@@ -222,7 +222,15 @@ export function computeAssetFaults(asset: FleetAsset): Fault[] {
 // tiers, the server has one level).
 const CLIENT_EVALUATED_FIELDS = new Set(["cs1", "he_lvl", "he_press", "shield", "coldhead"]);
 
-const KNOWN_FIELDS = ["he_lvl", "he_press", "h2o_flow", "h2o_temp", "shield", "cs1"] as const;
+const KNOWN_FIELDS = [
+  "he_lvl", "he_press", "h2o_flow", "h2o_temp", "shield", "cs1",
+  // Environmental channels. A threshold rule on one of these produces the same
+  // "<name> <field> <op> <value> (now ...)" message as an MRI rule, so they
+  // recover from the text the same way — ups_on_battery being the exception
+  // handled separately below.
+  "s1_temp_f", "s1_rh", "s2_temp_f", "s2_rh", "s3_temp_f", "s3_rh",
+  "ups_batt_pct", "ups_input_v",
+] as const;
 
 /**
  * Recover the metric a threshold event refers to from its message.
@@ -235,6 +243,12 @@ const KNOWN_FIELDS = ["he_lvl", "he_press", "h2o_flow", "h2o_temp", "shield", "c
  * than a wrong one.
  */
 export function fieldFromMessage(message: string): string | null {
+  // The power-outage event is the one threshold message evaluate_alerts writes
+  // for a human instead of in the generic form — "POWER OUTAGE at PC-LAB01 —
+  // trailer is running on UPS battery" — so its field is not in the text to be
+  // recovered. Matched on the wording it is generated with; a miss here costs a
+  // pill, not a wrong one, and the event itself still lists in full.
+  if (message.startsWith("POWER OUTAGE")) return "ups_on_battery";
   for (const f of KNOWN_FIELDS) if (message.includes(` ${f} `)) return f;
   return null;
 }
@@ -246,6 +260,18 @@ const FIELD_LABELS: Record<string, string> = {
   h2o_temp: "Water temp",
   shield: "Shield",
   cs1: "Compressor",
+  // Environmental channels. Named for the zone rather than the column so a
+  // pill reads "Tech / Patient temp alarm", not "s2_temp_f alarm" — the raw
+  // column name is meaningless to whoever is standing in the trailer.
+  s1_temp_f: "Engineering temp",
+  s1_rh: "Engineering humidity",
+  s2_temp_f: "Tech / Patient temp",
+  s2_rh: "Tech / Patient humidity",
+  s3_temp_f: "Equipment temp",
+  s3_rh: "Equipment humidity",
+  ups_on_battery: "Power",
+  ups_batt_pct: "UPS battery",
+  ups_input_v: "Input voltage",
 };
 
 /**
@@ -312,6 +338,14 @@ function serverFaults(asset: FleetAsset, existing: Fault[]): Fault[] {
       case "bound":
       case "threshold": {
         if (!e.field || CLIENT_EVALUATED_FIELDS.has(e.field)) continue;
+        // Mains power is a state, not a measurement: "Power alarm 1" says
+        // nothing, and this is the single most urgent thing an environmental
+        // unit can report. Given its own pill rather than the generic one.
+        if (e.field === "ups_on_battery") {
+          fault = { key: "power", label: "POWER OUTAGE", detail: "on UPS battery",
+                    severity: "critical" };
+          break;
+        }
         const value = num((asset.latest as Record<string, unknown> | null)?.[e.field]);
         fault = { key: `alert:${e.field}`, label: `${named(e.field, "Metric")} alarm`,
                   detail: value !== null ? fmt(value, 2) : "no reading",
