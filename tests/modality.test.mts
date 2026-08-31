@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   ENV_ZONES,
+  envChartSpecs,
   envNum,
   expectsEnv,
   powerState,
@@ -149,4 +150,41 @@ test("the zone list and the collector's Modbus unit ids stay in step", () => {
       [3, "s3"],
     ]
   );
+});
+
+test("zone charts are ordered so temperature and humidity form rows", () => {
+  // The ORDER IS THE LAYOUT. These go into a grid with one column per zone, so
+  // all temperatures must come first (filling the top row, one per zone) and
+  // all humidity second (filling the row beneath, aligned zone-for-zone).
+  // Interleaving per zone — the obvious construction — wraps into a diagonal
+  // scatter, which is what this page actually looked like before.
+  const specs = envChartSpecs(ENV_ZONES);
+  assert.deepEqual(
+    specs.map((m) => m.key),
+    ["s1_temp_f", "s2_temp_f", "s3_temp_f", "s1_rh", "s2_rh", "s3_rh"]
+  );
+  // First half temperature, second half humidity — no interleaving anywhere.
+  const half = specs.length / 2;
+  assert.ok(specs.slice(0, half).every((m) => m.isTemp), "top row is all temperature");
+  assert.ok(specs.slice(half).every((m) => !m.isTemp), "bottom row is all humidity");
+});
+
+test("the chart grid stays rectangular for a two-zone unit", () => {
+  const twoZones = ENV_ZONES.slice(0, 2);
+  const specs = envChartSpecs(twoZones);
+  // Two columns, two rows, still aligned: zone order is preserved within each
+  // family so column 1 is always the same zone in both rows.
+  assert.deepEqual(
+    specs.map((m) => m.key),
+    ["s1_temp_f", "s2_temp_f", "s1_rh", "s2_rh"]
+  );
+  assert.equal(specs.length % twoZones.length, 0, "grid divides evenly into rows");
+});
+
+test("only temperature charts carry the outside-air trace", () => {
+  // Humidity against outside temperature would be two unrelated quantities
+  // sharing an axis.
+  for (const m of envChartSpecs(ENV_ZONES)) {
+    assert.equal(m.isTemp, m.key.endsWith("_temp_f"));
+  }
 });

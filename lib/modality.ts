@@ -166,6 +166,44 @@ export function showsPower(
   return expectsEnv(modality) || anyValue(rows, POWER_KEYS);
 }
 
+/**
+ * The zone trend charts, ordered ALL TEMPERATURES first and then all humidity.
+ *
+ * THE ORDER IS THE LAYOUT, which is why it lives here with a test rather than
+ * inline in the component. Dropped into a grid whose column count equals the
+ * number of zones, this puts every zone's temperature across the top row and
+ * each zone's humidity directly beneath it — two families as rows, zones as
+ * columns. Building the list the obvious way instead (temp, humidity, temp,
+ * humidity, … per zone) wraps into a diagonal scatter as soon as the column
+ * count and the zone count disagree, which is exactly what it looked like
+ * before this existed.
+ */
+export function envChartSpecs(zones: EnvZone[]): {
+  key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">;
+  label: string;
+  unit: string;
+  color: string;
+  /** Temperature charts carry the outside-air trace; humidity ones do not. */
+  isTemp: boolean;
+}[] {
+  return [
+    ...zones.map((z) => ({
+      key: `${z.key}_temp_f` as const,
+      label: `${z.short} — temp`,
+      unit: "°F",
+      color: "#fbbf24",
+      isTemp: true,
+    })),
+    ...zones.map((z) => ({
+      key: `${z.key}_rh` as const,
+      label: `${z.short} — humidity`,
+      unit: "%RH",
+      color: "#22d3ee",
+      isTemp: false,
+    })),
+  ];
+}
+
 // ---- mains power ---------------------------------------------------------
 
 export type PowerState = "wall" | "battery" | "unknown";

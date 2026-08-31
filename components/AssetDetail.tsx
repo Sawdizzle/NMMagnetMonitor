@@ -17,6 +17,7 @@ import {
 } from "@/lib/sentinel";
 import { activeErrorCodes, errorText, compressorStatusText, COMMON_CODES } from "@/lib/magmonCodes";
 import {
+  envChartSpecs,
   envNum,
   showsPower,
   usesMagmon,
@@ -49,22 +50,14 @@ const METRICS: { key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">
   { key: "cs1", label: "CS1", unit: "", color: "#a78bfa" },
 ];
 
-// Two charts per zone, temperature then humidity. Built from whichever zones
-// the asset actually reports rather than from a fixed list, so a unit wired for
-// two zones charts two and one wired for three charts three, with no code
-// change between them.
-function envMetrics(zones: EnvZone[]): {
-  key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">;
-  label: string;
-  unit: string;
-  color: string;
-  isTemp: boolean;
-}[] {
-  return zones.flatMap((z) => [
-    { key: `${z.key}_temp_f` as const, label: `${z.short} — temp`, unit: "°F", color: "#fbbf24", isTemp: true },
-    { key: `${z.key}_rh` as const, label: `${z.short} — humidity`, unit: "%RH", color: "#22d3ee", isTemp: false },
-  ]);
-}
+// One column per zone, so the temperature row and the humidity row align.
+// Spelled out as whole class names because Tailwind scans source text — a
+// built string like `md:grid-cols-${n}` produces no CSS at all.
+const ENV_GRID_COLS: Record<number, string> = {
+  1: "md:grid-cols-1",
+  2: "md:grid-cols-2",
+  3: "md:grid-cols-3",
+};
 
 export default function AssetDetail({ assetId }: { assetId: string }) {
   const { demo, basePath } = useDemo();
@@ -319,12 +312,13 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
         Trends (last 24 hours &middot; 15-min averages)
       </h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-10">
-        {/* One grid, both families — magnet channels first, then a temp and a
-            humidity chart per reported zone. An asset with both simply has more
-            charts; nothing here chooses between them. */}
-        {showMagmon &&
-          METRICS.map((m) => (
+      {/* Two grids rather than one. The magnet channels have no natural
+          pairing and flow into as many columns as fit; the zone charts need
+          exactly one column per zone or the temperature and humidity rows stop
+          lining up, which is the whole point of them. */}
+      {showMagmon && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-10">
+          {METRICS.map((m) => (
             <MetricLineChart
               key={m.key}
               samples={buckets}
@@ -337,23 +331,31 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
               ambientStation={ambient.station}
             />
           ))}
-        {envMetrics(zones).map((m) => (
-          <MetricLineChart
-            key={m.key}
-            samples={buckets}
-            metricKey={m.key}
-            label={m.label}
-            unit={m.unit}
-            color={m.color}
-            // Outside temperature under every ZONE temperature, for the same
-            // reason the water chart carries it: an enclosure's inside
-            // temperature tracks the weather, and a climb that matches the
-            // afternoon is a different problem from one that does not.
-            ambient={m.isTemp ? ambientByBucket : null}
-            ambientStation={ambient.station}
-          />
-        ))}
-      </div>
+        </div>
+      )}
+
+      {zones.length > 0 && (
+        <div
+          className={`grid grid-cols-1 ${ENV_GRID_COLS[zones.length] ?? "md:grid-cols-3"} gap-4 mb-10`}
+        >
+          {envChartSpecs(zones).map((m) => (
+            <MetricLineChart
+              key={m.key}
+              samples={buckets}
+              metricKey={m.key}
+              label={m.label}
+              unit={m.unit}
+              color={m.color}
+              // Outside temperature under every ZONE temperature, for the same
+              // reason the water chart carries it: an enclosure's inside
+              // temperature tracks the weather, and a climb that matches the
+              // afternoon is a different problem from one that does not.
+              ambient={m.isTemp ? ambientByBucket : null}
+              ambientStation={ambient.station}
+            />
+          ))}
+        </div>
+      )}
 
       <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
         Recent readings ({tableRows.length} &middot; 15-min averages, last 24h)
