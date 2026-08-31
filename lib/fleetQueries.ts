@@ -24,6 +24,11 @@ import type { SuppressionRow } from "./alertTriage";
 const PUBLIC_ASSET_COLUMNS =
   "id, name, site_name, site_address, offline_threshold_minutes, status, " +
   "last_seen_at, last_sample_at, created_at, service_user, maintenance, " +
+  // What kind of equipment this unit is, which decides whether it has a MagMon
+  // to scrape. Public-safe: it says what is being watched, nothing about how to
+  // reach it. Every read path needs it, so it belongs in the shared projection
+  // rather than being fetched again per surface.
+  "modality, " +
   "router_online, router_status_at, tailscale_online, tailscale_status_at, " +
   // Which collector build each unit is running, self-reported. Safe to expose:
   // it is a date string, and knowing a unit is behind is the point of having it.
@@ -260,6 +265,10 @@ export async function loadAssetDetailForOrg(
   // purpose — "not found" must not double as an existence oracle for uuids.
   if (assetErr || !assetRow) return { ...empty, error: "Asset not found" };
 
+  // No modality branch here on purpose. asset_telemetry_15min returns EVERY
+  // channel — magnet and environmental — and a unit simply has NULLs in the
+  // ones it does not report. Choosing a different RPC per modality could not
+  // survive the fleet-wide UPS/sensor rollout, where one asset reports both.
   const [{ data: latestRow }, { data: bucketRows, error: bucketErr }, { data: rules }] =
     await Promise.all([
       supabaseAdmin.from("latest_telemetry").select("*").eq("asset_id", assetId).maybeSingle(),

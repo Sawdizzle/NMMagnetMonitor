@@ -25,6 +25,14 @@ export type Asset = {
   last_sample_at: string | null;
   created_at: string;
   service_user: string;
+  // What kind of equipment this unit watches, and therefore which card the UI
+  // renders and which channels mean anything. 'MRI' is the MagMon magnet fleet
+  // (helium, water, coldhead); 'PET/CT' is an environmental unit reporting zone
+  // temperature/humidity and UPS power. Deliberately free text with no CHECK
+  // constraint in the database, so 'NUC MED' and whatever follows need no
+  // migration — but the UI only knows the two it renders, and anything else
+  // falls back to the MRI card. Never null: the column defaults to 'MRI'.
+  modality: string;
   // When true, TV/Display mode suppresses value-based alarms for this unit
   // (known-warm / in-service assets), showing a calm "Maintenance" state
   // instead of flashing red. Connectivity status is unaffected.
@@ -56,6 +64,22 @@ export type TelemetrySample = {
   h2o_temp: number | null;
   shield: number | null;
   cs1: number | null;
+  // Environmental channels (modality 'PET/CT'), all null on an MRI sample and
+  // vice versa — one telemetry_samples table serves both, and which columns are
+  // populated is what distinguishes the two kinds of row. s1/s2/s3 are the three
+  // XY-MD02 sensors: zone 1 Engineering, zone 2 Tech/Patient, zone 3 Equipment.
+  s1_temp_f: number | null;
+  s1_rh: number | null;
+  s2_temp_f: number | null;
+  s2_rh: number | null;
+  s3_temp_f: number | null;
+  s3_rh: number | null;
+  // UPS, read over NUT. ups_on_battery is 1/0 rather than a boolean because it
+  // has to be comparable by an alert_rules threshold like every other channel —
+  // the fleet-wide "ups_on_battery = 1" rule is what pages on a power cut.
+  ups_on_battery: number | null;
+  ups_batt_pct: number | null;
+  ups_input_v: number | null;
   data: Record<string, unknown> | null;
 };
 
@@ -111,5 +135,19 @@ export type TelemetryBucket = {
   h2o_temp: number | null;
   shield: number | null;
   cs1: number | null;
+  // Env channels. Always present in the row — asset_telemetry_15min returns
+  // every channel for every asset — and null on a unit that does not report
+  // them, exactly like the MagMon columns above are null on one with no magnet.
+  // ups_on_battery is the bucket MAXIMUM, not its average: a four-minute outage
+  // inside a fifteen-minute bucket has to read as 1, not 0.27.
+  s1_temp_f: number | null;
+  s1_rh: number | null;
+  s2_temp_f: number | null;
+  s2_rh: number | null;
+  s3_temp_f: number | null;
+  s3_rh: number | null;
+  ups_on_battery: number | null;
+  ups_batt_pct: number | null;
+  ups_input_v: number | null;
   sample_count: number;
 };

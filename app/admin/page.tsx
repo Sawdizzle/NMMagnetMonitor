@@ -3,7 +3,14 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { type Asset } from "@/lib/supabase";
-import { generatePiScript, generateSystemdUnit, COLLECTOR_VERSION } from "@/lib/piScript";
+import {
+  generatePiScript,
+  generateEnvPiScript,
+  generateSystemdUnit,
+  COLLECTOR_VERSION,
+  ENV_COLLECTOR_VERSION,
+} from "@/lib/piScript";
+import { MODALITIES, MODALITY_MRI, usesMagmon, modalityBadge } from "@/lib/modality";
 import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
 import { NO_TELEMETRY_KINDS } from "@/lib/health";
@@ -184,6 +191,10 @@ function AdminPanel() {
   const [assetSearch, setAssetSearch] = useState("");
 
   const [assetName, setAssetName] = useState("");
+  // Which kind of unit is being added. Everything MagMon-specific below is
+  // gated on this: an environmental asset has no local device to scrape, and
+  // the MagMon address field was `required`, so creating one was impossible.
+  const [assetModality, setAssetModality] = useState<string>(MODALITY_MRI);
   const [assetSiteName, setAssetSiteName] = useState("");
   const [assetSiteAddress, setAssetSiteAddress] = useState("");
   const [offlineThreshold, setOfflineThreshold] = useState(30);
@@ -200,6 +211,11 @@ function AdminPanel() {
   // script
   const [scriptText, setScriptText] = useState<string | null>(null);
   const [scriptForAsset, setScriptForAsset] = useState<string | null>(null);
+  // Which collector the loaded script is, tracked explicitly rather than looked
+  // up from `assets`: right after Add asset the new row has not come back from
+  // load() yet, so deriving it from the list would name the first download of a
+  // brand-new unit after the wrong collector.
+  const [scriptVariant, setScriptVariant] = useState<"magmon" | "env">("magmon");
   const [pollMinutes, setPollMinutes] = useState(5);
   // The OS user the collector runs as on the target machine. Default "pi" for a
   // standalone Raspberry Pi; set to the login user (e.g. "Numed") on a shared
@@ -227,6 +243,7 @@ function AdminPanel() {
   const [editUsername, setEditUsername] = useState("MMService");
   const [editPassword, setEditPassword] = useState("MagnetMonitor");
   const [editServiceUser, setEditServiceUser] = useState("pi");
+  const [editModality, setEditModality] = useState<string>(MODALITY_MRI);
 
   const loadAuditLog = useCallback(async () => {
     const { data } = await adminListAuditLog(200);
@@ -276,16 +293,21 @@ function AdminPanel() {
 
   async function handleAddAsset(e: React.FormEvent) {
     e.preventDefault();
+    const envAsset = !usesMagmon(assetModality);
     const { data, error } = await adminCreateAsset({
       name: assetName,
       siteName: assetSiteName.trim() || null,
       siteAddress: assetSiteAddress.trim() || null,
       offlineThresholdMinutes: offlineThreshold,
-      monitorHost: monitorHost,
+      // An environmental unit has no MagMon to reach. Stored as a genuine null
+      // rather than whatever was last typed into the (now hidden) field, so
+      // "has no monitor host" stays a reliable signal everywhere it is read.
+      monitorHost: envAsset ? null : monitorHost,
       monitorPort: monitorPort,
       monitorUsername: monitorUsername,
       monitorPassword: monitorPassword,
       serviceUser: assetServiceUser,
+      modality: assetModality,
     });
     if (error) return fail(actionError("Could not add asset", error));
     notify(`Asset "${assetName}" added. Install script generated below.`);
@@ -298,15 +320,29 @@ function AdminPanel() {
       id: string;
       name: string;
       gateway_token: string;
-      monitor_host: string;
+      monitor_host: string | null;
       monitor_port: number;
       monitor_username: string;
       monitor_password: string;
+      modality: string;
     };
     setServiceUser(assetServiceUser);
-    buildScript(created.name, created.gateway_token, created.monitor_host, created.monitor_port, created.monitor_username, created.monitor_password, assetServiceUser);
+    buildScript({
+      name: created.name,
+      token: created.gateway_token,
+      // From the row the database returned, not from the form: the RPC
+      // normalises a blank modality to 'MRI', and the script must match what
+      // was actually stored rather than what was typed.
+      modality: created.modality,
+      host: created.monitor_host,
+      port: created.monitor_port,
+      username: created.monitor_username,
+      password: created.monitor_password,
+      svcUser: assetServiceUser,
+    });
     setScriptForAsset(created.id);
     setAssetServiceUser("pi");
+    setAssetModality(MODALITY_MRI);
   }
 
   async function handleAddUser(e: React.FormEvent) {
@@ -374,6 +410,7 @@ function AdminPanel() {
     setEditUsername(config.monitor_username ?? "MMService");
     setEditPassword(config.monitor_password ?? "MagnetMonitor");
     setEditServiceUser(asset.service_user || "pi");
+    setEditModality(asset.modality || MODALITY_MRI);
   }
 
   async function handleSaveAssetEdit(e: React.FormEvent) {
@@ -385,11 +422,14 @@ function AdminPanel() {
       siteName: editSiteName.trim() || null,
       siteAddress: editSiteAddress.trim() || null,
       offlineThresholdMinutes: editThreshold,
-      monitorHost: editHost,
+      // Same as on create: switching a unit to an environmental modality clears
+      // the MagMon address rather than leaving a stale one behind.
+      monitorHost: usesMagmon(editModality) ? editHost : null,
       monitorPort: editPort,
       monitorUsername: editUsername,
       monitorPassword: editPassword,
       serviceUser: editServiceUser,
+      modality: editModality,
     });
     if (error) return fail(actionError("Could not save asset", error));
     notify(`Asset "${editName}" updated.`);
@@ -417,45 +457,71 @@ function AdminPanel() {
     load();
   }
 
-  function buildScript(
-    name: string,
-    token: string,
-    host: string,
-    port: number,
-    username: string,
-    password: string,
-    svcUser: string = serviceUser
-  ) {
-    const script = generatePiScript({
-      assetName: name,
-      gatewayToken: token,
-      monitorHost: host,
-      monitorPort: port,
-      monitorUsername: username,
-      monitorPassword: password,
+  // Takes an options object rather than seven positionals: the MagMon branch
+  // needs the device's address and credentials and the environmental branch
+  // needs none of them, and a positional call with four empty strings in the
+  // middle is exactly the sort of thing that ends up on the wrong Pi.
+  function buildScript(opts: {
+    name: string;
+    token: string;
+    modality: string;
+    host?: string | null;
+    port?: number;
+    username?: string;
+    password?: string;
+    svcUser?: string;
+  }) {
+    const svcUser = opts.svcUser ?? serviceUser;
+    const shared = {
+      assetName: opts.name,
+      gatewayToken: opts.token,
       supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
       supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       intervalMinutes: pollMinutes,
       serviceUser: svcUser,
-    });
-    setScriptText(script);
+    };
+    if (!usesMagmon(opts.modality)) {
+      setScriptText(generateEnvPiScript(shared));
+      setScriptVariant("env");
+      return;
+    }
+    setScriptText(
+      generatePiScript({
+        ...shared,
+        monitorHost: opts.host ?? "",
+        monitorPort: opts.port ?? 80,
+        monitorUsername: opts.username ?? "MMService",
+        monitorPassword: opts.password ?? "MagnetMonitor",
+      })
+    );
+    setScriptVariant("magmon");
   }
 
   async function handleGetScriptForExisting(asset: Asset) {
     const { data, error } = await adminGetAssetConfig(asset.id);
     const config = data && data[0];
     if (error || !config) return fail(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
-    // monitor_host is nullable, and the generated collector needs it to reach the
-    // MagMon. Previously a null flowed straight into the template and produced a
-    // script that could never connect; say so instead.
-    if (!config.monitor_host) {
+    // monitor_host is nullable, and the MagMon collector needs it to reach the
+    // device. Previously a null flowed straight into the template and produced a
+    // script that could never connect; say so instead. An environmental asset is
+    // SUPPOSED to have no monitor host, so the check applies only to MagMons.
+    if (usesMagmon(asset.modality) && !config.monitor_host) {
       return fail(`"${asset.name}" has no monitor host set. Edit the asset and add the MagMon's address before generating a script.`);
     }
     // Default the panel's service-user field to this asset's stored value, and
     // build with it so the .py + unit come out with the right User=.
     const su = asset.service_user || "pi";
     setServiceUser(su);
-    buildScript(asset.name, config.gateway_token, config.monitor_host, config.monitor_port, config.monitor_username, config.monitor_password, su);
+    buildScript({
+      name: asset.name,
+      token: config.gateway_token,
+      modality: asset.modality,
+      host: config.monitor_host,
+      port: config.monitor_port,
+      username: config.monitor_username,
+      password: config.monitor_password,
+      svcUser: su,
+    });
     setScriptForAsset(asset.id);
   }
 
@@ -545,13 +611,19 @@ function AdminPanel() {
     URL.revokeObjectURL(url);
   }
 
+  // Both collectors' files are named for the collector as well as the asset, so
+  // a site running one of each cannot end up installing an environmental script
+  // over a MagMon one — the setup instructions inside each file assume the
+  // matching unit name.
+  const scriptStem = scriptVariant === "env" ? "nm-env-gateway" : "nm-magmon-gateway";
+
   function downloadScript() {
     if (!scriptText) return;
     // Name the file per asset so nine downloads in a row don't overwrite
     // each other in ~/Downloads and get installed on the wrong Pi.
     const asset = assets.find((a) => a.id === scriptForAsset);
     const suffix = asset ? `-${asset.name}` : "";
-    downloadFile(scriptText, `nm-magmon-gateway${suffix}.py`, "text/x-python");
+    downloadFile(scriptText, `${scriptStem}${suffix}.py`, "text/x-python");
   }
 
   function downloadUnitFile() {
@@ -559,10 +631,9 @@ function AdminPanel() {
     if (!asset) return;
     // Named per asset for the same reason as the script: nine downloads in a
     // row must not collide in ~/Downloads and get installed on the wrong Pi.
-    // The file is installed on the Pi as nm-magmon-gateway.service regardless.
     downloadFile(
-      generateSystemdUnit({ assetName: asset.name, serviceUser }),
-      `nm-magmon-gateway-${asset.name}.service`,
+      generateSystemdUnit({ assetName: asset.name, serviceUser, variant: scriptVariant }),
+      `${scriptStem}-${asset.name}.service`,
       "text/plain"
     );
   }
@@ -587,24 +658,37 @@ function AdminPanel() {
         assets.map(async (a) => {
           const { data, error } = await adminGetAssetConfig(a.id);
           const cfg = data && data[0];
-          // No monitor host = the script could never reach the MagMon, so count
-          // it as a failure for this asset rather than emitting a broken file.
-          if (error || !cfg || !cfg.monitor_host) return { name: a.name, ok: false as const };
+          if (error || !cfg) return { name: a.name, ok: false as const };
+          const env = !usesMagmon(a.modality);
+          // No monitor host = the MagMon script could never reach the device, so
+          // count it as a failure rather than emitting a broken file. An
+          // environmental asset has no monitor host by design and is exempt.
+          if (!env && !cfg.monitor_host) return { name: a.name, ok: false as const };
           const su = a.service_user || "pi";
-          const script = generatePiScript({
+          const shared = {
             assetName: a.name,
             gatewayToken: cfg.gateway_token,
-            monitorHost: cfg.monitor_host,
-            monitorPort: cfg.monitor_port,
-            monitorUsername: cfg.monitor_username,
-            monitorPassword: cfg.monitor_password,
             supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
             supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
             intervalMinutes: pollMinutes,
             serviceUser: su,
+          };
+          const script = env
+            ? generateEnvPiScript(shared)
+            : generatePiScript({
+                ...shared,
+                monitorHost: cfg.monitor_host as string,
+                monitorPort: cfg.monitor_port,
+                monitorUsername: cfg.monitor_username,
+                monitorPassword: cfg.monitor_password,
+              });
+          const unit = generateSystemdUnit({
+            assetName: a.name,
+            serviceUser: su,
+            variant: env ? "env" : "magmon",
           });
-          const unit = generateSystemdUnit({ assetName: a.name, serviceUser: su });
-          return { name: a.name, ok: true as const, script, unit };
+          const stem = env ? "nm-env-gateway" : "nm-magmon-gateway";
+          return { name: a.name, ok: true as const, script, unit, stem };
         })
       );
 
@@ -615,8 +699,8 @@ function AdminPanel() {
           failed.push(r.name);
           continue;
         }
-        files.push({ name: `${r.name}/nm-magmon-gateway-${r.name}.py`, content: r.script });
-        files.push({ name: `${r.name}/nm-magmon-gateway-${r.name}.service`, content: r.unit });
+        files.push({ name: `${r.name}/${r.stem}-${r.name}.py`, content: r.script });
+        files.push({ name: `${r.name}/${r.stem}-${r.name}.service`, content: r.unit });
       }
 
       if (files.length === 0) {
@@ -747,6 +831,11 @@ function AdminPanel() {
           setAssetSiteAddress={setAssetSiteAddress}
           offlineThreshold={offlineThreshold}
           setOfflineThreshold={setOfflineThreshold}
+          assetModality={assetModality}
+          setAssetModality={setAssetModality}
+          editModality={editModality}
+          setEditModality={setEditModality}
+          scriptVariant={scriptVariant}
           monitorHost={monitorHost}
           setMonitorHost={setMonitorHost}
           monitorPort={monitorPort}
@@ -924,6 +1013,12 @@ function AssetsTab(props: {
   setAssetSiteAddress: (v: string) => void;
   offlineThreshold: number;
   setOfflineThreshold: (v: number) => void;
+  assetModality: string;
+  setAssetModality: (v: string) => void;
+  editModality: string;
+  setEditModality: (v: string) => void;
+  /** Which collector the loaded install-script panel is showing. */
+  scriptVariant: "magmon" | "env";
   monitorHost: string;
   setMonitorHost: (v: string) => void;
   monitorPort: number;
@@ -972,6 +1067,10 @@ function AssetsTab(props: {
   downloadingAll: boolean;
 }) {
   const { assets, assetGroups, assetSearch, setAssetSearch, showAddAsset, setShowAddAsset, editingAssetId } = props;
+  // The whole MagMon block (address, port, credentials) is meaningless on an
+  // environmental unit — and the address input was `required`, which is why
+  // adding one used to fail with a browser validation error on a hidden field.
+  const addingEnv = !usesMagmon(props.assetModality);
 
   return (
     <section className="mb-10">
@@ -1000,9 +1099,25 @@ function AssetsTab(props: {
 
       {showAddAsset && (
         <form onSubmit={props.handleAddAsset} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-col gap-3 mb-6">
-          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add MagMon asset</h2>
+          <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)]">Add asset</h2>
+          <Field label="Modality">
+            <select
+              value={props.assetModality}
+              onChange={(e) => props.setAssetModality(e.target.value)}
+              className="input"
+            >
+              {MODALITIES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <p className="text-xs text-[var(--text-dim)] -mt-1">
+            {MODALITIES.find((m) => m.value === props.assetModality)?.hint}
+          </p>
           <Field label="Asset tag">
-            <input required value={props.assetName} onChange={(e) => props.setAssetName(e.target.value)} placeholder="e.g. CA1012-SETONSW" className="input" />
+            <input required value={props.assetName} onChange={(e) => props.setAssetName(e.target.value)} placeholder={addingEnv ? "e.g. PC-LAB01" : "e.g. CA1012-SETONSW"} className="input" />
           </Field>
           <Field label="Site name (optional)">
             <input value={props.assetSiteName} onChange={(e) => props.setAssetSiteName(e.target.value)} placeholder="e.g. Seton Northwest" className="input" />
@@ -1016,18 +1131,28 @@ function AssetsTab(props: {
           <p className="text-xs text-[var(--text-dim)] -mt-1">
             Card turns amber after this many minutes with no report, and red after 60.
           </p>
-          <Field label="MagMon local IP">
-            <input required value={props.monitorHost} onChange={(e) => props.setMonitorHost(e.target.value)} placeholder="e.g. 192.168.1.50" className="input font-mono-data" />
-          </Field>
-          <div className="flex flex-wrap gap-3">
-            <Field label="Port">
-              <input type="number" value={props.monitorPort} onChange={(e) => props.setMonitorPort(Number(e.target.value))} className="input w-20" />
-            </Field>
-            <Field label="Username">
-              <input value={props.monitorUsername} onChange={(e) => props.setMonitorUsername(e.target.value)} className="input" />
-            </Field>
-            <PasswordField label="Password" value={props.monitorPassword} onChange={props.setMonitorPassword} />
-          </div>
+          {addingEnv ? (
+            <p className="text-xs rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-muted)]">
+              No MagMon address is needed. The environmental collector reads its
+              three zone sensors over RS-485 and the UPS through NUT, both local
+              to the Pi — download its install script once the asset is added.
+            </p>
+          ) : (
+            <>
+              <Field label="MagMon local IP">
+                <input required value={props.monitorHost} onChange={(e) => props.setMonitorHost(e.target.value)} placeholder="e.g. 192.168.1.50" className="input font-mono-data" />
+              </Field>
+              <div className="flex flex-wrap gap-3">
+                <Field label="Port">
+                  <input type="number" value={props.monitorPort} onChange={(e) => props.setMonitorPort(Number(e.target.value))} className="input w-20" />
+                </Field>
+                <Field label="Username">
+                  <input value={props.monitorUsername} onChange={(e) => props.setMonitorUsername(e.target.value)} className="input" />
+                </Field>
+                <PasswordField label="Password" value={props.monitorPassword} onChange={props.setMonitorPassword} />
+              </div>
+            </>
+          )}
           <Field label="Service user (systemd User=)">
             <input value={props.assetServiceUser} onChange={(e) => props.setAssetServiceUser(e.target.value)} placeholder="pi" className="input font-mono-data" />
           </Field>
@@ -1056,6 +1181,15 @@ function AssetsTab(props: {
                       <div>
                         <p className="font-medium">
                           {a.name}
+                          {modalityBadge(a.modality) && (
+                            <span
+                              className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide align-middle"
+                              style={{ background: "color-mix(in srgb, #a78bfa 18%, transparent)", color: "#c4b5fd" }}
+                              title="Environmental unit — zone temp/humidity and UPS power, no MagMon"
+                            >
+                              {modalityBadge(a.modality)}
+                            </span>
+                          )}
                           {a.maintenance && (
                             <span
                               className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide align-middle"
@@ -1102,7 +1236,8 @@ function AssetsTab(props: {
       {props.scriptText && (
         <div id="install-script-panel" className="mt-8 scroll-mt-24">
           <h2 className="text-sm uppercase tracking-wide text-[var(--text-muted)] mb-3">
-            Pi install script {props.scriptForAsset ? `— ${assets.find((a) => a.id === props.scriptForAsset)?.name ?? ""}` : ""}
+            {props.scriptVariant === "env" ? "Environmental install script" : "Pi install script"}
+            {props.scriptForAsset ? ` — ${assets.find((a) => a.id === props.scriptForAsset)?.name ?? ""}` : ""}
           </h2>
           <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-4 mb-3 flex flex-wrap items-end gap-4">
             <Field label="Poll interval (min)">
@@ -1129,10 +1264,16 @@ function AssetsTab(props: {
             The collector runs continuously and sleeps between polls on its own. A
             cron entry would launch an additional copy on every tick while the
             earlier copies keep running. Install both files, then:{" "}
-            <code className="font-mono-data">sudo systemctl enable --now nm-magmon-gateway</code>{" "}
+            <code className="font-mono-data">
+              sudo systemctl enable --now {props.scriptVariant === "env" ? "nm-env-gateway" : "nm-magmon-gateway"}-
+              {assets.find((a) => a.id === props.scriptForAsset)?.name ?? "ASSET"}
+            </code>{" "}
             and confirm with{" "}
-            <code className="font-mono-data">pgrep -c -f nm-magmon-gateway</code>{" "}
-            (must print 1).
+            <code className="font-mono-data">
+              pgrep -c -f {props.scriptVariant === "env" ? "env-gateway" : "magmon-gateway"}
+            </code>{" "}
+            (must print 1). The full setup, including the dependencies this
+            collector needs, is in the header comment of the script itself.
           </p>
           <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4 overflow-x-auto text-xs font-mono-data max-h-96 whitespace-pre">
             {props.scriptText}
@@ -1163,12 +1304,33 @@ function AssetEditRow(props: {
   setEditPassword: (v: string) => void;
   editServiceUser: string;
   setEditServiceUser: (v: string) => void;
+  editModality: string;
+  setEditModality: (v: string) => void;
   setEditingAssetId: (v: string | null) => void;
   handleSaveAssetEdit: (e: React.FormEvent) => void;
 }) {
+  const editingEnv = !usesMagmon(props.editModality);
   return (
     <form onSubmit={props.handleSaveAssetEdit} className="flex flex-col gap-3 px-4 py-4 border-b border-[var(--border)] last:border-0 bg-[var(--bg-elevated)]">
       <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">Editing {props.asset.name}</p>
+      <Field label="Modality">
+        <select
+          value={props.editModality}
+          onChange={(e) => props.setEditModality(e.target.value)}
+          className="input"
+        >
+          {MODALITIES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <p className="text-xs text-[var(--text-dim)] -mt-1">
+        Changing this changes which card the fleet renders and which collector
+        this unit needs. Redeploy its Pi with the matching install script after
+        saving.
+      </p>
       <Field label="Asset tag">
         <input required value={props.editName} onChange={(e) => props.setEditName(e.target.value)} className="input" />
       </Field>
@@ -1184,18 +1346,27 @@ function AssetEditRow(props: {
       <p className="text-xs text-[var(--text-dim)] -mt-1">
         Card turns amber after this many minutes with no report, and red after 60.
       </p>
-      <Field label="MagMon local IP">
-        <input required value={props.editHost} onChange={(e) => props.setEditHost(e.target.value)} className="input font-mono-data" />
-      </Field>
-      <div className="flex flex-wrap gap-3">
-        <Field label="Port">
-          <input type="number" value={props.editPort} onChange={(e) => props.setEditPort(Number(e.target.value))} className="input w-20" />
-        </Field>
-        <Field label="Username">
-          <input value={props.editUsername} onChange={(e) => props.setEditUsername(e.target.value)} className="input" />
-        </Field>
-        <PasswordField label="Password" value={props.editPassword} onChange={props.setEditPassword} />
-      </div>
+      {editingEnv ? (
+        <p className="text-xs rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-muted)]">
+          Environmental units have no MagMon to reach, so the device address and
+          credentials do not apply. Saving clears any address this asset had.
+        </p>
+      ) : (
+        <>
+          <Field label="MagMon local IP">
+            <input required value={props.editHost} onChange={(e) => props.setEditHost(e.target.value)} className="input font-mono-data" />
+          </Field>
+          <div className="flex flex-wrap gap-3">
+            <Field label="Port">
+              <input type="number" value={props.editPort} onChange={(e) => props.setEditPort(Number(e.target.value))} className="input w-20" />
+            </Field>
+            <Field label="Username">
+              <input value={props.editUsername} onChange={(e) => props.setEditUsername(e.target.value)} className="input" />
+            </Field>
+            <PasswordField label="Password" value={props.editPassword} onChange={props.setEditPassword} />
+          </div>
+        </>
+      )}
       <Field label="Service user (systemd User=)">
         <input value={props.editServiceUser} onChange={(e) => props.setEditServiceUser(e.target.value)} placeholder="pi" className="input font-mono-data" />
       </Field>
@@ -2015,7 +2186,10 @@ function formatAuditTime(iso: string): string {
  *                 predates versioning entirely. Not the same as "fine".
  */
 function CollectorVersion({ asset }: { asset: Asset }) {
-  const current = COLLECTOR_VERSION;
+  // The two collectors are separate programs with separate version stamps.
+  // Comparing an environmental unit against the MagMon generator's version
+  // would mark every PET/CT asset permanently "behind".
+  const current = usesMagmon(asset.modality) ? COLLECTOR_VERSION : ENV_COLLECTOR_VERSION;
   const reported = asset.collector_version ?? null;
   const state = reported === null ? "unknown" : reported === current ? "ok" : "behind";
   if (state === "ok") {

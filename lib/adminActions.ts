@@ -44,6 +44,12 @@ async function call<T>(fn: string, args: Record<string, unknown> = {}): Promise<
 
 // ---- assets ---------------------------------------------------------------
 
+// The monitor* fields describe a MagMon's local web interface and mean nothing
+// on an environmental unit, which has no such device to scrape. They stay
+// required in this signature rather than becoming optional so there is exactly
+// one shape to call: the admin form sends null/defaults for a 'PET/CT' asset,
+// and the RPC stores them harmlessly. modality is what decides which collector
+// the unit gets and which card the fleet renders for it.
 export async function adminCreateAsset(args: {
   name: string;
   siteName: string | null;
@@ -54,6 +60,7 @@ export async function adminCreateAsset(args: {
   monitorUsername: string;
   monitorPassword: string;
   serviceUser: string;
+  modality: string;
 }) {
   const res = await call<unknown>("admin_create_asset", {
     p_name: args.name,
@@ -65,6 +72,7 @@ export async function adminCreateAsset(args: {
     p_monitor_username: args.monitorUsername,
     p_monitor_password: args.monitorPassword,
     p_service_user: args.serviceUser,
+    p_modality: args.modality,
   });
   revalidatePath("/admin");
   return res;
@@ -81,6 +89,7 @@ export async function adminUpdateAsset(args: {
   siteName: string | null;
   siteAddress: string | null;
   serviceUser: string;
+  modality: string;
 }) {
   const res = await call<unknown>("admin_update_asset", {
     p_asset_id: args.assetId,
@@ -93,6 +102,7 @@ export async function adminUpdateAsset(args: {
     p_site_name: args.siteName,
     p_site_address: args.siteAddress,
     p_service_user: args.serviceUser,
+    p_modality: args.modality,
   });
   revalidatePath("/admin");
   return res;
