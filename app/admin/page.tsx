@@ -56,14 +56,33 @@ import DisplaysSection from "@/components/DisplaysSection";
 import SiteLocationRow from "@/components/SiteLocationRow";
 import { addressKey } from "@/lib/weatherFormat";
 
-const ALERT_METRICS: { key: string; label: string; unit: string }[] = [
-  { key: "he_lvl", label: "Helium level", unit: "%" },
-  { key: "he_press", label: "Helium pressure", unit: "" },
-  { key: "h2o_flow", label: "Water flow", unit: "gpm" },
-  { key: "h2o_temp", label: "Water temp", unit: "°F" },
-  { key: "shield", label: "Shield temp", unit: "" },
-  { key: "cs1", label: "CS1 / compressor", unit: "" },
+// Every channel a rule can be written against, grouped for the picker. The
+// environmental ones are here so temperature and humidity limits can be set the
+// moment the right numbers are known — no code change, just a rule. They carry
+// NO default threshold anywhere: a guessed limit that quietly pages at 3am is
+// worse than no rule, so the field starts blank and must be filled in.
+const ALERT_METRICS: { key: string; label: string; unit: string; group: string }[] = [
+  { key: "he_lvl", label: "Helium level", unit: "%", group: "Magnet (MagMon)" },
+  { key: "he_press", label: "Helium pressure", unit: "", group: "Magnet (MagMon)" },
+  { key: "h2o_flow", label: "Water flow", unit: "gpm", group: "Magnet (MagMon)" },
+  { key: "h2o_temp", label: "Water temp", unit: "°F", group: "Magnet (MagMon)" },
+  { key: "shield", label: "Shield temp", unit: "", group: "Magnet (MagMon)" },
+  { key: "cs1", label: "CS1 / compressor", unit: "", group: "Magnet (MagMon)" },
+  { key: "s1_temp_f", label: "Section 1 (Engineering) temp", unit: "°F", group: "Environment" },
+  { key: "s1_rh", label: "Section 1 (Engineering) humidity", unit: "%RH", group: "Environment" },
+  { key: "s2_temp_f", label: "Section 2 (Tech / Patient) temp", unit: "°F", group: "Environment" },
+  { key: "s2_rh", label: "Section 2 (Tech / Patient) humidity", unit: "%RH", group: "Environment" },
+  { key: "s3_temp_f", label: "Section 3 (Equipment) temp", unit: "°F", group: "Environment" },
+  { key: "s3_rh", label: "Section 3 (Equipment) humidity", unit: "%RH", group: "Environment" },
+  // ups_on_battery is 1/0. The fleet already carries "= 1" as its outage rule,
+  // which is what raises POWER OUTAGE; it is listed so it can be seen and
+  // edited rather than being an invisible row only the database knows about.
+  { key: "ups_on_battery", label: "On UPS battery (1 = outage)", unit: "", group: "Power" },
+  { key: "ups_batt_pct", label: "UPS battery remaining", unit: "%", group: "Power" },
+  { key: "ups_input_v", label: "UPS input voltage", unit: "V", group: "Power" },
 ];
+
+const ALERT_METRIC_GROUPS = [...new Set(ALERT_METRICS.map((m) => m.group))];
 const ALERT_COMPARATORS = ["<", "<=", ">", ">=", "=", "!="];
 
 const NO_LOCATION = "No location set";
@@ -229,7 +248,10 @@ function AdminPanel() {
   const [ruleScope, setRuleScope] = useState<string>(""); // "" = all assets (fleet default)
   const [ruleField, setRuleField] = useState<string>(ALERT_METRICS[1].key);
   const [ruleComparator, setRuleComparator] = useState<string>(">");
-  const [ruleThreshold, setRuleThreshold] = useState<number>(3);
+  // A STRING, not a number, so the field can genuinely be empty. It used to
+  // default to 3, which is a meaningless limit on every metric and quietly
+  // became a real rule if nobody noticed. Parsed and validated on save.
+  const [ruleThreshold, setRuleThreshold] = useState<string>("");
   const [ruleEnabled, setRuleEnabled] = useState<boolean>(true);
 
   // inline asset editing (includes the asset's own location fields)
@@ -549,7 +571,7 @@ function AdminPanel() {
     setRuleScope("");
     setRuleField(ALERT_METRICS[1].key);
     setRuleComparator(">");
-    setRuleThreshold(3);
+    setRuleThreshold("");
     setRuleEnabled(true);
   }
 
@@ -558,18 +580,25 @@ function AdminPanel() {
     setRuleScope(r.asset_id ?? "");
     setRuleField(r.field);
     setRuleComparator(r.comparator);
-    setRuleThreshold(Number(r.threshold));
+    setRuleThreshold(String(Number(r.threshold)));
     setRuleEnabled(r.enabled);
   }
 
   async function handleSaveRule(e: React.FormEvent) {
     e.preventDefault();
+    // An empty or non-numeric threshold is refused rather than coerced:
+    // Number("") is 0, which on most of these metrics is a rule that fires
+    // constantly or never, and either way not one anybody meant to write.
+    const threshold = Number(ruleThreshold.trim());
+    if (ruleThreshold.trim() === "" || !Number.isFinite(threshold)) {
+      return fail("Enter a threshold value for this rule.");
+    }
     const { error } = await adminUpsertAlertRule({
       ruleId: editingRuleId,
       assetId: ruleScope || null,
       field: ruleField,
       comparator: ruleComparator,
-      threshold: ruleThreshold,
+      threshold,
       enabled: ruleEnabled,
     });
     if (error) return fail(actionError("Could not save alert rule", error));
@@ -1393,8 +1422,8 @@ function AlertsTab(props: {
   setRuleField: (v: string) => void;
   ruleComparator: string;
   setRuleComparator: (v: string) => void;
-  ruleThreshold: number;
-  setRuleThreshold: (v: number) => void;
+  ruleThreshold: string;
+  setRuleThreshold: (v: string) => void;
   ruleEnabled: boolean;
   setRuleEnabled: (v: boolean) => void;
   handleSaveRule: (e: React.FormEvent) => void;
@@ -1411,6 +1440,14 @@ function AlertsTab(props: {
         A rule scoped to <strong>All assets</strong> is the fleet default. Scope a rule to a single asset to
         override the fleet default for just that unit. The evaluator runs every minute; maintenance units are exempt.
       </p>
+      <p className="text-xs text-[var(--text-dim)] mb-3">
+        A rule only ever applies where the reading exists — a channel a unit
+        does not report is skipped rather than treated as zero, so a fleet-wide
+        environmental rule is safe to add before every unit has the sensors.
+        <strong className="text-[var(--text-muted)]"> Temperature and humidity limits are deliberately unset</strong>;
+        add them once the right numbers are known. Power outage is already
+        covered fleet-wide by <span className="font-mono-data">On UPS battery = 1</span>.
+      </p>
       <form onSubmit={props.handleSaveRule} className="rounded-xl border border-[var(--border-soft)] bg-[var(--card)] p-5 flex flex-wrap items-end gap-4 mb-4">
         <Field label="Scope">
           <select value={props.ruleScope} onChange={(e) => props.setRuleScope(e.target.value)} className="input">
@@ -1422,8 +1459,12 @@ function AlertsTab(props: {
         </Field>
         <Field label="Metric">
           <select value={props.ruleField} onChange={(e) => props.setRuleField(e.target.value)} className="input">
-            {ALERT_METRICS.map((m) => (
-              <option key={m.key} value={m.key}>{m.label}{m.unit ? ` (${m.unit})` : ""}</option>
+            {ALERT_METRIC_GROUPS.map((g) => (
+              <optgroup key={g} label={g}>
+                {ALERT_METRICS.filter((m) => m.group === g).map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}{m.unit ? ` (${m.unit})` : ""}</option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </Field>
@@ -1435,7 +1476,14 @@ function AlertsTab(props: {
           </select>
         </Field>
         <Field label="Threshold">
-          <input type="number" step="any" value={props.ruleThreshold} onChange={(e) => props.setRuleThreshold(Number(e.target.value))} className="input w-28 font-mono-data" />
+          <input
+            type="number"
+            step="any"
+            value={props.ruleThreshold}
+            onChange={(e) => props.setRuleThreshold(e.target.value)}
+            placeholder="—"
+            className="input w-28 font-mono-data"
+          />
         </Field>
         <label className="flex items-center gap-2 text-xs text-[var(--text-dim)]">
           <input type="checkbox" checked={props.ruleEnabled} onChange={(e) => props.setRuleEnabled(e.target.checked)} />
