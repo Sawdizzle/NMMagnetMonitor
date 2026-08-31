@@ -33,6 +33,14 @@ import {
 } from "@/lib/faults";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
+import {
+  envNum,
+  powerState,
+  showsPower,
+  usesMagmon,
+  zonesToShow,
+  POWER_COLORS,
+} from "@/lib/modality";
 import OrgMark from "./OrgMark";
 import MiniLineChart from "./MiniLineChart";
 
@@ -653,9 +661,10 @@ function TvCard({
   const alarm = computeAssetAlarm(asset);
   const color = ALARM_COLORS[alarm.level];
   const mins = minutesSince(asset.last_sample_at);
-  const t = asset.latest;
   const cold = readColdheadK(asset);
-  const refillLabel = refillChipLabel(forecast);
+  const showMagmon = usesMagmon(asset.modality);
+  // A refill projection needs helium, which a unit with no magnet has none of.
+  const refillLabel = showMagmon ? refillChipLabel(forecast) : null;
   const refillColor = forecast && refillUrgency(forecast) === "soon" ? ALARM_COLORS.warning : "#38bdf8";
   // "none" (and pinned cards, which pass no enterAnim) get no entrance animation.
   const animClass = enterAnim && enterAnim !== "none" ? ` tv-enter-${enterAnim}` : "";
@@ -718,45 +727,100 @@ function TvCard({
         </div>
       )}
 
-      <div className="tv-metrics">
-        <Metric
-          label="Coldhead"
-          value={cold}
-          unit="K"
-          digits={1}
-          series={asset.history.map((h) => coldheadFromData(h.data))}
-          color="#38bdf8"
-          emphasize
-        />
-        <Metric
-          label="Helium"
-          value={numVal(t?.he_lvl)}
-          unit="%"
-          digits={1}
-          series={asset.history.map((h) => numVal(h.he_lvl))}
-          color="#5b93f7"
-        />
-        <Metric
-          label="He Press"
-          value={numVal(t?.he_press)}
-          unit="psi"
-          digits={2}
-          series={asset.history.map((h) => numVal(h.he_press))}
-          color="#4ade80"
-        />
-        <Metric
-          label="Shield"
-          value={numVal(t?.shield)}
-          unit="K"
-          digits={0}
-          series={asset.history.map((h) => numVal(h.shield))}
-          color="#fbbf24"
-        />
-      </div>
+      <TvMetrics asset={asset} showMagmon={showMagmon} cold={cold} />
 
       <div className="tv-card-foot">
         <span>{asset.maintenance ? "maintenance" : alarm.connectivity}</span>
         <span className="font-mono-data">{mins === null ? "no report" : `${mins} min ago`}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The four tiles at the foot of a TV card.
+ *
+ * The grid is a fixed four columns, so this picks four from whatever the asset
+ * reports rather than rendering everything: magnet channels first, then a tile
+ * per zone, then power. A magnet keeps exactly the four it has always shown; a
+ * trailer with three zones plus power fills the row precisely.
+ *
+ * Capping is safe because these tiles are NOT how a problem reaches the screen.
+ * Anything actually wrong — an over-temperature zone, a lost mains supply —
+ * arrives as a fault pill above and colours the whole card, whether or not its
+ * tile made the cut. The tiles are context; the pills are the alarm.
+ */
+function TvMetrics({
+  asset,
+  showMagmon,
+  cold,
+}: {
+  asset: FleetAsset;
+  showMagmon: boolean;
+  cold: number | null;
+}) {
+  const t = asset.latest as unknown as Record<string, unknown> | null;
+  const rows = [asset.latest, ...asset.history];
+  const zones = zonesToShow(asset.modality, rows);
+
+  const tiles = [
+    ...(showMagmon
+      ? [
+          <Metric key="cold" label="Coldhead" value={cold} unit="K" digits={1}
+            series={asset.history.map((h) => coldheadFromData(h.data))} color="#38bdf8" emphasize />,
+          <Metric key="he" label="Helium" value={numVal(asset.latest?.he_lvl)} unit="%" digits={1}
+            series={asset.history.map((h) => numVal(h.he_lvl))} color="#5b93f7" />,
+          <Metric key="press" label="He Press" value={numVal(asset.latest?.he_press)} unit="psi" digits={2}
+            series={asset.history.map((h) => numVal(h.he_press))} color="#4ade80" />,
+          <Metric key="shield" label="Shield" value={numVal(asset.latest?.shield)} unit="K" digits={0}
+            series={asset.history.map((h) => numVal(h.shield))} color="#fbbf24" />,
+        ]
+      : []),
+    ...zones.map((z) => (
+      <Metric
+        key={z.key}
+        label={z.short}
+        value={envNum(t?.[`${z.key}_temp_f`])}
+        unit="°F"
+        digits={1}
+        series={asset.history.map((h) => envNum((h as unknown as Record<string, unknown>)[`${z.key}_temp_f`]))}
+        color="#fbbf24"
+      />
+    )),
+    ...(showsPower(asset.modality, rows) ? [<PowerTile key="power" latest={asset.latest} />] : []),
+  ];
+
+  return <div className="tv-metrics">{tiles.slice(0, 4)}</div>;
+}
+
+/**
+ * Mains power as a word, not a number.
+ *
+ * Reads across a room, which a voltage does not. Grey "—" is a real state and
+ * not a quiet "fine": it means the UPS is not answering, so an outage is
+ * precisely what could not be seen.
+ */
+function PowerTile({ latest }: { latest: FleetAsset["latest"] }) {
+  const t = latest as unknown as Record<string, unknown> | null;
+  const state = powerState(t?.ups_on_battery);
+  const batt = envNum(t?.ups_batt_pct);
+  const volts = envNum(t?.ups_input_v);
+  const word = state === "battery" ? "OUTAGE" : state === "wall" ? "WALL" : "—";
+  const sub = [
+    batt === null ? null : `${batt.toFixed(0)}%`,
+    volts === null ? null : `${volts.toFixed(0)} V`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div className="tv-metric">
+      <p className="tv-metric-label">Power</p>
+      <p className="tv-metric-value font-mono-data" style={{ color: POWER_COLORS[state] }}>
+        {word}
+      </p>
+      <div className="tv-metric-spark" style={{ color: "var(--tv-dim)" }}>
+        <span className="font-mono-data" style={{ fontSize: "0.7em" }}>{sub || " "}</span>
       </div>
     </div>
   );
