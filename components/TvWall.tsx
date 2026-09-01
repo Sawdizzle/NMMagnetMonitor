@@ -40,6 +40,7 @@ import {
   usesMagmon,
   zonesToShow,
   POWER_COLORS,
+  POWER_SHORT,
 } from "@/lib/modality";
 import OrgMark from "./OrgMark";
 import MiniLineChart from "./MiniLineChart";
@@ -805,7 +806,10 @@ function PowerTile({ latest }: { latest: FleetAsset["latest"] }) {
   const state = powerState(t?.ups_on_battery);
   const batt = envNum(t?.ups_batt_pct);
   const volts = envNum(t?.ups_input_v);
-  const word = state === "battery" ? "OUTAGE" : state === "wall" ? "WALL" : "—";
+  // Shared with the fleet table's power column rather than spelled out again
+  // here — two copies of "what to call an outage in a narrow space" is exactly
+  // the kind of pair that drifts.
+  const word = POWER_SHORT[state];
   const sub = [
     batt === null ? null : `${batt.toFixed(0)}%`,
     volts === null ? null : `${volts.toFixed(0)} V`,

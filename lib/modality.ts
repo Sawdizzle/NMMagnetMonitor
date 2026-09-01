@@ -178,31 +178,51 @@ export function showsPower(
  * count and the zone count disagree, which is exactly what it looked like
  * before this existed.
  */
-export function envChartSpecs(zones: EnvZone[]): {
-  key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">;
-  label: string;
-  unit: string;
-  color: string;
-  /** Temperature charts carry the outside-air trace; humidity ones do not. */
-  isTemp: boolean;
-}[] {
+export function envChartSpecs(zones: EnvZone[]): EnvChannelSpec[] {
   return [
     ...zones.map((z) => ({
       key: `${z.key}_temp_f` as const,
       label: `${z.short} — temp`,
+      short: z.short,
       unit: "°F",
       color: "#fbbf24",
       isTemp: true,
+      zone: z,
     })),
     ...zones.map((z) => ({
       key: `${z.key}_rh` as const,
       label: `${z.short} — humidity`,
+      short: z.short,
       unit: "%RH",
       color: "#22d3ee",
       isTemp: false,
+      zone: z,
     })),
   ];
 }
+
+export type EnvChannelSpec = {
+  key: keyof Omit<TelemetryBucket, "created_at" | "sample_count">;
+  /** Full form, for a chart heading: "Engineering — temp". */
+  label: string;
+  /**
+   * Compact form for a card tile, which is a third of a card wide.
+   *
+   * Just the zone name, deliberately WITHOUT the measure. The tiles are laid
+   * out with every temperature on one row and every humidity on the next, and
+   * the unit sits in the value directly beneath, so the measure is already
+   * unmistakable — while the zone is the thing that varies across a row and has
+   * to stay readable. Folding "temp"/"RH" in here would push "Tech / Patient"
+   * into an ellipsis and make the two rows look identical.
+   */
+  short: string;
+  unit: string;
+  color: string;
+  /** Temperature charts carry the outside-air trace; humidity ones do not. */
+  isTemp: boolean;
+  /** The zone this channel belongs to, for tooltips and column grouping. */
+  zone: EnvZone;
+};
 
 // ---- mains power ---------------------------------------------------------
 
@@ -226,6 +246,17 @@ export const POWER_LABELS: Record<PowerState, string> = {
   wall: "Wall power",
   battery: "ON BATTERY",
   unknown: "Power unknown",
+};
+
+/**
+ * Compact forms for a fixed-width table column and a wall display, where the
+ * full labels do not fit. "OUTAGE" rather than "ON BATTERY" because the column
+ * is about 56px on a phone and the outage is the point, not the mechanism.
+ */
+export const POWER_SHORT: Record<PowerState, string> = {
+  wall: "Wall",
+  battery: "OUTAGE",
+  unknown: "—",
 };
 
 export const POWER_COLORS: Record<PowerState, string> = {

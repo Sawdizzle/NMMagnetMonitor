@@ -13,13 +13,16 @@ import { useWeather } from "@/lib/useWeather";
 import type { SiteWeather } from "@/lib/weatherTypes";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import {
+  envChartSpecs,
   envNum,
   showsPower,
   usesMagmon,
   zonesToShow,
+  ENV_ZONES,
   type EnvZone,
   POWER_COLORS,
   POWER_LABELS,
+  POWER_SHORT,
   powerState,
 } from "@/lib/modality";
 import FieldRing from "./FieldRing";
@@ -53,6 +56,15 @@ const FAULT_METRIC: Record<string, keyof TelemetrySample> = {
   helium: "he_lvl",
   he_press: "he_press",
   shield: "shield",
+};
+
+// One column per zone on a card, so the temperature row and the humidity row
+// beneath it line up zone-for-zone. Whole class names because Tailwind scans
+// source text — a built `grid-cols-${n}` produces no CSS at all.
+const ENV_CARD_COLS: Record<number, string> = {
+  1: "grid-cols-1",
+  2: "grid-cols-2",
+  3: "grid-cols-3",
 };
 
 type FleetView = "cards" | "table";
@@ -384,7 +396,49 @@ function ViewToggle({ view, onChange }: { view: FleetView; onChange: (v: FleetVi
   );
 }
 
+/**
+ * The collapsed fleet view, as one table per kind of unit.
+ *
+ * A single table cannot serve both. Its columns ARE the MagMon channels, so a
+ * unit with no magnet previously had to borrow the whole span for a cramped
+ * inline list that lined up with nothing — and widening the table to the union
+ * of every channel would give a phone twelve columns, most of them empty on any
+ * given row.
+ *
+ * Two tables, each with headers that mean something for the rows under them.
+ * Headings appear only when both kinds are present, so an all-magnet fleet
+ * looks exactly as it always has.
+ */
 function AssetTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePath: string }) {
+  const magnets = assets.filter((a) => usesMagmon(a.modality));
+  const others = assets.filter((a) => !usesMagmon(a.modality));
+  const both = magnets.length > 0 && others.length > 0;
+
+  return (
+    <div className="flex flex-col gap-5">
+      {magnets.length > 0 && (
+        <div>
+          {both && <TableHeading>Magnets</TableHeading>}
+          <MagmonTable assets={magnets} basePath={basePath} />
+        </div>
+      )}
+      {others.length > 0 && (
+        <div>
+          {both && <TableHeading>Environmental</TableHeading>}
+          <EnvTable assets={others} basePath={basePath} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TableHeading({ children }: { children: ReactNode }) {
+  return (
+    <h3 className="text-xs uppercase tracking-wide text-[var(--text-dim)] mb-2 px-1">{children}</h3>
+  );
+}
+
+function MagmonTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePath: string }) {
   return (
     <div className="fleet-table-wrap">
       <div className="fleet-scroll">
@@ -395,7 +449,7 @@ function AssetTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePa
               {METRICS.map((m) => (
                 <th key={m.key as string}>
                   <span className="ft-h">{m.short}</span>
-                  <span className="ft-u">{m.unit || " "}</span>
+                  <span className="ft-u">{m.unit || " "}</span>
                 </th>
               ))}
             </tr>
@@ -411,20 +465,118 @@ function AssetTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePa
   );
 }
 
-function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
-  const router = useRouter();
+/**
+ * The environmental table.
+ *
+ * One column per zone rather than two, with temperature and humidity paired in
+ * the cell: the table view is the phone default, and eight numeric columns on a
+ * 375px screen is a horizontal scroll nobody reads. Columns are the union of
+ * the zones these assets report, so a two-zone fleet gets two columns.
+ */
+function EnvTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePath: string }) {
+  const zones = ENV_ZONES.filter((z) =>
+    assets.some((a) =>
+      zonesToShow(a.modality, [a.latest, ...a.history]).some((az) => az.key === z.key)
+    )
+  );
+
+  return (
+    <div className="fleet-table-wrap">
+      <div className="fleet-scroll">
+        <table className="fleet-table">
+          <thead>
+            <tr>
+              <th className="ft-asset-h">Asset</th>
+              {zones.map((z) => (
+                <th key={z.key} title={z.label}>
+                  <span className="ft-h">{z.short}</span>
+                  <span className="ft-u">&deg;F &middot; %RH</span>
+                </th>
+              ))}
+              <th>
+                <span className="ft-h">Power</span>
+                <span className="ft-u">&nbsp;</span>
+              </th>
+              <th>
+                <span className="ft-h">Batt</span>
+                <span className="ft-u">%</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((a) => (
+              <EnvRow key={a.id} asset={a} basePath={basePath} zones={zones} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The chrome every fleet row shares: its status edge, its "N min ago" subtitle
+ * and where it links. Split out so the two tables cannot drift apart on the one
+ * column they have in common.
+ *
+ * A plain function, deliberately not named useX: it calls no hooks, and the
+ * prefix would claim ordering rules it does not have.
+ */
+function rowChrome(asset: AssetWithTelemetry, basePath: string) {
   const alarm = computeAssetAlarm(asset);
   const status = computeAssetHealth(asset);
   // Age of the last genuinely-new reading (data freshness), so it always agrees
   // with the status chip — a reachable-but-silent unit reads its true data age,
   // not the misleadingly-fresh last_seen_at.
   const mins = minutesSince(asset.last_sample_at);
-  const href = `${basePath}/asset/${asset.id}`;
+  return {
+    alarm,
+    status,
+    href: `${basePath}/asset/${asset.id}`,
+    // Colored edge = the single folded alarm level (matches the TV card rail),
+    // falling back to plain connectivity color when nothing's wrong.
+    edge: alarm.level === "ok" ? STATUS_COLORS[status] : ALARM_COLORS[alarm.level],
+    alarming: alarm.level === "critical" || alarm.level === "warning",
+    sub: alarm.maintenance
+      ? "maintenance"
+      : mins === null
+        ? "never reported"
+        : `${mins} min ago`,
+  };
+}
 
-  // Colored edge = the single folded alarm level (matches the TV card rail),
-  // falling back to plain connectivity color when nothing's wrong.
-  const edge = alarm.level === "ok" ? STATUS_COLORS[status] : ALARM_COLORS[alarm.level];
-  const alarming = alarm.level === "critical" || alarm.level === "warning";
+function AssetNameCell({
+  asset,
+  href,
+  status,
+  sub,
+  maintenance,
+}: {
+  asset: AssetWithTelemetry;
+  href: string;
+  status: string;
+  sub: string;
+  maintenance: boolean;
+}) {
+  return (
+    <td className="ft-asset">
+      <Link
+        href={href}
+        className="ft-name"
+        onClick={(e) => e.stopPropagation()}
+        aria-label={`${asset.name}, ${maintenance ? "maintenance" : status}, ${sub}. View details.`}
+      >
+        <span className="ft-dot" aria-hidden="true" />
+        {asset.name}
+      </Link>
+      <div className="ft-sub">{sub}</div>
+    </td>
+  );
+}
+
+function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
+  const router = useRouter();
+  const { alarm, status, href, edge, alarming, sub } = rowChrome(asset, basePath);
 
   // Which cell (if any) each fault should light up, and how severely.
   const faultCell: Partial<Record<keyof TelemetrySample, FaultSeverity>> = {};
@@ -434,11 +586,77 @@ function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: st
     if (faultCell[mk] !== "critical") faultCell[mk] = f.severity;
   }
 
-  const sub = alarm.maintenance
-    ? "maintenance"
-    : mins === null
-      ? "never reported"
-      : `${mins} min ago`;
+  return (
+    <tr
+      className="fleet-row"
+      data-alarm={alarming ? "true" : "false"}
+      style={{ ["--sc" as string]: edge }}
+      onClick={() => router.push(href)}
+    >
+      <AssetNameCell asset={asset} href={href} status={status} sub={sub} maintenance={alarm.maintenance} />
+      {METRICS.map((m) => {
+        const value = asset.latest?.[m.key] as number | null | undefined;
+        const sev = faultCell[m.key];
+        const cls = alarm.maintenance ? "dim" : sev === "critical" ? "bad" : sev === "warning" ? "warn" : "";
+        return (
+          <td key={m.key as string} className={`ft-m ${cls}`.trim()}>
+            {value ?? "—"}
+          </td>
+        );
+      })}
+    </tr>
+  );
+}
+
+/**
+ * Which environmental column a fault belongs to, so the offending cell can tint
+ * itself the way the magnet table's already does.
+ *
+ * Fault keys are built in lib/faults as `alert:<field>` / `sensor:<field>` /
+ * `trend:<field>`, plus the bare "power" key for a mains outage. Reading the
+ * field back out of the key is what lets a zone alarm light its own column
+ * instead of the whole row going amber with no indication of where.
+ */
+function envFaultColumns(faults: { key: string; severity: FaultSeverity }[]) {
+  const out: Record<string, FaultSeverity> = {};
+  const bump = (col: string, sev: FaultSeverity) => {
+    if (out[col] !== "critical") out[col] = sev;
+  };
+  for (const f of faults) {
+    if (f.key === "power") {
+      bump("power", f.severity);
+      continue;
+    }
+    const i = f.key.indexOf(":");
+    if (i < 0) continue;
+    const field = f.key.slice(i + 1);
+    const zone = ENV_ZONES.find((z) => field.startsWith(`${z.key}_`));
+    if (zone) bump(zone.key, f.severity);
+    else if (field.startsWith("ups_")) bump("power", f.severity);
+  }
+  return out;
+}
+
+function EnvRow({
+  asset,
+  basePath,
+  zones,
+}: {
+  asset: AssetWithTelemetry;
+  basePath: string;
+  zones: EnvZone[];
+}) {
+  const router = useRouter();
+  const { alarm, status, href, edge, alarming, sub } = rowChrome(asset, basePath);
+  const t = asset.latest as unknown as Record<string, unknown> | null;
+  const power = powerState(t?.ups_on_battery);
+  const batt = envNum(t?.ups_batt_pct);
+  const faultCol = envFaultColumns(alarm.faults);
+  const cls = (col: string) => {
+    if (alarm.maintenance) return "ft-m dim";
+    const sev = faultCol[col];
+    return `ft-m ${sev === "critical" ? "bad" : sev === "warning" ? "warn" : ""}`.trim();
+  };
 
   return (
     <tr
@@ -447,74 +665,26 @@ function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: st
       style={{ ["--sc" as string]: edge }}
       onClick={() => router.push(href)}
     >
-      <td className="ft-asset">
-        <Link
-          href={href}
-          className="ft-name"
-          onClick={(e) => e.stopPropagation()}
-          aria-label={`${asset.name}, ${alarm.maintenance ? "maintenance" : status}, ${sub}. View details.`}
-        >
-          <span className="ft-dot" aria-hidden="true" />
-          {asset.name}
-        </Link>
-        <div className="ft-sub">{sub}</div>
+      <AssetNameCell asset={asset} href={href} status={status} sub={sub} maintenance={alarm.maintenance} />
+      {zones.map((z) => {
+        const temp = envNum(t?.[`${z.key}_temp_f`]);
+        const rh = envNum(t?.[`${z.key}_rh`]);
+        return (
+          <td key={z.key} className={`${cls(z.key)} ft-stack`}>
+            {temp === null ? "—" : `${temp.toFixed(1)}°`}
+            <span className="ft-rh">{rh === null ? "—" : `${rh.toFixed(0)}%`}</span>
+          </td>
+        );
+      })}
+      <td
+        className={cls("power")}
+        style={alarm.maintenance ? undefined : { color: POWER_COLORS[power] }}
+        title={POWER_LABELS[power]}
+      >
+        {POWER_SHORT[power]}
       </td>
-      {/* The table's columns are the MagMon channels, so a unit with no magnet
-          takes the whole span for its own readings rather than printing six
-          em-dashes across a row that then looks like a dead magnet. A unit that
-          HAS a magnet keeps these columns whatever else it reports — its zone
-          and power detail lives on the card and the asset page, and a lost
-          mains supply still reaches this row as a red edge via the alarm. */}
-      {!usesMagmon(asset.modality) ? (
-        <EnvRowCells asset={asset} span={METRICS.length} dim={alarm.maintenance} />
-      ) : (
-        METRICS.map((m) => {
-          const value = asset.latest?.[m.key] as number | null | undefined;
-          const sev = faultCell[m.key];
-          const cls = alarm.maintenance ? "dim" : sev === "critical" ? "bad" : sev === "warning" ? "warn" : "";
-          return (
-            <td key={m.key as string} className={`ft-m ${cls}`.trim()}>
-              {value ?? "—"}
-            </td>
-          );
-        })
-      )}
+      <td className={cls("power")}>{batt === null ? "—" : batt.toFixed(0)}</td>
     </tr>
-  );
-}
-
-/** A no-magnet unit's readings folded into the table's metric columns, as one cell. */
-function EnvRowCells({
-  asset,
-  span,
-  dim,
-}: {
-  asset: AssetWithTelemetry;
-  span: number;
-  dim: boolean;
-}) {
-  const t = asset.latest as unknown as Record<string, unknown> | null;
-  const power = powerState(t?.ups_on_battery);
-  const zones = zonesToShow(asset.modality, [asset.latest, ...asset.history]);
-  return (
-    <td className={`ft-m ${dim ? "dim" : ""}`.trim()} colSpan={span}>
-      <span className="inline-flex flex-wrap items-center justify-end gap-x-3 gap-y-0.5">
-        {zones.map((z) => {
-          const temp = envNum(t?.[`${z.key}_temp_f`]);
-          const rh = envNum(t?.[`${z.key}_rh`]);
-          return (
-            <span key={z.key} title={z.label}>
-              <span className="text-[var(--text-dim)]">{z.zone}</span>{" "}
-              {temp === null ? "—" : `${temp.toFixed(1)}°`}
-              <span className="text-[var(--text-dim)]">
-                {rh === null ? "" : ` ${rh.toFixed(0)}%`}
-              </span>
-            </span>
-          );
-        })}
-        <span style={{ color: dim ? undefined : POWER_COLORS[power] }}>{POWER_LABELS[power]}</span>
-      </span>
-    </td>
   );
 }
 
@@ -568,42 +738,53 @@ function DropletIcon() {
 }
 
 /**
- * One tile per zone that this asset reports.
+ * One tile per zone channel, each with its own hour of history.
  *
- * Its own block rather than part of a "PET/CT card", because a magnet that gets
- * zone sensors fitted must grow this section alongside its helium tiles rather
- * than trading them for it. Which zones appear is decided by zonesToShow, not
- * by the modality.
+ * Built to be the same tile the magnet channels use — label, value with unit,
+ * sparkline — because these ARE the same kind of thing and a card that draws
+ * them differently implies a distinction that does not exist. A zone tile and a
+ * helium tile sit side by side on a unit that has both.
+ *
+ * Two rows: every temperature across the top, each zone's humidity directly
+ * beneath it (see envChartSpecs — the order is the layout). The grid takes one
+ * column per zone so the two rows align zone-for-zone.
  *
  * Readings go through envNum because PostgREST serialises numeric columns as
  * strings; toFixed on "70.0" would throw.
  */
-function ZoneTiles({ zones, latest }: { zones: EnvZone[]; latest: TelemetrySample | null }) {
-  // Indexed through a Record rather than typed keys: the zones differ only by a
-  // column-name prefix, and spelling out six accessors to satisfy the type
+function ZoneTiles({
+  zones,
+  latest,
+  history,
+}: {
+  zones: EnvZone[];
+  latest: TelemetrySample | null;
+  history: TelemetrySample[];
+}) {
+  // Indexed through a Record rather than typed keys: the channels differ only
+  // by a column-name prefix, and spelling out six accessors to satisfy the type
   // system would bury that.
   const t = latest as unknown as Record<string, unknown> | null;
+  const cols = ENV_CARD_COLS[zones.length] ?? "grid-cols-3";
+
   return (
-    <div className="grid grid-cols-3 gap-2">
-      {zones.map((z) => {
-        const temp = envNum(t?.[`${z.key}_temp_f`]);
-        const rh = envNum(t?.[`${z.key}_rh`]);
+    <div className={`grid ${cols} gap-2`}>
+      {envChartSpecs(zones).map((m) => {
+        const value = envNum(t?.[m.key]);
+        const series = history.map((h) => envNum((h as unknown as Record<string, unknown>)[m.key]));
         return (
-          <div key={z.key} className="metric-tile flex flex-col gap-0.5">
+          <div key={m.key} className="metric-tile flex flex-col gap-1">
             <p
               className="text-[var(--text-dim)] text-[10px] uppercase tracking-wide truncate"
-              title={z.label}
+              title={`${m.zone.label} · ${m.isTemp ? "temperature" : "humidity"}`}
             >
-              {z.short}
+              {m.short}
             </p>
             <p className="font-mono-data text-sm text-[var(--text)]">
-              {temp === null ? "—" : temp.toFixed(1)}
-              <span className="text-[var(--text-dim)] text-[10px]"> °F</span>
+              {value === null ? "—" : value.toFixed(m.isTemp ? 1 : 0)}{" "}
+              <span className="text-[var(--text-dim)] text-[10px]">{m.unit}</span>
             </p>
-            <p className="font-mono-data text-xs text-[var(--text-muted)]">
-              {rh === null ? "—" : rh.toFixed(0)}
-              <span className="text-[var(--text-dim)] text-[10px]"> %RH</span>
-            </p>
+            <MiniLineChart values={series} width={90} height={22} color={m.color} />
           </div>
         );
       })}
@@ -724,7 +905,9 @@ function AssetCard({
             })}
           </div>
         )}
-        {zones.length > 0 && <ZoneTiles zones={zones} latest={asset.latest} />}
+        {zones.length > 0 && (
+          <ZoneTiles zones={zones} latest={asset.latest} history={asset.history} />
+        )}
         {showPower && <PowerRow latest={asset.latest} />}
       </div>
 

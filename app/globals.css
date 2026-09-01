@@ -776,6 +776,29 @@ button {
   font-weight: 600;
 }
 
+/* An environmental column carries TWO readings — temperature over humidity —
+   where a magnet column carries one. The table is `table-layout: fixed`, so on
+   a phone each column is roughly 56px: "69.1° 48%" on one nowrap line becomes
+   "69.…" and tells you nothing. Stacking them fits both in the same width. */
+.ft-m.ft-stack {
+  white-space: normal;
+  line-height: 1.2;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.ft-m .ft-rh {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.ft-m.bad .ft-rh,
+.ft-m.warn .ft-rh {
+  /* Inherit the alarm tint rather than staying dim, or a flagged cell would
+     read as half-alarmed. */
+  color: inherit;
+  opacity: 0.75;
+}
+
 /* ---- Adaptive app nav: top bar on desktop, bottom tab bar on mobile ---- */
 .app-topbar {
   align-items: center;
