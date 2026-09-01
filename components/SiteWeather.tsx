@@ -82,7 +82,21 @@ export function WeatherChip({ weather }: { weather: SiteWeather | null }) {
 const ICON_NEUTRAL = "var(--text-muted)";
 
 /** Full panel for the asset page. */
-export function WeatherPanel({ weather }: { weather: SiteWeather | null }) {
+/**
+ * @param context Which trace on this page the outside air explains. 'magnet'
+ *   points at the water loop; 'zones' points at the enclosure temperatures. The
+ *   panel is otherwise identical — same reading, same source, same caveats —
+ *   because the weather does not care what the unit is. Only the sentence
+ *   saying WHY it is on the page differs, and a water-loop explanation on a
+ *   trailer with no water loop is simply wrong.
+ */
+export function WeatherPanel({
+  weather,
+  context = "magnet",
+}: {
+  weather: SiteWeather | null;
+  context?: "magnet" | "zones";
+}) {
   if (!weather || weather.tempF === null) return null;
 
   const accent = accentFor(weather);
@@ -143,8 +157,9 @@ export function WeatherPanel({ weather }: { weather: SiteWeather | null }) {
       </div>
 
       <p className="text-[11px] text-[var(--text-dim)] mt-4">
-        Ambient context for the water loop — a hot afternoon shows up in H2O Temp before it shows up
-        in helium. Not a fault signal.
+        {context === "zones"
+          ? "Ambient context for the zone sensors — an enclosure tracks the weather, so a climb that matches the afternoon is a different problem from one that does not. Not a fault signal."
+          : "Ambient context for the water loop — a hot afternoon shows up in H2O Temp before it shows up in helium. Not a fault signal."}
         {weather.source === "grid" &&
           " No station near this site reports conditions, so this is the National Weather Service's gridded analysis for the site rather than a measurement."}
       </p>

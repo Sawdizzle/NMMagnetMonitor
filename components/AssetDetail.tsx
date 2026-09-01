@@ -303,7 +303,11 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           on a unit without one, and there is no helium to project. */}
       {showMagmon && <DeviceCodesCard latest={latest} />}
 
-      <WeatherPanel weather={weather} />
+      {/* The caption explains which trace on THIS page the outside air is
+          context for, so a unit with no water loop is not told about one. A
+          magnet that later gets zone sensors keeps the water-loop wording,
+          which is still its primary use for the reading. */}
+      <WeatherPanel weather={weather} context={showMagmon ? "magnet" : "zones"} />
 
       {showMagmon && <ForecastCard forecast={forecast} loaded={forecastLoaded} />}
 
