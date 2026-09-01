@@ -15,6 +15,7 @@ import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forec
 import {
   envChartSpecs,
   envNum,
+  hasEnvSection,
   showsPower,
   usesMagmon,
   zonesToShow,
@@ -397,35 +398,41 @@ function ViewToggle({ view, onChange }: { view: FleetView; onChange: (v: FleetVi
 }
 
 /**
- * The collapsed fleet view, as one table per kind of unit.
+ * The collapsed fleet view, as one table per CHANNEL FAMILY.
  *
- * A single table cannot serve both. Its columns ARE the MagMon channels, so a
- * unit with no magnet previously had to borrow the whole span for a cramped
- * inline list that lined up with nothing — and widening the table to the union
- * of every channel would give a phone twelve columns, most of them empty on any
- * given row.
+ * A single table cannot carry both families. Its columns ARE the MagMon
+ * channels, so a unit with no magnet previously had to borrow the whole span
+ * for a cramped inline list that lined up with nothing — and widening it to the
+ * union of every channel would give a phone twelve columns, most of them empty
+ * on any given row.
  *
- * Two tables, each with headers that mean something for the rows under them.
- * Headings appear only when both kinds are present, so an all-magnet fleet
+ * Split by family and NOT by kind of unit, which matters as soon as the fleet
+ * has a magnet with a UPS fitted: filing each asset under one heading would
+ * mean picking one of its families and silently dropping the other, which is
+ * exactly the either/or mistake the cards avoid. An asset appears under every
+ * family it reports — its magnet readings under one heading, its environmental
+ * ones under the other — so nothing it sends is missing from this view.
+ *
+ * Headings appear only when both tables are present, so an all-magnet fleet
  * looks exactly as it always has.
  */
 function AssetTable({ assets, basePath }: { assets: AssetWithTelemetry[]; basePath: string }) {
-  const magnets = assets.filter((a) => usesMagmon(a.modality));
-  const others = assets.filter((a) => !usesMagmon(a.modality));
-  const both = magnets.length > 0 && others.length > 0;
+  const magnetRows = assets.filter((a) => usesMagmon(a.modality));
+  const envRows = assets.filter((a) => hasEnvSection(a.modality, [a.latest, ...a.history]));
+  const both = magnetRows.length > 0 && envRows.length > 0;
 
   return (
     <div className="flex flex-col gap-5">
-      {magnets.length > 0 && (
+      {magnetRows.length > 0 && (
         <div>
-          {both && <TableHeading>Magnets</TableHeading>}
-          <MagmonTable assets={magnets} basePath={basePath} />
+          {both && <TableHeading>Magnet channels</TableHeading>}
+          <MagmonTable assets={magnetRows} basePath={basePath} />
         </div>
       )}
-      {others.length > 0 && (
+      {envRows.length > 0 && (
         <div>
-          {both && <TableHeading>Environmental</TableHeading>}
-          <EnvTable assets={others} basePath={basePath} />
+          {both && <TableHeading>Environment &amp; power</TableHeading>}
+          <EnvTable assets={envRows} basePath={basePath} />
         </div>
       )}
     </div>

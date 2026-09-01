@@ -5,6 +5,7 @@ import {
   ENV_ZONES,
   envChartSpecs,
   envNum,
+  hasEnvSection,
   expectsEnv,
   powerState,
   showsPower,
@@ -187,4 +188,31 @@ test("only temperature charts carry the outside-air trace", () => {
   for (const m of envChartSpecs(ENV_ZONES)) {
     assert.equal(m.isTemp, m.key.endsWith("_temp_f"));
   }
+});
+
+test("a magnet with a UPS fitted earns an environmental section", () => {
+  // The fleet table splits by CHANNEL FAMILY, not by kind of unit, and this is
+  // the predicate that decides it. Filing each asset under one heading would
+  // mean a magnet with a UPS shows its helium and silently drops its power —
+  // the either/or mistake, relocated from the cards into the table.
+  const magnetOnly = [row(MAGNET)];
+  assert.equal(hasEnvSection(MODALITY_MRI, magnetOnly), false, "nothing fitted yet");
+
+  // A UPS alone is enough. No zone sensors needed.
+  const magnetPlusUps = [row({ ...MAGNET, ups_on_battery: "0", ups_batt_pct: "100.0" })];
+  assert.equal(hasEnvSection(MODALITY_MRI, magnetPlusUps), true, "power alone qualifies");
+
+  // Zone sensors alone are equally enough.
+  const magnetPlusZone = [row({ ...MAGNET, s1_temp_f: "68.0", s1_rh: "44.0" })];
+  assert.equal(hasEnvSection(MODALITY_MRI, magnetPlusZone), true, "zones alone qualify");
+
+  // And a magnet stays a magnet either way — it keeps its own family too.
+  assert.equal(usesMagmon(MODALITY_MRI), true);
+});
+
+test("a trailer always earns an environmental section, even before it reports", () => {
+  // Expected, not merely present: a silent PET/CT unit is broken and has to
+  // appear in the table saying so, not drop out of the view entirely.
+  assert.equal(hasEnvSection(MODALITY_PETCT, [null]), true);
+  assert.equal(hasEnvSection(MODALITY_PETCT, [row({})]), true);
 });

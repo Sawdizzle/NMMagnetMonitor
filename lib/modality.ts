@@ -224,6 +224,21 @@ export type EnvChannelSpec = {
   zone: EnvZone;
 };
 
+/**
+ * Does this asset have anything to show in an environmental section at all?
+ *
+ * Zones OR power — either is enough to earn the section. Used both by the card
+ * (which renders whichever blocks apply) and by the fleet table, where it
+ * decides whether the asset appears under the environmental heading. A magnet
+ * fitted with only a UPS and no sensors still belongs there.
+ */
+export function hasEnvSection(
+  modality: string | null | undefined,
+  rows: readonly ChannelRow[]
+): boolean {
+  return zonesToShow(modality, rows).length > 0 || showsPower(modality, rows);
+}
+
 // ---- mains power ---------------------------------------------------------
 
 export type PowerState = "wall" | "battery" | "unknown";
