@@ -1090,8 +1090,21 @@ UPS_NAME    = "${upsName}"
 
 POLL_INTERVAL_SECONDS = ${intervalMinutes * 60}
 
-# (modbus unit id, column prefix, human label). The unit id is set with the
-# DIP switches / config utility on each XY-MD02 and must be unique on the bus.
+# (modbus unit id, column prefix, human label).
+#
+# The unit id is the ONLY identity a sensor has. RS-485 is a multidrop bus, not
+# a chain the master can walk: every device sits on the same pair, and nothing
+# in the protocol reports position, order or location. So this mapping is only
+# correct if the sensor physically installed in zone N is the one addressed N.
+# Label each sensor with its address before it goes on the wall.
+#
+# The address is stored on the device itself (a holding register -- 0x0101 on
+# the common XY-MD02 variant) and written with the vendor's Windows tool or any
+# Modbus master. It must be unique on the bus.
+#
+# To confirm a mapping after the fact: warm one sensor by hand, or unplug it,
+# and see which zone moves or goes blank on the dashboard. That is a physical
+# test because there is no software one -- see the note above.
 ZONES = [
     (1, "s1", "Section 1 -- Engineering"),
     (2, "s2", "Section 2 -- Tech / Patient"),
