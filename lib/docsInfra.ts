@@ -24,6 +24,13 @@ export type DocsInfra = {
   servicePrefix: string; // systemd unit prefix, e.g. nm-magmon-gateway
   scriptBase: string; // collector script path prefix, e.g. /opt/magmon-gateway
   processMatch: string; // token to grep the running process by
+  // The same three for the ENVIRONMENTAL collector, which is a separate program
+  // with its own unit, path and log identifier. They must differ from the
+  // MagMon set: a site running both would otherwise have two services fighting
+  // over one unit file and one log stream.
+  envServicePrefix: string; // e.g. nm-env-gateway
+  envScriptBase: string; // e.g. /opt/env-gateway
+  envProcessMatch: string; // e.g. env-gateway
   reportHost: string; // cloud host the gateway reports to (the one DNS lookup that matters)
   assets: string[]; // asset IDs shown in the collector list
   // How to reach one specific unit's MagMon web interface. Queried live rather
@@ -57,6 +64,9 @@ export const demoInfra: DocsInfra = {
   servicePrefix: "magmon-gateway",
   scriptBase: "/opt/magmon-gateway",
   processMatch: "magmon-gateway",
+  envServicePrefix: "env-gateway",
+  envScriptBase: "/opt/env-gateway",
+  envProcessMatch: "env-gateway",
   reportHost: "example-project.supabase.co",
   // Was DEMO_ASSET_IDS.slice(0, 6) from lib/demoFixtures, deleted in Phase 4
   // when the demo became a real org. These are display labels for the docs

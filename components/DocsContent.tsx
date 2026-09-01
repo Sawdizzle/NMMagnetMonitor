@@ -25,7 +25,19 @@ const PARTS: { part: string; blurb: string; sections: { id: string; label: strin
     ],
   },
   {
-    part: "2 · Site + network setup",
+    part: "2 · Environmental units",
+    blurb: "PET/CT — sensors, UPS",
+    sections: [
+      { id: "env-overview", label: "What differs from a MagMon" },
+      { id: "env-wiring", label: "Wire the sensors + UPS" },
+      { id: "env-addressing", label: "Address the sensors (S1/S2/S3)" },
+      { id: "env-nut", label: "Set up the UPS (NUT)" },
+      { id: "env-collector", label: "Create the asset + install" },
+      { id: "env-alerts", label: "Alert rules for temp and power" },
+    ],
+  },
+  {
+    part: "3 · Site + network setup",
     blurb: "Per-site access",
     sections: [
       { id: "ir305", label: "iR305 remote access" },
@@ -37,7 +49,7 @@ const PARTS: { part: string; blurb: string; sections: { id: string; label: strin
     ],
   },
   {
-    part: "3 · Run + troubleshoot",
+    part: "4 · Run + troubleshoot",
     blurb: "Day to day",
     sections: [
       { id: "troubleshooting", label: "Troubleshooting a gateway" },
@@ -275,8 +287,233 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             </Callout>
           </Section>
 
-          {/* ================= PART 2 — site + network ================= */}
-          <PartHeading n="Part 2" title="Site and network setup">
+          {/* ================= PART 2 — environmental units ================= */}
+          <PartHeading n="Part 2" title="Environmental units (PET/CT)">
+            A PET/CT trailer has no MagMon to scrape. Its gateway watches the space instead:
+            three temperature/humidity sensors on an RS-485 bus and the UPS feeding the
+            trailer. Everything about the Pi itself &mdash; flashing the card, the network, SSH
+            &mdash; is the same as Part 1, so do Step 1 there first and pick this part up from
+            the wiring.
+          </PartHeading>
+
+          <Section id="env-overview" title="What differs from a MagMon gateway">
+            <P>
+              Same Pi, same tailnet, same systemd pattern. Four things change, and every one of
+              them is a place a MagMon habit will trip you up.
+            </P>
+            <table className="cheat-table my-1">
+              <tbody>
+                <tr>
+                  <td className="desc">Asset modality</td>
+                  <td className="cmd">PET/CT &mdash; set when you add the asset</td>
+                </tr>
+                <tr>
+                  <td className="desc">MagMon address</td>
+                  <td className="cmd">none &mdash; the field is hidden for this modality</td>
+                </tr>
+                <tr>
+                  <td className="desc">Collector</td>
+                  <td className="cmd">{infra.envServicePrefix}-&lt;ASSET&gt;.py</td>
+                </tr>
+                <tr>
+                  <td className="desc">Extra packages</td>
+                  <td className="cmd">python3-pymodbus, nut-client</td>
+                </tr>
+              </tbody>
+            </table>
+            <P>
+              The unit names differ on purpose. A site that ever runs both collectors on one box
+              needs two distinct services, paths and log streams, or they fight over each
+              other&rsquo;s files.
+            </P>
+            <Callout variant="note" title="A blank channel is never a zero">
+              A sensor that fails to answer is reported as <b>no reading</b>, not as 0. That is
+              what lets a dead UPS link show up as a fault instead of quietly reading &ldquo;wall
+              power is fine&rdquo; forever. If a zone shows an em-dash on the dashboard, the
+              sensor is not answering &mdash; it is not a cold room.
+            </Callout>
+          </Section>
+
+          <Section id="env-wiring" step="Step 1" title="Wire the sensors and the UPS">
+            <P>
+              The three sensors share one RS-485 pair back to a USB adapter on the Pi. RS-485 is
+              a <b>bus</b>: every sensor lands on the same two wires (A to A, B to B), daisy-chained
+              from one to the next rather than home-run to the Pi.
+            </P>
+            <ol className="doc-ol">
+              <li>
+                Mount one XY-MD02 in each zone: <b>Section 1 Engineering</b>, <b>Section 2 Tech /
+                Patient</b>, <b>Section 3 Equipment</b>.
+              </li>
+              <li>
+                Daisy-chain A and B between them and back to the USB&ndash;RS485 adapter. Keep the
+                pair away from mains runs; it is a differential pair and will tolerate a lot, but
+                not a compressor contactor.
+              </li>
+              <li>Power the sensors from their supply (they are not bus-powered).</li>
+              <li>Plug the adapter into the Pi, and the UPS&rsquo;s USB data cable into the Pi.</li>
+              <li>The Pi itself plugs into the UPS &mdash; a gateway that dies with the mains cannot report the outage.</li>
+            </ol>
+            <P className="text-[var(--text)] font-medium">Confirm the Pi can see both:</P>
+            <CodeBlock code={`ls -l /dev/ttyUSB*        # the RS-485 adapter, usually /dev/ttyUSB0\nlsusb                     # the UPS should appear by brand`} />
+            <Callout variant="warn" title="The service user needs the dialout group">
+              Without this every zone reads blank and nothing in the log says why &mdash; it is a
+              permission error on the serial port, not a sensor fault. Log out and back in (or
+              reboot) afterwards for it to take effect:
+              <CodeBlockInline code={`sudo usermod -aG dialout ${infra.piUser}`} />
+            </Callout>
+          </Section>
+
+          <Section id="env-addressing" step="Step 2" title="Address each sensor: 1 = S1, 2 = S2, 3 = S3">
+            <P>
+              This is the step that decides which zone is which, and the one worth slowing down
+              for. The collector reads Modbus unit <b>1</b> into <b>S1 Engineering</b>, unit{" "}
+              <b>2</b> into <b>S2 Tech / Patient</b> and unit <b>3</b> into <b>S3 Equipment</b>.
+            </P>
+            <Callout variant="warn" title="The address is the only identity a sensor has">
+              RS-485 is a multidrop bus, not a chain the Pi can walk. Nothing in the protocol
+              reports position, order or location, so <b>no software can work out where a sensor
+              is</b>. The mapping is correct only if the sensor you install in a zone is the one
+              addressed with that zone&rsquo;s number. Write the address on each sensor with a
+              marker before it goes on the wall.
+            </Callout>
+            <P>
+              They all ship as address <b>1</b>, so they must be addressed <b>one at a time</b>{" "}
+              &mdash; two unaddressed sensors on the same bus both answer to 1 and you get
+              garbage. Connect one, set it, unplug it, move to the next.
+            </P>
+            <P className="text-[var(--text)] font-medium">
+              Set the address with the vendor&rsquo;s Windows tool, or from the Pi:
+            </P>
+            <CodeBlock code={`# ONE sensor connected. Set NEW to 1, 2 or 3 for the zone it is going into.\npython3 - <<'PY'\nfrom pymodbus.client import ModbusSerialClient\nNEW = 2   # 1 = Engineering, 2 = Tech / Patient, 3 = Equipment\nc = ModbusSerialClient(port="/dev/ttyUSB0", baudrate=9600, bytesize=8,\n                       parity="N", stopbits=1, timeout=2)\nc.connect()\ntry:\n    r = c.write_register(address=0x0101, value=NEW, device_id=1)\nexcept TypeError:                      # older pymodbus spells it slave=\n    r = c.write_register(address=0x0101, value=NEW, slave=1)\nprint("FAILED" if r.isError() else f"sensor is now address {NEW}")\nc.close()\nPY`} />
+            <Callout variant="note" title="Check the register against your datasheet">
+              0x0101 is the device-address register on the common XY-MD02. Variants exist. If the
+              write fails, use the vendor tool rather than guessing at registers &mdash; a wrong
+              write can change the baud rate and take the sensor off the bus entirely.
+            </Callout>
+            <P className="text-[var(--text)] font-medium">
+              With all three wired up, confirm the bus &mdash; this is also how you identify a sensor:
+            </P>
+            <CodeBlock code={`python3 - <<'PY'\nfrom pymodbus.client import ModbusSerialClient\nc = ModbusSerialClient(port="/dev/ttyUSB0", baudrate=9600, bytesize=8,\n                       parity="N", stopbits=1, timeout=0.4)\nc.connect()\nfor uid in range(1, 8):\n    try:\n        rr = c.read_input_registers(address=1, count=2, device_id=uid)\n    except TypeError:\n        rr = c.read_input_registers(address=1, count=2, slave=uid)\n    if rr and not rr.isError():\n        t, h = rr.registers[0] / 10.0, rr.registers[1] / 10.0\n        print(f"address {uid}: {t * 9 / 5 + 32:.1f} F   {h:.1f} %RH")\nc.close()\nPY`} />
+            <P>
+              Exactly three lines, at addresses 1, 2 and 3. To prove which is which, warm one
+              sensor with your hand for a minute and re-run &mdash; the address that moves is that
+              zone. Do this <i>before</i> you close the trailer up.
+            </P>
+          </Section>
+
+          <Section id="env-nut" step="Step 3" title="Set up the UPS with NUT">
+            <P>
+              The collector reads the UPS by shelling out to <code className="doc-code">upsc</code>,
+              so NUT has to be answering locally before the collector will report anything about
+              power.
+            </P>
+            <CodeBlock code={`sudo apt-get update\nsudo apt-get install -y nut-server nut-client`} />
+            <P className="text-[var(--text)] font-medium">
+              <code className="doc-code">/etc/nut/ups.conf</code> &mdash; the name in brackets matters:
+            </P>
+            <CodeBlock code={`[ups]\n    driver = usbhid-ups\n    port = auto\n    desc = "Trailer UPS"`} />
+            <Callout variant="warn" title="It must be called ups">
+              The generated collector runs <code className="doc-code">upsc ups</code>. If you name
+              the section anything else, every power field reports blank and the dashboard shows{" "}
+              <b>Power unknown</b> &mdash; which reads as a broken link, not as a naming mistake.
+              Either call it <code className="doc-code">ups</code> or change{" "}
+              <code className="doc-code">UPS_NAME</code> at the top of the script.
+            </Callout>
+            <P className="text-[var(--text)] font-medium">The remaining three files:</P>
+            <CodeBlock code={`# /etc/nut/nut.conf\nMODE=standalone\n\n# /etc/nut/upsd.users\n[monuser]\n    password = <pick-a-password>\n    upsmon master\n\n# /etc/nut/upsmon.conf  (append)\nMONITOR ups@localhost 1 monuser <pick-a-password> master`} />
+            <CodeBlock code={`sudo systemctl restart nut-server nut-monitor\nsudo systemctl enable nut-server nut-monitor\nupsc ups`} />
+            <P>
+              <code className="doc-code">upsc ups</code> should print a block of values. The three
+              the collector uses are <code className="doc-code">ups.status</code> (
+              <code className="doc-code">OL</code> on line, <code className="doc-code">OB</code> on
+              battery), <code className="doc-code">battery.charge</code> and{" "}
+              <code className="doc-code">input.voltage</code>. Pull the UPS&rsquo;s mains plug for a
+              few seconds and watch <code className="doc-code">ups.status</code> flip to{" "}
+              <code className="doc-code">OB</code> &mdash; that is the whole alarm path proven at
+              the source.
+            </P>
+          </Section>
+
+          <Section id="env-collector" step="Step 4" title="Create the asset and install the collector">
+            <P className="text-[var(--text)] font-medium">In the web app:</P>
+            <ol className="doc-ol">
+              <li>
+                <b>Admin → + Add asset</b>. Set <b>Modality</b> to <b>PET/CT</b> &mdash; the MagMon
+                address and credential fields disappear, because there is no MagMon to reach.
+              </li>
+              <li>
+                Set <b>Stale threshold</b> comfortably above the poll interval. A 5-minute poll
+                wants roughly 20 minutes, so one missed report is not an alarm.
+              </li>
+              <li>
+                Set <b>Service user</b> to the login user on the Pi (
+                <code className="doc-code">{infra.piUser}</code>).
+              </li>
+              <li>
+                Save, then <b>Download script</b> and <b>Download systemd unit</b> from the panel
+                that appears.
+              </li>
+            </ol>
+            <P className="text-[var(--text)] font-medium">On the Pi &mdash; dependencies first:</P>
+            <CodeBlock code={`sudo apt-get install -y python3-requests python3-pymodbus nut-client\n# if python3-pymodbus is not packaged for your release:\n#   sudo pip3 install --break-system-packages pymodbus`} />
+            <P className="text-[var(--text)] font-medium">
+              Copy the two files up (same SCP as{" "}
+              <a className="doc-a" href="#scp">Part 1</a>), then install:
+            </P>
+            <CodeBlock code={`sudo install -o <user> -g "$(id -gn <user>)" -m 700 \\\n  /home/<user>/${infra.envServicePrefix}-<ASSET>.py ${infra.envScriptBase}-<ASSET>.py\n\nsudo cp /home/<user>/${infra.envServicePrefix}-<ASSET>.service \\\n        /etc/systemd/system/${infra.envServicePrefix}-<ASSET>.service\n\nsudo systemctl daemon-reload\nsudo systemctl enable --now ${infra.envServicePrefix}-<ASSET>`} />
+            <P className="text-[var(--text)] font-medium">Verify &mdash; all four before you call it done:</P>
+            <CodeBlock code={`systemctl status ${infra.envServicePrefix}-<ASSET> --no-pager   # active (running)\njournalctl -u ${infra.envServicePrefix}-<ASSET> -n 30 --no-pager # three zones + a UPS line\npgrep -c -f ${infra.envProcessMatch}-<ASSET>                     # prints exactly 1\nupsc ups | grep ups.status                                       # OL`} />
+            <P>
+              Then check the dashboard: the asset shows three zone tiles with readings, a green{" "}
+              <b>Wall power</b> chip, and a battery percentage. If a zone reads an em-dash, go back
+              to <a className="doc-a" href="#env-addressing">Step 2</a> and re-run the bus scan.
+            </P>
+            <Callout variant="warn" title="systemd, never cron">
+              Same rule as the MagMon collector, same reason: this script never exits, so a cron
+              entry starts a fresh copy on every tick while the old ones keep running. If{" "}
+              <code className="doc-code">pgrep -c</code> prints anything but 1, you have duplicates.
+            </Callout>
+          </Section>
+
+          <Section id="env-alerts" title="Alert rules for temperature and power">
+            <P>
+              Power is already covered fleet-wide. A rule of{" "}
+              <code className="doc-code">On UPS battery = 1</code> raises a critical{" "}
+              <b>POWER OUTAGE</b> for any asset that reports the channel, so a new trailer is
+              covered the moment it starts reporting &mdash; nothing to add per unit.
+            </P>
+            <P>
+              Temperature and humidity limits are deliberately <b>unset</b>. Add them in{" "}
+              <b>Admin → Alerts</b> once the right numbers are known for the space:
+            </P>
+            <ol className="doc-ol">
+              <li>
+                Pick the channel under the <b>Environment</b> group &mdash; each zone has its own
+                temperature and humidity.
+              </li>
+              <li>
+                Leave <b>Scope</b> on <b>All assets</b> for a fleet-wide limit, or pick one asset to
+                override the fleet default for just that unit.
+              </li>
+              <li>Set the comparator and the threshold, and save.</li>
+            </ol>
+            <Callout variant="note" title="A fleet-wide environmental rule is safe on a magnet">
+              A rule only applies where the reading exists. A channel an asset does not report is
+              skipped rather than treated as zero, so adding a zone-temperature rule across all
+              assets does nothing to units without sensors &mdash; and starts working by itself on
+              the day they are fitted.
+            </Callout>
+            <Callout variant="note" title="Blank for an hour is its own alarm">
+              A channel that reads blank on every sample for an hour, while the unit is otherwise
+              reporting, raises a <b>sensor fault</b> naming that channel. That covers a sensor that
+              drops off the bus and the UPS link going down &mdash; no rule needed, and it is why a
+              missing reading must never be filled in with a zero.
+            </Callout>
+          </Section>
+
+          {/* ================= PART 3 — site + network ================= */}
+          <PartHeading n="Part 3" title="Site and network setup">
             How you <i>reach</i> a gateway once it is deployed, which depends on the site. Cellular
             sites come in behind an <b>iR305</b> router; everything on the tailnet is reachable
             directly over <b>Tailscale</b> from anywhere. Set up Tailscale on every gateway you can —
@@ -601,8 +838,8 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
             </Callout>
           </Section>
 
-          {/* ================= PART 3 — run + troubleshoot ================= */}
-          <PartHeading n="Part 3" title="Run and troubleshoot">
+          {/* ================= PART 4 — run + troubleshoot ================= */}
+          <PartHeading n="Part 4" title="Run and troubleshoot">
             What to do when an asset goes red. Work the triage table first — it splits the two failure
             families that look identical on the dashboard (<i>the site is unreachable</i> vs{" "}
             <i>the site is reachable but nothing is arriving</i>) before you start changing things.

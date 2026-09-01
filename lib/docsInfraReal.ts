@@ -34,6 +34,11 @@ export const realInfra: DocsInfra = {
   servicePrefix: "nm-magmon-gateway",
   scriptBase: "/opt/magmon-gateway",
   processMatch: "magmon-gateway",
+  // Must match generateSystemdUnit({ variant: "env" }) and the admin panel's
+  // download filenames in lib/piScript — the runbook tells people to type these.
+  envServicePrefix: "nm-env-gateway",
+  envScriptBase: "/opt/env-gateway",
+  envProcessMatch: "env-gateway",
   reportHost: "wxygirzfxutvtfkxxcvw.supabase.co",
   assets: ["CA1012", "NM1001", "NM1019", "NM1027", "NM1034", "NM1037"],
   // Filled in per request by app/docs/page.tsx from the caller's own org — a
