@@ -51,6 +51,13 @@ export type Asset = {
   // which itself means the script predates it. See lib/piScript.
   collector_version?: string | null;
   collector_version_at?: string | null;
+  // The ENV collector's own version stamp, on a unit that runs one. Separate
+  // from collector_version because a unit can run both programs at once — NM1019
+  // is the first — and they are released on different cadences. Sharing one
+  // column made the two collectors overwrite each other every minute, which is
+  // exactly the drift the version panel exists to show. See ENV_COLLECTOR_VERSION.
+  env_collector_version?: string | null;
+  env_collector_version_at?: string | null;
 };
 
 export type TelemetrySample = {

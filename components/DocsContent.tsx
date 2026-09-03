@@ -34,6 +34,7 @@ const PARTS: { part: string; blurb: string; sections: { id: string; label: strin
       { id: "env-nut", label: "Set up the UPS (NUT)" },
       { id: "env-collector", label: "Create the asset + install" },
       { id: "env-alerts", label: "Alert rules for temp and power" },
+      { id: "env-on-a-magnet", label: "Fitting env hardware to a magnet" },
     ],
   },
   {
@@ -356,11 +357,21 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             </ol>
             <P className="text-[var(--text)] font-medium">Confirm the Pi can see both:</P>
             <CodeBlock code={`ls -l /dev/ttyUSB*        # the RS-485 adapter, usually /dev/ttyUSB0\nlsusb                     # the UPS should appear by brand`} />
-            <Callout variant="warn" title="The service user needs the dialout group">
+            <Callout variant="warn" title="The service user needs the serial port groups">
               Without this every zone reads blank and nothing in the log says why &mdash; it is a
               permission error on the serial port, not a sensor fault. Log out and back in (or
               reboot) afterwards for it to take effect:
-              <CodeBlockInline code={`sudo usermod -aG dialout ${infra.piUser}`} />
+              <CodeBlockInline code={`sudo usermod -aG dialout,plugdev ${infra.piUser}`} />
+              <b>Both</b> groups, because which one owns the device depends on the adapter:{" "}
+              <code className="doc-code">ls -l /dev/ttyUSB0</code> shows{" "}
+              <code className="doc-code">root dialout</code> on some and{" "}
+              <code className="doc-code">root plugdev</code> on others (NM1019&rsquo;s, 2026-09-03).
+              And a trailing <code className="doc-code">+</code> on those permissions is an ACL that
+              logind grants <i>the logged-in user</i> &mdash; so a hand-run scan works over SSH while
+              the collector, which has no seat, is refused. Testing by hand proves nothing about the
+              service. Check the real thing with{" "}
+              <code className="doc-code">getfacl /dev/ttyUSB0</code> and{" "}
+              <code className="doc-code">groups</code>.
             </Callout>
           </Section>
 
@@ -394,9 +405,16 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             <P className="text-[var(--text)] font-medium">
               With all three wired up, confirm the bus &mdash; this is also how you identify a sensor:
             </P>
-            <CodeBlock code={`python3 - <<'PY'\nfrom pymodbus.client import ModbusSerialClient\nc = ModbusSerialClient(port="/dev/ttyUSB0", baudrate=9600, bytesize=8,\n                       parity="N", stopbits=1, timeout=0.4)\nc.connect()\nfor uid in range(1, 8):\n    try:\n        rr = c.read_input_registers(address=1, count=2, device_id=uid)\n    except TypeError:\n        rr = c.read_input_registers(address=1, count=2, slave=uid)\n    if rr and not rr.isError():\n        t, h = rr.registers[0] / 10.0, rr.registers[1] / 10.0\n        print(f"address {uid}: {t * 9 / 5 + 32:.1f} F   {h:.1f} %RH")\nc.close()\nPY`} />
+            <CodeBlock code={`python3 - <<'PY'\nfrom pymodbus.client import ModbusSerialClient\nc = ModbusSerialClient(port="/dev/ttyUSB0", baudrate=9600, bytesize=8,\n                       parity="N", stopbits=1, timeout=0.4)\nprint("port open:", c.connect())\nfound = 0\nfor uid in range(1, 8):\n    try:\n        # pymodbus renamed the keyword: >=3.7 wants device_id=, older wants slave=.\n        try:\n            rr = c.read_input_registers(address=1, count=2, device_id=uid)\n        except TypeError:\n            rr = c.read_input_registers(address=1, count=2, slave=uid)\n    except Exception as e:\n        # An address with no sensor on it RAISES rather than returning an error\n        # result. Catching it is what lets the scan reach address 2.\n        print(f"address {uid}: no answer ({type(e).__name__})")\n        continue\n    if rr and not rr.isError():\n        t, h = rr.registers[0] / 10.0, rr.registers[1] / 10.0\n        print(f"address {uid}: {t * 9 / 5 + 32:.1f} F   {h:.1f} %RH   <-- FOUND")\n        found += 1\nprint(f"{found} sensor(s) on the bus")\nc.close()\nPY`} />
             <P>
-              Exactly three lines, at addresses 1, 2 and 3. To prove which is which, warm one
+              Exactly three lines marked FOUND, at addresses 1, 2 and 3 &mdash; a unit fitted with
+              fewer sensors shows correspondingly fewer. <b>Zero</b> found, with the port opening,
+              is a bus problem rather than an addressing one: check the sensor has its own 5&ndash;30
+              VDC supply (it is not bus-powered), swap A and B (the commonest RS-485 fault, and
+              adapter silkscreens disagree with each other), confirm{" "}
+              <code className="doc-code">/dev/ttyUSB0</code> really is the RS-485 adapter with{" "}
+              <code className="doc-code">lsusb</code>, and re-run at 4800 and 19200 baud before
+              concluding a sensor is dead. To prove which is which, warm one
               sensor with your hand for a minute and re-run &mdash; the address that moves is that
               zone. Do this <i>before</i> you close the trailer up.
             </P>
@@ -509,6 +527,47 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
               reporting, raises a <b>sensor fault</b> naming that channel. That covers a sensor that
               drops off the bus and the UPS link going down &mdash; no rule needed, and it is why a
               missing reading must never be filled in with a zero.
+            </Callout>
+          </Section>
+
+          <Section id="env-on-a-magnet" title="Fitting env hardware to a magnet">
+            <P>
+              A UPS or a bay sensor on an <b>MRI</b> unit is an <b>addition</b>, not a different
+              kind of unit. The asset stays on modality <b>MRI</b> with its MagMon address intact,
+              and its Pi runs <b>both</b> collectors &mdash; two scripts, two services, two lock
+              files, one asset. NM1019 is the first of these.
+            </P>
+            <ol className="doc-ol">
+              <li>
+                <b>Admin → the asset → Get install script</b>, then use the <b>Collector</b> switch
+                in the panel to pick <b>MagMon</b> or <b>Environmental</b>. Download the script and
+                the systemd unit for each; the filenames already differ.
+              </li>
+              <li>
+                Install both exactly as in{" "}
+                <a className="doc-a" href="#env-collector">Step 5</a> and Part 1 &mdash; nothing
+                about either install changes because the other one is there.
+              </li>
+              <li>
+                Wire and address only the sensors actually being fitted. The dashboard draws the
+                zones that report, so one sensor gives one tile, and a second one added later needs
+                no redeploy &mdash; the collector already polls all three addresses.
+              </li>
+            </ol>
+            <Callout variant="warn" title="Two collectors on this box is correct">
+              The Part 1 check <code className="doc-code">pgrep -c -f {infra.processMatch}</code>{" "}
+              counts MagMon collectors only, but a bare{" "}
+              <code className="doc-code">pgrep -c -f gateway</code> prints <b>2</b> on a mixed unit.
+              That is the healthy state, not a doubled collector. Check the specific names:
+              <CodeBlockInline code={`pgrep -c -f ${infra.processMatch}-<ASSET>      # 1\npgrep -c -f ${infra.envProcessMatch}-<ASSET>         # 1`} />
+            </Callout>
+            <Callout variant="note" title="Both collectors write the same minute">
+              Each one merges its own channels into that minute&rsquo;s row and leaves the
+              other&rsquo;s alone, so the unit&rsquo;s card shows helium, bay temperature and mains
+              power together rather than one blanking the other. Nothing to configure &mdash; but it
+              does mean the env collector keeps the unit looking fresh if the MagMon side stops. A
+              silent MagMon then surfaces as a <b>sensor fault</b> on the magnet channels rather
+              than as an offline unit.
             </Callout>
           </Section>
 

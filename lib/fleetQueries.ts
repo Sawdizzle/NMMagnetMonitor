@@ -32,7 +32,11 @@ const PUBLIC_ASSET_COLUMNS =
   "router_online, router_status_at, tailscale_online, tailscale_status_at, " +
   // Which collector build each unit is running, self-reported. Safe to expose:
   // it is a date string, and knowing a unit is behind is the point of having it.
-  "collector_version, collector_version_at";
+  "collector_version, collector_version_at, " +
+  // The environmental collector's own stamp. A unit that runs both collectors
+  // reports two versions, and the panel has to be able to say which of the two
+  // is behind.
+  "env_collector_version, env_collector_version_at";
 
 const HISTORY_ROW_LIMIT = 5000;
 

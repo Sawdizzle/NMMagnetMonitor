@@ -71,6 +71,15 @@
 -- key plus a per-asset gateway_token; revoking either stops fleet ingest.
 --
 -- This file tracks the live database. Everything below has been applied.
+--
+-- WHAT IS NOT MIRRORED HERE YET (as of 2026-09-03)
+-- The environmental work (2026-08-31 onward) was applied by migration and only
+-- partly back-ported into this snapshot: telemetry_samples' s1/s2/s3 and ups_*
+-- columns, assets.modality, assets.env_collector_version and the
+-- report_env_telemetry RPC exist in the live database but not below. The two
+-- ingest RPCs here ARE current, including the 2026-09-03 change that lets the
+-- MagMon and environmental collectors write the same minute row for one asset.
+-- Read this file as the MagMon core, not the whole schema.
 -- =====================================================================
 
 
@@ -458,24 +467,65 @@ create or replace view public.public_assets
          last_sample_at
   from public.assets;
 
--- latest_telemetry: newest reading per asset, by recorded_at (true reading
--- time). Ordering by created_at would be unsafe once report_telemetry_batch
--- inserts several rows sharing one created_at -- it could return an arbitrary
--- reading from the batch as "latest". The idx_telemetry_asset_recorded unique
--- index serves this order-by-recorded_at-desc-limit-1.
+-- latest_telemetry: the latest value PER CHANNEL, not the latest row.
+--
+-- Anchored to the newest row by recorded_at (true reading time -- ordering by
+-- created_at would be unsafe once report_telemetry_batch inserts several rows
+-- sharing one created_at). Each channel then takes its most recent non-null
+-- value within 15 minutes of that row, because a mixed unit has TWO collectors
+-- writing the same minute row at different instants: whichever wrote last owned
+-- the newest row, and the other's channels came back NULL. That blanked the
+-- card at random and, worse, made evaluate_alerts skip a channel it joins from
+-- here -- a NULL is the absence of information, so a POWER OUTAGE could go
+-- unreported because the MagMon collector wrote after the environmental one.
+--
+-- The window is anchored to the newest row rather than to now(), so a unit that
+-- stopped reporting still shows the values it last had; staleness remains the
+-- job of last_sample_at and sensor_fault. `data` stays the newest row's payload
+-- verbatim (MagMon error codes, the NUT status string) -- merging two devices'
+-- payloads would invent a sample that never existed.
 create or replace view public.latest_telemetry
   with (security_invoker = true) as
-  select t.asset_id, t.id, t.recorded_at, t.created_at,
-         t.he_lvl, t.he_press, t.h2o_flow, t.h2o_temp, t.shield, t.cs1, t.data
-  from public.assets a
-  cross join lateral (
-    select ts.id, ts.asset_id, ts.recorded_at, ts.data,
-           ts.he_lvl, ts.he_press, ts.h2o_flow, ts.h2o_temp, ts.shield, ts.cs1, ts.created_at
-    from public.telemetry_samples ts
-    where ts.asset_id = a.id
-    order by ts.recorded_at desc
-    limit 1
-  ) t;
+select
+  a.id as asset_id,
+  n.id,
+  n.recorded_at,
+  n.created_at,
+  c.he_lvl, c.he_press, c.h2o_flow, c.h2o_temp, c.shield, c.cs1,
+  n.data,
+  c.s1_temp_f, c.s1_rh, c.s2_temp_f, c.s2_rh, c.s3_temp_f, c.s3_rh,
+  c.ups_on_battery, c.ups_batt_pct, c.ups_input_v, c.ups_runtime_s
+from public.assets a
+cross join lateral (
+  select ts.id, ts.recorded_at, ts.created_at, ts.data
+  from public.telemetry_samples ts
+  where ts.asset_id = a.id
+  order by ts.recorded_at desc
+  limit 1
+) n
+cross join lateral (
+  select
+    (array_agg(w.he_lvl         order by w.recorded_at desc) filter (where w.he_lvl         is not null))[1] as he_lvl,
+    (array_agg(w.he_press       order by w.recorded_at desc) filter (where w.he_press       is not null))[1] as he_press,
+    (array_agg(w.h2o_flow       order by w.recorded_at desc) filter (where w.h2o_flow       is not null))[1] as h2o_flow,
+    (array_agg(w.h2o_temp       order by w.recorded_at desc) filter (where w.h2o_temp       is not null))[1] as h2o_temp,
+    (array_agg(w.shield         order by w.recorded_at desc) filter (where w.shield         is not null))[1] as shield,
+    (array_agg(w.cs1            order by w.recorded_at desc) filter (where w.cs1            is not null))[1] as cs1,
+    (array_agg(w.s1_temp_f      order by w.recorded_at desc) filter (where w.s1_temp_f      is not null))[1] as s1_temp_f,
+    (array_agg(w.s1_rh          order by w.recorded_at desc) filter (where w.s1_rh          is not null))[1] as s1_rh,
+    (array_agg(w.s2_temp_f      order by w.recorded_at desc) filter (where w.s2_temp_f      is not null))[1] as s2_temp_f,
+    (array_agg(w.s2_rh          order by w.recorded_at desc) filter (where w.s2_rh          is not null))[1] as s2_rh,
+    (array_agg(w.s3_temp_f      order by w.recorded_at desc) filter (where w.s3_temp_f      is not null))[1] as s3_temp_f,
+    (array_agg(w.s3_rh          order by w.recorded_at desc) filter (where w.s3_rh          is not null))[1] as s3_rh,
+    (array_agg(w.ups_on_battery order by w.recorded_at desc) filter (where w.ups_on_battery is not null))[1] as ups_on_battery,
+    (array_agg(w.ups_batt_pct   order by w.recorded_at desc) filter (where w.ups_batt_pct   is not null))[1] as ups_batt_pct,
+    (array_agg(w.ups_input_v    order by w.recorded_at desc) filter (where w.ups_input_v    is not null))[1] as ups_input_v,
+    (array_agg(w.ups_runtime_s  order by w.recorded_at desc) filter (where w.ups_runtime_s  is not null))[1] as ups_runtime_s
+  from public.telemetry_samples w
+  where w.asset_id = a.id
+    and w.recorded_at <= n.recorded_at
+    and w.recorded_at >  n.recorded_at - interval '15 minutes'
+) c;
 
 
 -- =====================================================================
@@ -1098,8 +1148,8 @@ AS $function$
 declare
   v_asset_id uuid;
   v_last_seen timestamptz;
-  v_recent_count int;
   v_rec timestamptz;
+  v_written int;
 begin
   select id, last_seen_at into v_asset_id, v_last_seen
   from assets where gateway_token = p_gateway_token;
@@ -1125,26 +1175,47 @@ begin
   -- clock (> 2 days off, e.g. a pre-anchoring collector on a Pi whose RTC is
   -- stuck in the past) rebases to the current minute; otherwise the reading time
   -- is kept as-is.
-  if p_recorded_at is not null and abs(extract(epoch from (now() - p_recorded_at))) > 172800 then
+  if p_recorded_at is null
+     or abs(extract(epoch from (now() - p_recorded_at))) > 172800 then
     v_rec := date_trunc('minute', now());
   else
     v_rec := p_recorded_at;
   end if;
 
-  select count(*) into v_recent_count
-  from telemetry_samples
-  where asset_id = v_asset_id and created_at >= now() - interval '60 seconds';
+  -- ONE ROW PER MINUTE PER ASSET, WRITTEN FROM BOTH SIDES (2026-09-03).
+  -- A unit can run the MagMon collector and the environmental collector at once
+  -- for the same asset (NM1019 is the first). The old guard here -- skip if ANY
+  -- row exists for this asset in the last 60 seconds -- then dropped a magnet
+  -- sample outright whenever the env collector had just written that minute.
+  -- The minute key is the dedupe now: fill an env-opened row rather than
+  -- discarding the reading, and never rewrite a row that already holds MagMon
+  -- channels, which is what keeps re-sends idempotent and last_sample_at
+  -- meaning genuinely-new data.
+  -- Water channels pass through nullify_sentinel(): the MagMon's fixed
+  -- no-sensor placeholder is stored as NULL rather than as a reading. p_raw
+  -- keeps the device's original payload verbatim.
+  insert into telemetry_samples (asset_id, recorded_at, he_lvl, he_press, h2o_flow, h2o_temp, shield, cs1, data)
+  values (v_asset_id, v_rec, p_he_lvl, p_he_press,
+          nullify_sentinel('h2o_flow', p_h2o_flow),
+          nullify_sentinel('h2o_temp', p_h2o_temp),
+          p_shield, p_cs1, p_raw)
+  on conflict (asset_id, recorded_at) do update
+    set he_lvl   = excluded.he_lvl,
+        he_press = excluded.he_press,
+        h2o_flow = excluded.h2o_flow,
+        h2o_temp = excluded.h2o_temp,
+        shield   = excluded.shield,
+        cs1      = excluded.cs1,
+        data     = coalesce(telemetry_samples.data, '{}'::jsonb)
+                   || coalesce(excluded.data, '{}'::jsonb)
+  where telemetry_samples.he_lvl is null and telemetry_samples.he_press is null
+    and telemetry_samples.h2o_flow is null and telemetry_samples.h2o_temp is null
+    and telemetry_samples.shield is null and telemetry_samples.cs1 is null;
 
-  if v_recent_count = 0 then
-    insert into telemetry_samples (asset_id, recorded_at, he_lvl, he_press, h2o_flow, h2o_temp, shield, cs1, data)
-    -- Water channels pass through nullify_sentinel(): the MagMon's fixed
-    -- no-sensor placeholder is stored as NULL rather than as a reading. p_raw
-    -- keeps the device's original payload verbatim.
-    values (v_asset_id, v_rec, p_he_lvl, p_he_press,
-            nullify_sentinel('h2o_flow', p_h2o_flow),
-            nullify_sentinel('h2o_temp', p_h2o_temp),
-            p_shield, p_cs1, p_raw);
-    -- A genuinely new sample stored: bump the data-freshness clock.
+  get diagnostics v_written = row_count;
+
+  -- A genuinely new sample stored: bump the data-freshness clock.
+  if v_written > 0 then
     update assets set last_sample_at = now() where id = v_asset_id;
   end if;
 
@@ -1223,12 +1294,30 @@ begin
          s
   from jsonb_array_elements(p_samples) s
   where (s->>'recorded_at') is not null
-  on conflict (asset_id, recorded_at) do nothing;
+  -- Fill a row the ENVIRONMENTAL collector opened for this minute instead of
+  -- discarding the magnet sample, which is what "do nothing" did on a unit
+  -- running both collectors. The WHERE is what keeps this idempotent: a row
+  -- that already holds MagMon channels is never rewritten, so a re-send still
+  -- reports 0 rows. `data` is merged rather than replaced so the env side's
+  -- ups_status survives underneath the device payload.
+  on conflict (asset_id, recorded_at) do update
+    set he_lvl   = excluded.he_lvl,
+        he_press = excluded.he_press,
+        h2o_flow = excluded.h2o_flow,
+        h2o_temp = excluded.h2o_temp,
+        shield   = excluded.shield,
+        cs1      = excluded.cs1,
+        data     = coalesce(telemetry_samples.data, '{}'::jsonb)
+                   || coalesce(excluded.data, '{}'::jsonb)
+  where telemetry_samples.he_lvl is null and telemetry_samples.he_press is null
+    and telemetry_samples.h2o_flow is null and telemetry_samples.h2o_temp is null
+    and telemetry_samples.shield is null and telemetry_samples.cs1 is null;
 
   get diagnostics v_inserted = row_count;
 
-  -- Only a real insert refreshes data-freshness. An all-duplicate batch (a hung
-  -- device re-serving the same rows) leaves last_sample_at to age -> stale.
+  -- Only genuinely new magnet data refreshes data-freshness. An all-duplicate
+  -- batch (a hung device re-serving the same rows) matches neither the insert
+  -- nor the fill above, so last_sample_at is left to age -> stale.
   if v_inserted > 0 then
     update assets set last_sample_at = now() where id = v_asset_id;
   end if;

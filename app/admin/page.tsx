@@ -492,6 +492,16 @@ function AdminPanel() {
     username?: string;
     password?: string;
     svcUser?: string;
+    /**
+     * Which collector to generate, when the unit could run either.
+     *
+     * A MagMon unit that has also been fitted with a UPS or zone sensors runs
+     * BOTH collectors on the same Pi, for the same asset — NM1019 is the first.
+     * Modality alone cannot express that: it says whether there is a magnet to
+     * scrape, not what else is bolted to the trailer. Left unset, modality
+     * still decides, so nothing changes for a unit with only one of the two.
+     */
+    variant?: "magmon" | "env";
   }) {
     const svcUser = opts.svcUser ?? serviceUser;
     const shared = {
@@ -502,8 +512,18 @@ function AdminPanel() {
       intervalMinutes: pollMinutes,
       serviceUser: svcUser,
     };
-    if (!usesMagmon(opts.modality)) {
-      setScriptText(generateEnvPiScript(shared));
+    if (opts.variant === "env" || !usesMagmon(opts.modality)) {
+      setScriptText(
+        generateEnvPiScript({
+          ...shared,
+          // A magnet that also carries env hardware gets a script that says so:
+          // the header is the install instructions a tech reads on the Pi, and
+          // on a mixed unit it has to mention the MagMon collector running
+          // beside it rather than claim to be the only thing on the box.
+          modality: opts.modality,
+          alongsideMagmon: usesMagmon(opts.modality),
+        })
+      );
       setScriptVariant("env");
       return;
     }
@@ -519,7 +539,7 @@ function AdminPanel() {
     setScriptVariant("magmon");
   }
 
-  async function handleGetScriptForExisting(asset: Asset) {
+  async function handleGetScriptForExisting(asset: Asset, variant?: "magmon" | "env") {
     const { data, error } = await adminGetAssetConfig(asset.id);
     const config = data && data[0];
     if (error || !config) return fail(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
@@ -543,6 +563,7 @@ function AdminPanel() {
       username: config.monitor_username,
       password: config.monitor_password,
       svcUser: su,
+      variant,
     });
     setScriptForAsset(asset.id);
   }
@@ -1082,7 +1103,7 @@ function AssetsTab(props: {
   handleSaveAssetEdit: (e: React.FormEvent) => void;
   handleDeleteAsset: (a: Asset) => void;
   handleToggleMaintenance: (a: Asset) => void;
-  handleGetScriptForExisting: (a: Asset) => void;
+  handleGetScriptForExisting: (a: Asset, variant?: "magmon" | "env") => void;
   scriptText: string | null;
   scriptForAsset: string | null;
   pollMinutes: number;
@@ -1275,10 +1296,42 @@ function AssetsTab(props: {
             <Field label="Service user">
               <input value={props.serviceUser} onChange={(e) => props.setServiceUser(e.target.value)} placeholder="pi" className="input w-28 font-mono-data" />
             </Field>
+            {/*
+              A magnet fitted with a UPS or a zone sensor runs BOTH collectors —
+              two scripts, two units, two lock files, one asset. Without this
+              switch the panel could only ever hand out the MagMon script for an
+              MRI unit, and the env half of the install had nowhere to come from.
+              Only shown for a MagMon unit: a PET/CT trailer has one collector
+              and a choice would be a choice between one option and a broken one.
+            */}
+            {(() => {
+              const a = assets.find((x) => x.id === props.scriptForAsset);
+              if (!a || !usesMagmon(a.modality)) return null;
+              return (
+                <Field label="Collector">
+                  <div className="flex rounded-md border border-[var(--border)] overflow-hidden">
+                    {(["magmon", "env"] as const).map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => props.handleGetScriptForExisting(a, v)}
+                        className={`px-3 py-1.5 text-xs ${
+                          props.scriptVariant === v
+                            ? "bg-[var(--accent)] text-black"
+                            : "bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:text-[var(--text)]"
+                        }`}
+                      >
+                        {v === "magmon" ? "MagMon" : "Environmental"}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+              );
+            })()}
             <button
               onClick={() => {
                 const a = assets.find((x) => x.id === props.scriptForAsset);
-                if (a) props.handleGetScriptForExisting(a);
+                if (a) props.handleGetScriptForExisting(a, props.scriptVariant);
               }}
               className="btn-secondary"
             >
@@ -2234,27 +2287,55 @@ function formatAuditTime(iso: string): string {
  *                 predates versioning entirely. Not the same as "fine".
  */
 function CollectorVersion({ asset }: { asset: Asset }) {
-  // The two collectors are separate programs with separate version stamps.
-  // Comparing an environmental unit against the MagMon generator's version
-  // would mark every PET/CT asset permanently "behind".
-  const current = usesMagmon(asset.modality) ? COLLECTOR_VERSION : ENV_COLLECTOR_VERSION;
-  const reported = asset.collector_version ?? null;
-  const state = reported === null ? "unknown" : reported === current ? "ok" : "behind";
-  if (state === "ok") {
-    return (
-      <p className="text-[10px] text-[var(--text-dim)] font-mono-data mt-0.5">collector {reported}</p>
-    );
+  // ONE LINE PER COLLECTOR THE UNIT ACTUALLY RUNS, not one line per unit.
+  //
+  // The two collectors are separate programs with separate version stamps, and
+  // a unit can run both: NM1019's Pi scrapes its MagMon and reads a UPS and a
+  // bay sensor for the same asset. Reporting a single version there would have
+  // to pick one program and hide the other's drift — and while both stamps
+  // shared assets.collector_version, the two overwrote each other every minute.
+  //
+  // The env line shows when the unit has reported an env version even if its
+  // modality is MRI: environmental hardware is an addition to a magnet, not a
+  // different kind of unit, so presence is what decides. Comparing a PET/CT
+  // asset against the MagMon generator's version would mark it permanently
+  // "behind", which is why the two are compared against their own constants.
+  const lines: { label: string; reported: string | null; current: string }[] = [];
+  if (usesMagmon(asset.modality)) {
+    lines.push({ label: "collector", reported: asset.collector_version ?? null, current: COLLECTOR_VERSION });
   }
-  const color = state === "behind" ? "#fbbf24" : "var(--text-dim)";
+  if (!usesMagmon(asset.modality) || asset.env_collector_version) {
+    lines.push({
+      label: "env collector",
+      reported: asset.env_collector_version ?? null,
+      current: ENV_COLLECTOR_VERSION,
+    });
+  }
+
   return (
-    <p className="text-[10px] mt-0.5 font-mono-data" style={{ color }}>
-      collector {reported ?? "version unknown"}
-      <span className="ml-1.5 font-sans">
-        {state === "behind"
-          ? `— behind, current is ${current}`
-          : `— predates version reporting; redeploy to find out`}
-      </span>
-    </p>
+    <>
+      {lines.map(({ label, reported, current }) => {
+        const state = reported === null ? "unknown" : reported === current ? "ok" : "behind";
+        if (state === "ok") {
+          return (
+            <p key={label} className="text-[10px] text-[var(--text-dim)] font-mono-data mt-0.5">
+              {label} {reported}
+            </p>
+          );
+        }
+        const color = state === "behind" ? "#fbbf24" : "var(--text-dim)";
+        return (
+          <p key={label} className="text-[10px] mt-0.5 font-mono-data" style={{ color }}>
+            {label} {reported ?? "version unknown"}
+            <span className="ml-1.5 font-sans">
+              {state === "behind"
+                ? `— behind, current is ${current}`
+                : `— predates version reporting; redeploy to find out`}
+            </span>
+          </p>
+        );
+      })}
+    </>
   );
 }
 
