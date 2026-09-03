@@ -5,7 +5,7 @@ import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent, type AlertRule } from "@/lib/supabase";
 import { getDataSource, type FleetAlertEvent, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
-import { computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, NO_TELEMETRY_KINDS, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
+import { collectorStatuses, computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, NO_TELEMETRY_KINDS, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm, fieldFromMessage } from "@/lib/faults";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import {
@@ -246,6 +246,20 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
               <span className="cd" aria-hidden="true" />
               {STATUS_LABELS[status]}
             </span>
+            {/* A collector family that is dark while the other keeps the unit
+                reporting — 'online' alone would say the magnet is being watched
+                when only the bay sensor and the UPS are. Red, because for those
+                channels nothing is arriving at all. */}
+            {collectorStatuses(asset).map((c) => (
+              <span
+                key={c.key}
+                className="status-chip"
+                style={{ ["--sc" as string]: CONNECTIVITY_COLORS.down }}
+              >
+                <span className="cd" aria-hidden="true" />
+                {c.label}
+              </span>
+            ))}
             {connectivityStatuses(asset).map((c) => (
               <span
                 key={c.key}

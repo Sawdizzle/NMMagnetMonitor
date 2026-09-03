@@ -310,6 +310,10 @@ function kindLabel(kind: string): string {
       return "Unlike the fleet";
     case "never_reported":
       return "Never reported";
+    case "magmon_silent":
+      return "MagMon silent";
+    case "env_silent":
+      return "Env silent";
     default:
       return kind.replace(/_/g, " ");
   }

@@ -58,6 +58,16 @@ export type Asset = {
   // exactly the drift the version panel exists to show. See ENV_COLLECTOR_VERSION.
   env_collector_version?: string | null;
   env_collector_version_at?: string | null;
+  // Per-COLLECTOR-FAMILY freshness. last_sample_at is one clock for the whole
+  // asset, and on a unit running both collectors either one keeps it fresh — so
+  // "online" stopped meaning "the magnet is being watched" the moment a Pi could
+  // report a UPS and a bay sensor with no MagMon attached. These say which half
+  // is live. last_magmon_sample_at null = never sent MagMon telemetry;
+  // last_env_sample_at null = no environmental hardware has ever reported here,
+  // which is how a magnet with no sensors fitted stays quiet. See
+  // collectorStatuses() in lib/health.ts.
+  last_magmon_sample_at?: string | null;
+  last_env_sample_at?: string | null;
 };
 
 export type TelemetrySample = {

@@ -33,6 +33,11 @@ const KIND_LABELS: Record<string, string> = {
   offline: "Offline",
   reporting_stalled: "Reporting stalled",
   never_reported: "Never reported",
+  // One of two collectors on a mixed unit has stopped while the other keeps
+  // the asset reporting. Names the collector, so it is not read as six dead
+  // sensors.
+  magmon_silent: "MagMon silent",
+  env_silent: "Env silent",
   threshold: "Threshold",
   sensor_fault: "Sensor fault",
   cooling_loss: "Cooling fault",

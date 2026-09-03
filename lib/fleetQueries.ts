@@ -36,7 +36,10 @@ const PUBLIC_ASSET_COLUMNS =
   // The environmental collector's own stamp. A unit that runs both collectors
   // reports two versions, and the panel has to be able to say which of the two
   // is behind.
-  "env_collector_version, env_collector_version_at";
+  "env_collector_version, env_collector_version_at, " +
+  // Which half of a unit is reporting. Needed by every surface that draws a
+  // status chip, because on a mixed unit last_sample_at alone cannot say.
+  "last_magmon_sample_at, last_env_sample_at";
 
 const HISTORY_ROW_LIMIT = 5000;
 

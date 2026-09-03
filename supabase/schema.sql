@@ -74,11 +74,22 @@
 --
 -- WHAT IS NOT MIRRORED HERE YET (as of 2026-09-03)
 -- The environmental work (2026-08-31 onward) was applied by migration and only
--- partly back-ported into this snapshot: telemetry_samples' s1/s2/s3 and ups_*
--- columns, assets.modality, assets.env_collector_version and the
--- report_env_telemetry RPC exist in the live database but not below. The two
--- ingest RPCs here ARE current, including the 2026-09-03 change that lets the
--- MagMon and environmental collectors write the same minute row for one asset.
+-- partly back-ported into this snapshot. Present in the live database but not
+-- below: telemetry_samples' s1/s2/s3 and ups_* columns, assets.modality,
+-- assets.env_collector_version, assets.last_magmon_sample_at /
+-- last_env_sample_at, and the report_env_telemetry RPC.
+--
+-- CURRENT below, and worth trusting: latest_telemetry, report_telemetry and
+-- report_telemetry_batch, including the 2026-09-03 changes that let the MagMon
+-- and environmental collectors write the same minute row for one asset and give
+-- each collector family its own freshness clock.
+--
+-- BEHIND below: evaluate_alerts. It is missing the 2026-08-31 presence gate on
+-- environmental sensor faults (migration
+-- sensor_fault_gate_by_presence_not_modality) and the 2026-09-03
+-- magmon_silent / env_silent family events (alerts_name_the_silent_collector).
+-- Read the live function before changing alerting.
+--
 -- Read this file as the MagMon core, not the whole schema.
 -- =====================================================================
 
@@ -1214,9 +1225,14 @@ begin
 
   get diagnostics v_written = row_count;
 
-  -- A genuinely new sample stored: bump the data-freshness clock.
+  -- A genuinely new sample stored: bump the data-freshness clocks. The MagMon
+  -- family keeps its OWN clock beside the unit-wide one, because on a unit
+  -- running both collectors last_sample_at cannot say which one reported --
+  -- and "online" would otherwise mean the magnet is watched when only a bay
+  -- sensor and a UPS are (see magmon_silent in evaluate_alerts).
   if v_written > 0 then
-    update assets set last_sample_at = now() where id = v_asset_id;
+    update assets set last_sample_at = now(), last_magmon_sample_at = now()
+     where id = v_asset_id;
   end if;
 
   return true;
@@ -1318,8 +1334,11 @@ begin
   -- Only genuinely new magnet data refreshes data-freshness. An all-duplicate
   -- batch (a hung device re-serving the same rows) matches neither the insert
   -- nor the fill above, so last_sample_at is left to age -> stale.
+  -- last_magmon_sample_at is the same fact scoped to this collector; see
+  -- report_telemetry above.
   if v_inserted > 0 then
-    update assets set last_sample_at = now() where id = v_asset_id;
+    update assets set last_sample_at = now(), last_magmon_sample_at = now()
+     where id = v_asset_id;
   end if;
 
   return v_inserted;

@@ -65,6 +65,11 @@ export const NO_TELEMETRY_KINDS: ReadonlySet<string> = new Set([
   "offline",
   "reporting_stalled",
   "never_reported",
+  // A whole collector family dark while the other keeps the unit looking
+  // online. Red for the same reason as the three above: for those channels we
+  // are getting nothing at all, which is not the same as a reading we dislike.
+  "magmon_silent",
+  "env_silent",
 ]);
 
 export const STATUS_COLORS: Record<HealthStatus, string> = {
@@ -105,3 +110,50 @@ export function connectivityStatuses(asset: Asset): ConnectivityChip[] {
 }
 
 export const CONNECTIVITY_COLORS = { up: ONLINE, down: DOWN };
+
+// ---- collector chips (which half of a unit is reporting) ------------------
+//
+// A unit can run two collectors — the MagMon scraper and the environmental one
+// — for the same asset, and either keeps last_sample_at fresh. So "online" can
+// be true while the magnet is not being watched at all: NM1019 sat on a bench
+// reporting a bay sensor and a UPS, with a green chip and blank helium, and the
+// only signal was six sensor faults arriving at once.
+//
+// A chip appears ONLY for a family that is dark, and only while the unit as a
+// whole is still reporting. If nothing at all is arriving, the status chip
+// already says stale/offline and naming the halves on top of that is noise —
+// this is the same rule evaluate_alerts uses for magmon_silent/env_silent, so
+// the card and the alert cannot disagree.
+export type CollectorChip = { key: "magmon" | "env"; label: string };
+
+export function collectorStatuses(asset: Asset): CollectorChip[] {
+  if (computeAssetHealth(asset) !== "online") return [];
+
+  const staleAfter =
+    asset.offline_threshold_minutes ?? DEFAULT_STALE_THRESHOLD_MINUTES;
+  const dark = (t: string | null | undefined) =>
+    t == null || (Date.now() - new Date(t).getTime()) / 60000 > staleAfter;
+
+  const chips: CollectorChip[] = [];
+  // Deliberately NOT `usesMagmon(asset.modality)` imported from lib/modality:
+  // health.ts is imported by every surface and kept dependency-free. The rule
+  // is one line and tests/health-collectors.test.mts pins it against the real
+  // usesMagmon so the two cannot drift.
+  const hasMagmon = (asset.modality ?? "MRI") === "MRI";
+
+  if (hasMagmon && dark(asset.last_magmon_sample_at)) {
+    // "not connected" and "silent" are different jobs for whoever reads this:
+    // one is an install that has not happened, the other is something that was
+    // working and stopped.
+    chips.push({
+      key: "magmon",
+      label: asset.last_magmon_sample_at ? "MagMon silent" : "MagMon not connected",
+    });
+  }
+  // Only for a unit that HAS environmental hardware — a null clock means none
+  // was ever fitted, not that it failed.
+  if (asset.last_env_sample_at && dark(asset.last_env_sample_at)) {
+    chips.push({ key: "env", label: "Env silent" });
+  }
+  return chips;
+}
