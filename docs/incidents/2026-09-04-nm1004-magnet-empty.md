@@ -158,6 +158,17 @@ rule fired on *time to a bound*, so a magnet at 80 % losing half a percent a day
 days out and said nothing at all. This one fires on departure from normal, which is the shape of the
 signal that was missed here.
 
+An alert that stays open, unacknowledged and unmuted now gets louder rather than quieter
+(`evaluate_alert_ageing`): re-raised after three days and every seven after that, warnings turned
+critical, and re-paged. Muted, acknowledged and maintenance units are deliberately exempt — a mute
+with a reason and an expiry is somebody's decision, and re-paging an owner is how people learn to
+stop acknowledging things.
+
+Worth recording what that first run found: **34 alerts on this fleet were already open longer than
+three days**, the oldest 18 days. They were grandfathered rather than escalated — the mechanism is
+for catching an alert going unanswered from now on, not for relitigating a backlog nobody was
+watching for. The first genuine escalation can happen 2026-09-11.
+
 ## Follow-ups
 
 - [ ] Confirm the quench date against site records; 2026-08-17 is the only candidate our data offers
@@ -165,6 +176,8 @@ signal that was missed here.
 - [ ] Take NM1004 **out** of maintenance deliberately once it reports again — if it is still empty the
       alarms should be seen, not suppressed
 - [x] Helium watched against each unit's own baseline, not a fixed line (2026-09-04)
-- [ ] Alert ageing/escalation for long-open critical events
+- [x] Alert ageing/escalation for long-open critical events (2026-09-04)
 - [ ] Distinguish "resolved because stale" from "resolved because recovered"
+- [ ] NM1034 (service centre, decommissioned) holds 8 open alerts and is not in maintenance —
+      the flag exists for exactly this
 - [ ] Extend daily-rollup retention, and snapshot the triggering reading into `alert_events.detail`

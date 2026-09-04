@@ -29,6 +29,11 @@ import type { OpenAlertRow } from "@/lib/fleetQueries";
 // a picture of the fleet. Muting does not remove it either — a muted row keeps
 // its place and gains a badge saying who silenced it and until when.
 
+/** Whole days an alert has been open. Floor, so "open 1 day" means at least one. */
+function daysOpen(triggeredAt: string): number {
+  return Math.floor((Date.now() - new Date(triggeredAt).getTime()) / 86_400_000);
+}
+
 const KIND_LABELS: Record<string, string> = {
   offline: "Offline",
   reporting_stalled: "Reporting stalled",
@@ -328,6 +333,29 @@ function AlertCard({ alert, isAdmin }: { alert: OpenAlertRow; isAdmin: boolean }
           <p className="text-sm text-[var(--text-muted)] mt-1">{alert.message}</p>
           <p className="text-[11px] text-[var(--text-dim)] mt-1">
             since {new Date(alert.triggered_at).toLocaleString()}
+            {/*
+              How long this has gone unanswered, in the plainest terms.
+              An alert open for a fortnight looked exactly like one raised this
+              morning, which is how a correct helium alarm sat in this queue for
+              thirteen days. Days first, because that is the number that should
+              make someone uncomfortable.
+            */}
+            {daysOpen(alert.triggered_at) >= 1 && (
+              <>
+                {" · "}
+                <b style={{ color: daysOpen(alert.triggered_at) >= 3 ? "var(--status-warning)" : undefined }}>
+                  open {daysOpen(alert.triggered_at)} day{daysOpen(alert.triggered_at) === 1 ? "" : "s"}
+                </b>
+              </>
+            )}
+            {alert.escalation_count > 0 && (
+              <>
+                {" · "}
+                <span title="Re-raised because it stayed open and unacknowledged">
+                  re-raised {alert.escalation_count}&times;
+                </span>
+              </>
+            )}
             {alert.acknowledged_at && (
               <>
                 {" · "}

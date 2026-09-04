@@ -60,6 +60,11 @@ export type OpenAlertRow = {
   ack_note: string | null;
   /** The mute covering this event, if one is. Non-null means it never paged. */
   suppression_id: string | null;
+  /** When age last re-raised this event, and how many times it has. An alert
+   *  open for a fortnight has to read differently from one raised this
+   *  morning — see evaluate_alert_ageing. */
+  escalated_at: string | null;
+  escalation_count: number;
 };
 
 /**
@@ -385,7 +390,8 @@ export async function loadOpenAlertsForOrg(orgId: string): Promise<{
     .from("alert_events")
     .select(
       "id, asset_id, kind, channel, severity, message, detail, triggered_at, " +
-        "acknowledged_at, acknowledged_by, disposition, ack_note, suppression_id"
+        "acknowledged_at, acknowledged_by, disposition, ack_note, suppression_id, " +
+        "escalated_at, escalation_count"
     )
     .in("asset_id", assets.map((a) => a.id))
     .is("resolved_at", null)

@@ -84,6 +84,12 @@
 -- and environmental collectors write the same minute row for one asset and give
 -- each collector family its own freshness clock.
 --
+-- NOT BELOW AT ALL: evaluate_alert_ageing (2026-09-04, alert_ageing_escalation
+-- + alert_ageing_grandfather_backlog_and_skip_demo) — re-raises an alert that
+-- is still open, unacknowledged and unmuted after three days, then every seven,
+-- turning warnings critical and clearing notified_at so it pages again.
+-- alert_events gained escalated_at and escalation_count for it.
+--
 -- NOT BELOW AT ALL: evaluate_boiloff (2026-09-04,
 -- boiloff_against_each_units_own_baseline) — helium judged against each unit's
 -- own previous fortnight rather than a fixed level, on its own 5-minute cron.
