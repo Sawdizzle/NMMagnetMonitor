@@ -7,6 +7,7 @@ import { getDataSource, type FleetAlertEvent, type FleetAsset } from "@/lib/data
 import { useDemo } from "@/lib/demoContext";
 import { collectorStatuses, computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, NO_TELEMETRY_KINDS, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm, fieldFromMessage } from "@/lib/faults";
+import { cryoState, CRYO_COLORS } from "@/lib/cryo";
 import { heliumForecast, forecastHeadline, type HeliumForecast } from "@/lib/forecast";
 import {
   suppressedReading,
@@ -192,6 +193,10 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     }));
   const fleetShape: FleetAsset = { ...asset, latest, history: [], alertRules, openAlerts };
   const alarm = computeAssetAlarm(fleetShape);
+  // Graded cryogenic state from the newest reading. latest_telemetry already
+  // coalesces each channel across the two collectors, so a mixed unit's magnet
+  // numbers are here even when the environmental collector wrote last.
+  const cryo = cryoState(latest);
 
   // Water channels the database blanked because the device is sending its
   // no-sensor placeholder. Shown rather than hidden: the number is right there
@@ -282,6 +287,29 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
                   {f.label} <b>{f.detail}</b>
                 </span>
               ))}
+            </div>
+          )}
+
+          {/*
+            Cryogenic state, graded, with its reasons spelled out.
+            Only for a unit that has a magnet — a PET/CT trailer has no
+            cryogenics to grade, and a grey "no data" badge there would be
+            noise rather than information. See lib/cryo and
+            docs/incidents/2026-09-04-nm1004-magnet-empty.md for why it exists.
+          */}
+          {showMagmon && cryo.level !== "unknown" && (
+            <div className="mt-2.5">
+              <span className="status-chip" style={{ ["--sc" as string]: CRYO_COLORS[cryo.level] }}>
+                <span className="cd" aria-hidden="true" />
+                {cryo.label}
+              </span>
+              {cryo.reasons.length > 0 && (
+                <ul className="mt-1.5 text-xs leading-relaxed" style={{ color: CRYO_COLORS[cryo.level] }}>
+                  {cryo.reasons.map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
         </div>
