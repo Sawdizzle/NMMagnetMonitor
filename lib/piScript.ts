@@ -15,7 +15,7 @@
  *
  * Format: YYYY.MM.DD-N, N being the nth change that day.
  */
-export const COLLECTOR_VERSION = "2026.08.20-1";
+export const COLLECTOR_VERSION = "2026.09.04-1";
 
 export function generatePiScript(opts: {
   assetName: string;
@@ -535,8 +535,23 @@ def fetch_latest_ftp_row():
 # misparse shifts EVERY row by the same amount and cancels out under the Pi-clock
 # anchoring in build_samples(). We rely only on Time (for spacing) and on the
 # date being stable within the batch. Returns None if unparseable.
+# THE FLEET'S ACTUAL FORMAT IS THE ABBREVIATED-MONTH ONE, AND IT WAS MISSING.
+#
+# Every MagMon checked on 2026-09-04 emits "04-Sep-26" -- as does the device's
+# own power-on epoch, "13-May-06", quoted in this file's own comments. Without
+# %d-%b-%y here, parse_dev_dt returned None for EVERY row, build_samples found
+# no dated rows, and main() fell through to its degraded path: report only the
+# newest row, stamped now. The fleet looked healthy and reported one sample per
+# poll cycle -- 12 rows an hour against the 60 the devices were serving -- so
+# the minute-resolution batch path had never once run on real hardware. Found
+# on NM1019 by counting rows the device offered versus rows we stored.
+#
+# Numeric forms stay first: they are what the .dat/FTP path and any
+# differently-configured device produce, and an ambiguous numeric date must
+# keep resolving the way it always has.
 _DEV_DATE_FORMATS = ["%m/%d/%y", "%m/%d/%Y", "%Y/%m/%d", "%y/%m/%d",
-                     "%d/%m/%y", "%d/%m/%Y", "%m-%d-%y", "%Y-%m-%d", "%d-%m-%y"]
+                     "%d/%m/%y", "%d/%m/%Y", "%m-%d-%y", "%Y-%m-%d", "%d-%m-%y",
+                     "%d-%b-%y", "%d-%b-%Y", "%d-%B-%y", "%d-%B-%Y"]
 _DEV_TIME_FORMATS = ["%H:%M:%S", "%H:%M"]
 
 def parse_dev_dt(date_str, time_str):
