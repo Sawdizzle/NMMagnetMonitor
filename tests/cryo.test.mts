@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { cryoState, CRYO_BANDS } from "../lib/cryo.ts";
+import { cryoState, CRYO_BANDS, CRYO_LABELS, CRYO_SHORT_LABELS, CRYO_COLORS } from "../lib/cryo.ts";
 import type { TelemetrySample } from "../lib/supabase.ts";
 
 /**
@@ -116,4 +116,50 @@ test("the urgent bands are the fleet's own alarm thresholds", () => {
   assert.equal(CRYO_BANDS.heliumUrgent, 50);
   assert.equal(CRYO_BANDS.pressureUrgent, 3.0);
   assert.equal(CRYO_BANDS.coldheadUrgent, 6.0);
+});
+
+test("every level has a label, a short label and a colour", () => {
+  // The card and the wall render the short form; a missing entry would draw an
+  // empty chip rather than fail, which is the kind of gap nobody notices.
+  for (const level of ["nominal", "watch", "urgent", "critical", "unknown"] as const) {
+    assert.ok(CRYO_LABELS[level]?.length > 0, level);
+    assert.ok(CRYO_SHORT_LABELS[level]?.length > 0, level);
+    assert.match(CRYO_COLORS[level], /^#|^var\(/, level);
+  }
+  // Grey, not green — the same rule as the badge itself.
+  assert.notEqual(CRYO_COLORS.unknown, CRYO_COLORS.nominal);
+});
+
+test("the headline is short enough for the wall, and is the worst finding", () => {
+  // The TV lays fault lines out with nowrap and hides the overflow, so this is
+  // the field that has to fit. NM1004: helium is the worse of its findings, so
+  // that is what leads — not whichever check happened to run first.
+  const nm1004 = cryoState(row({
+    he_lvl: "0.72", he_press: "5.427",
+    data: { ColdheadRuO: "10.04", ReconRuO: "4.40" },
+  }));
+  assert.equal(nm1004.headline, "Helium 0.7 %");
+  assert.ok(nm1004.headline!.length <= 34);
+
+  // NM1028: helium is fine, so the divergence leads.
+  const nm1028 = cryoState(row({
+    he_lvl: "76.39", he_press: "0.971",
+    data: { ColdheadRuO: "8.97", ReconRuO: "4.16" },
+  }));
+  assert.equal(nm1028.headline, "Coldhead 9.0 K");
+
+  // Nothing wrong, nothing to say.
+  assert.equal(cryoState(row({ he_lvl: "70.0", data: {} })).headline, null);
+  assert.equal(cryoState(null).headline, null);
+});
+
+test("reasons are ordered worst first", () => {
+  const s = cryoState(row({
+    he_lvl: "55.0", he_press: "5.5", data: { ColdheadRuO: "4.2", ReconRuO: "4.2" },
+  }));
+  // Pressure is critical, helium only watch — the critical one leads both the
+  // list and the headline.
+  assert.match(s.reasons[0], /Vessel pressure/);
+  assert.equal(s.headline, "Pressure 5.50");
+  assert.equal(s.level, "critical");
 });

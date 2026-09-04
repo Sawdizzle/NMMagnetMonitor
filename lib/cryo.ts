@@ -28,6 +28,13 @@ export type CryoState = {
   label: string;
   /** Plain-language findings, worst first. Empty when nominal. */
   reasons: string[];
+  /**
+   * The worst finding in a handful of words — "Helium 0.7 %", "Coldhead 9.0 K
+   * vs recon 4.2 K". The TV wall lays fault lines out with `nowrap` and hides
+   * the overflow, so a sentence there is a sentence with its end cut off.
+   * Null when nominal or unknown.
+   */
+  headline: string | null;
 };
 
 /**
@@ -80,6 +87,21 @@ export const CRYO_LABELS: Record<CryoLevel, string> = {
   unknown: "Cryogenics — no data",
 };
 
+/**
+ * Compact forms, for the fleet card and the TV wall.
+ *
+ * Those surfaces are scanned, not read: a card carries three or four chips
+ * already and the wall is read from across a room. The full sentence belongs on
+ * the asset page, where there is room for the reasons underneath it.
+ */
+export const CRYO_SHORT_LABELS: Record<CryoLevel, string> = {
+  nominal: "Cryo nominal",
+  watch: "Cryo watch",
+  urgent: "Cryo urgent",
+  critical: "Cryo critical",
+  unknown: "Cryo no data",
+};
+
 export const CRYO_COLORS: Record<CryoLevel, string> = {
   nominal: "#4ade80",
   watch: "#fbbf24",
@@ -114,7 +136,7 @@ function fromData(row: Record<string, unknown>, key: string): number | null {
 }
 
 export function cryoState(sample: TelemetrySample | null | undefined): CryoState {
-  if (!sample) return { level: "unknown", label: CRYO_LABELS.unknown, reasons: [] };
+  if (!sample) return { level: "unknown", label: CRYO_LABELS.unknown, reasons: [], headline: null };
 
   const row = sample as unknown as Record<string, unknown>;
   const he = num(row.he_lvl);
@@ -125,11 +147,15 @@ export function cryoState(sample: TelemetrySample | null | undefined): CryoState
 
   // No helium level and no coldhead is no cryogenic picture at all. Say so.
   if (he === null && coldhead === null) {
-    return { level: "unknown", label: CRYO_LABELS.unknown, reasons: [] };
+    return { level: "unknown", label: CRYO_LABELS.unknown, reasons: [], headline: null };
   }
 
   let level: CryoLevel = "nominal";
-  const reasons: string[] = [];
+  const found: { rank: number; short: string; long: string }[] = [];
+  const add = (at: CryoLevel, short: string, long: string) => {
+    level = worst(level, at);
+    found.push({ rank: RANK[at], short, long });
+  };
 
   // A magnet at room temperature is its own answer — reporting "helium low" for
   // a unit that is simply warm and powered down buries the actual state.
@@ -141,39 +167,35 @@ export function cryoState(sample: TelemetrySample | null | undefined): CryoState
       reasons: [
         `Magnet is warm — coldhead ${coldhead?.toFixed(0) ?? "—"} K, shield ${shield?.toFixed(0) ?? "—"} K`,
       ],
+      headline: `Magnet warm ${coldhead?.toFixed(0) ?? shield?.toFixed(0) ?? "—"} K`,
     };
   }
 
   if (he !== null) {
     if (he < CRYO_BANDS.heliumCritical) {
-      level = worst(level, "critical");
-      reasons.push(`Helium ${he.toFixed(1)} % — the vessel is effectively empty`);
+      add("critical", `Helium ${he.toFixed(1)} %`, `Helium ${he.toFixed(1)} % — the vessel is effectively empty`);
     } else if (he < CRYO_BANDS.heliumUrgent) {
-      level = worst(level, "urgent");
-      reasons.push(`Helium ${he.toFixed(1)} % — below the ${CRYO_BANDS.heliumUrgent} % fill line`);
+      add("urgent", `Helium ${he.toFixed(1)} %`, `Helium ${he.toFixed(1)} % — below the ${CRYO_BANDS.heliumUrgent} % fill line`);
     } else if (he < CRYO_BANDS.heliumWatch) {
-      level = worst(level, "watch");
-      reasons.push(`Helium ${he.toFixed(1)} % — worth scheduling a fill`);
+      add("watch", `Helium ${he.toFixed(1)} %`, `Helium ${he.toFixed(1)} % — worth scheduling a fill`);
     }
   }
 
   if (coldhead !== null) {
     if (coldhead >= CRYO_BANDS.coldheadCritical) {
-      level = worst(level, "critical");
-      reasons.push(`Coldhead ${coldhead.toFixed(1)} K — nominal is about 4 K`);
+      add("critical", `Coldhead ${coldhead.toFixed(1)} K`, `Coldhead ${coldhead.toFixed(1)} K — nominal is about 4 K`);
     } else if (coldhead >= CRYO_BANDS.coldheadUrgent) {
-      level = worst(level, "urgent");
-      reasons.push(`Coldhead ${coldhead.toFixed(1)} K — nominal is about 4 K`);
+      add("urgent", `Coldhead ${coldhead.toFixed(1)} K`, `Coldhead ${coldhead.toFixed(1)} K — nominal is about 4 K`);
     } else if (coldhead >= CRYO_BANDS.coldheadWatch) {
-      level = worst(level, "watch");
-      reasons.push(`Coldhead ${coldhead.toFixed(1)} K — drifting above the usual 4 K`);
+      add("watch", `Coldhead ${coldhead.toFixed(1)} K`, `Coldhead ${coldhead.toFixed(1)} K — drifting above the usual 4 K`);
     }
 
     // The early one: the coldhead pulling away from a recondenser that is still
     // cold means the cryocooler is failing while the helium level still looks fine.
     if (recon !== null && coldhead - recon >= CRYO_BANDS.divergenceUrgent) {
-      level = worst(level, "urgent");
-      reasons.push(
+      add(
+        "urgent",
+        `Coldhead ${coldhead.toFixed(1)} K vs recon ${recon.toFixed(1)} K`,
         `Coldhead ${coldhead.toFixed(1)} K against a recondenser at ${recon.toFixed(1)} K — the cryocooler is losing the coldhead`
       );
     }
@@ -181,16 +203,21 @@ export function cryoState(sample: TelemetrySample | null | undefined): CryoState
 
   if (press !== null) {
     if (press >= CRYO_BANDS.pressureCritical) {
-      level = worst(level, "critical");
-      reasons.push(`Vessel pressure ${press.toFixed(2)} — a healthy unit sits near 1`);
+      add("critical", `Pressure ${press.toFixed(2)}`, `Vessel pressure ${press.toFixed(2)} — a healthy unit sits near 1`);
     } else if (press >= CRYO_BANDS.pressureUrgent) {
-      level = worst(level, "urgent");
-      reasons.push(`Vessel pressure ${press.toFixed(2)} — above the ${CRYO_BANDS.pressureUrgent} alarm line`);
+      add("urgent", `Pressure ${press.toFixed(2)}`, `Vessel pressure ${press.toFixed(2)} — above the ${CRYO_BANDS.pressureUrgent} alarm line`);
     } else if (press >= CRYO_BANDS.pressureWatch) {
-      level = worst(level, "watch");
-      reasons.push(`Vessel pressure ${press.toFixed(2)} — running high`);
+      add("watch", `Pressure ${press.toFixed(2)}`, `Vessel pressure ${press.toFixed(2)} — running high`);
     }
   }
 
-  return { level, label: CRYO_LABELS[level], reasons };
+  // Worst first, so both the page's list and the wall's one line lead with the
+  // finding that decided the level.
+  found.sort((a, b) => b.rank - a.rank);
+  return {
+    level,
+    label: CRYO_LABELS[level],
+    reasons: found.map((f) => f.long),
+    headline: found[0]?.short ?? null,
+  };
 }

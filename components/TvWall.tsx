@@ -31,6 +31,7 @@ import {
   ALARM_LABELS,
   type AlarmLevel,
 } from "@/lib/faults";
+import { cryoState, CRYO_SHORT_LABELS } from "@/lib/cryo";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { refillChipLabel, refillUrgency, type HeliumForecast } from "@/lib/forecast";
 import {
@@ -664,6 +665,21 @@ function TvCard({
   const mins = minutesSince(asset.last_sample_at);
   const cold = readColdheadK(asset);
   const showMagmon = usesMagmon(asset.modality);
+  // Graded cryogenic state. Two jobs on this screen, and only two:
+  //
+  //   1. It replaces "All readings nominal" when it is not. The value-fault
+  //      thresholds behind the pills are coarse, so a coldhead drifting to 9 K
+  //      on a magnet with healthy helium clears them all and the wall says
+  //      everything is fine — which is the exact shape of what went unnoticed
+  //      on NM1004 for a fortnight.
+  //   2. It leads the fault list when it reads critical and the pills do not,
+  //      so the worst reading of the unit is always the first line on the card.
+  //
+  // Otherwise it stays out of the way: the wall has room for three lines and
+  // repeating a pill in different words would spend one of them.
+  const cryo = showMagmon ? cryoState(asset.latest) : null;
+  const cryoLead = cryo && cryo.level === "critical" && alarm.level !== "critical" ? cryo : null;
+  const cryoInsteadOfClear = cryo && cryo.level !== "nominal" && cryo.level !== "unknown";
   // A refill projection needs helium, which a unit with no magnet has none of.
   const refillLabel = showMagmon ? refillChipLabel(forecast) : null;
   const refillColor = forecast && refillUrgency(forecast) === "soon" ? ALARM_COLORS.warning : "#38bdf8";
@@ -687,9 +703,14 @@ function TvCard({
         </span>
       </div>
 
-      {alarm.faults.length > 0 ? (
+      {alarm.faults.length > 0 || cryoLead ? (
         <div className="tv-faults">
-          {alarm.faults.slice(0, 3).map((f) => (
+          {cryoLead && (
+            <span className="tv-fault critical">
+              {CRYO_SHORT_LABELS.critical} <b>{cryoLead.headline ?? ""}</b>
+            </span>
+          )}
+          {alarm.faults.slice(0, cryoLead ? 2 : 3).map((f) => (
             <span key={f.key} className={`tv-fault ${f.severity}`}>
               {f.label} <b>{f.detail}</b>
             </span>
@@ -714,6 +735,13 @@ function TvCard({
       ) : alarm.connectivity === "unknown" ? (
         <div className="tv-faults">
           <span className="tv-fault maint">No data reported yet</span>
+        </div>
+      ) : cryoInsteadOfClear && cryo ? (
+        // Not clear, whatever the pills think.
+        <div className="tv-faults">
+          <span className={`tv-fault ${cryo.level === "critical" ? "critical" : "warning"}`}>
+            {CRYO_SHORT_LABELS[cryo.level]} <b>{cryo.headline ?? ""}</b>
+          </span>
         </div>
       ) : (
         <div className="tv-faults tv-faults-clear">All readings nominal</div>

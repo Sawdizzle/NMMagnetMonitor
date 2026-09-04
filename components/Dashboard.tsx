@@ -8,6 +8,7 @@ import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { collectorStatuses, computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
 import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, groupAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
+import { cryoState, CRYO_COLORS, CRYO_SHORT_LABELS } from "@/lib/cryo";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { useWeather } from "@/lib/useWeather";
 import type { SiteWeather } from "@/lib/weatherTypes";
@@ -854,6 +855,8 @@ function AssetCard({
   const rows = [asset.latest, ...asset.history];
   const zones = zonesToShow(asset.modality, rows);
   const showPower = showsPower(asset.modality, rows);
+  // Graded cryogenic state, drawn only for a unit that has a magnet.
+  const cryo = showMagmon ? cryoState(asset.latest) : null;
   const refillColor = forecast && refillUrgency(forecast) === "soon" ? "var(--status-warning)" : "#38bdf8";
 
   return (
@@ -948,6 +951,27 @@ function AssetCard({
               {c.label}
             </span>
           ))}
+          {/*
+            Cryogenic state, but ONLY when it is not nominal.
+            A card is scanned, not read, and a green "cryo nominal" chip on every
+            magnet would be one more thing to look past. No chip therefore means
+            nominal — which is why "unknown" keeps its own grey chip rather than
+            being folded into that silence: a reporting magnet whose cryo
+            channels are missing must not look like a healthy one.
+
+            The exception is a unit that is not reporting at all, where the
+            status chip beside this one already says offline or stale and a grey
+            "no data" would just repeat it. A LAST-KNOWN watch/urgent/critical
+            still shows on an offline unit, deliberately: "offline, and it was
+            critical when we lost sight of it" is the NM1004 story, and it is
+            the one thing that card most needs to say.
+          */}
+          {cryo && cryo.level !== "nominal" && !(cryo.level === "unknown" && status !== "online") && (
+            <span className="status-chip" style={{ ["--sc" as string]: CRYO_COLORS[cryo.level] }}>
+              <span className="cd" aria-hidden="true" />
+              {CRYO_SHORT_LABELS[cryo.level]}
+            </span>
+          )}
         </div>
         <span>{mins === null ? "never reported" : `${mins} min ago`}</span>
       </div>
