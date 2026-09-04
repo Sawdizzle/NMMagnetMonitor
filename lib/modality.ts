@@ -27,8 +27,19 @@ import type { TelemetryBucket, TelemetrySample } from "./supabase";
 
 export const MODALITY_MRI = "MRI";
 export const MODALITY_PETCT = "PET/CT";
+export const MODALITY_NUCMED = "NUC MED";
 
-/** The modalities the admin form offers. Order is the order shown. */
+/**
+ * The modalities the admin form offers. Order is the order shown.
+ *
+ * Everything that is not MRI behaves identically today — no MagMon to scrape,
+ * zone and power channels only — so this list is about naming the equipment
+ * honestly on the card and in the docs, not about branching behaviour. That is
+ * deliberate: usesMagmon() is written as "is MRI" precisely so a modality added
+ * here (or straight into the database, since the column has no CHECK) is
+ * assumed to have no magnet, which is both the safer default and the likelier
+ * truth.
+ */
 export const MODALITIES: { value: string; label: string; hint: string }[] = [
   {
     value: MODALITY_MRI,
@@ -39,6 +50,11 @@ export const MODALITIES: { value: string; label: string; hint: string }[] = [
     value: MODALITY_PETCT,
     label: "PET/CT",
     hint: "No MagMon. Zone temperature/humidity and UPS power only.",
+  },
+  {
+    value: MODALITY_NUCMED,
+    label: "Nuc Med",
+    hint: "No MagMon — same environmental build as a PET/CT trailer.",
   },
 ];
 

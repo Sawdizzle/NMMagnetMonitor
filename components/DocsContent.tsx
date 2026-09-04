@@ -8,41 +8,45 @@ import type { DocsInfra } from "@/lib/docsInfra";
 // `infra` so there is a single source of truth for structure and prose; only
 // the redactable values differ between modes.
 //
-// Ordered as a runbook, not a reference: PART 1 takes a Pi from the box to
-// reporting telemetry, PART 2 is the per-site network work (iR305, Tailscale,
-// shared server), PART 3 is what you reach for once it is deployed and
-// something looks wrong. The TOC mirrors those parts.
+// Ordered as a runbook, not a reference, and in the order the work actually
+// happens: PART 1 takes a Pi from the sealed box to an asset reporting on the
+// dashboard, PART 2 adds environmental hardware — either bolted onto a magnet
+// or as the whole job on a unit with no MagMon, PART 3 is the per-site network
+// work, PART 4 is what you reach for when something looks wrong. The TOC
+// mirrors those parts.
 
 const PARTS: { part: string; blurb: string; sections: { id: string; label: string }[] }[] = [
   {
     part: "1 · Stand up a gateway",
-    blurb: "Unbox to reporting",
+    blurb: "Sealed box to reporting",
     sections: [
       { id: "pi-setup", label: "Flash the card + first boot" },
+      { id: "tailscale", label: "Join the tailnet" },
+      { id: "add-asset", label: "Create the asset in Admin" },
       { id: "get-script", label: "Generate the install script" },
       { id: "scp", label: "Copy the files over (SCP)" },
       { id: "install-collector", label: "Install + verify the collector" },
     ],
   },
   {
-    part: "2 · Environmental units",
-    blurb: "PET/CT — sensors, UPS",
+    part: "2 · Environmental hardware",
+    blurb: "Sensors, UPS",
     sections: [
-      { id: "env-overview", label: "What differs from a MagMon" },
+      { id: "env-overview", label: "What it adds, and to what" },
       { id: "env-wiring", label: "Wire the sensors + UPS" },
       { id: "env-addressing", label: "Address the sensors (S1/S2/S3)" },
       { id: "env-nut", label: "Set up the UPS (NUT)" },
-      { id: "env-collector", label: "Create the asset + install" },
+      { id: "env-on-a-magnet", label: "On an MRI (add-on)" },
+      { id: "env-standalone", label: "PET/CT and Nuc Med units" },
       { id: "env-alerts", label: "Alert rules for temp and power" },
-      { id: "env-on-a-magnet", label: "Fitting env hardware to a magnet" },
     ],
   },
   {
     part: "3 · Site + network setup",
     blurb: "Per-site access",
     sections: [
+      { id: "site-topology", label: "How the Pi reaches the MagMon" },
       { id: "ir305", label: "iR305 remote access" },
-      { id: "tailscale", label: "Tailscale setup" },
       { id: "tailscale-ssh", label: "SSH over Tailscale" },
       { id: "reach-magmon", label: "Open a unit's MagMon" },
       { id: "replace-script", label: "Replace a collector script" },
@@ -54,6 +58,7 @@ const PARTS: { part: string; blurb: string; sections: { id: string; label: strin
     blurb: "Day to day",
     sections: [
       { id: "troubleshooting", label: "Troubleshooting a gateway" },
+      { id: "resolution-check", label: "Confirm minute resolution" },
       { id: "commands", label: "Everyday Pi commands" },
     ],
   },
@@ -87,7 +92,8 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
         </div>
         <p className="text-sm text-[var(--text-muted)] leading-relaxed mt-2 max-w-2xl">
           How the {infra.introOwner} fleet is built and kept running, in the order you actually do it:
-          take a Raspberry Pi from the box to reporting telemetry, wire the site up for remote access,
+          take a Raspberry Pi from the sealed box to an asset reporting on the dashboard, add
+          environmental sensors and a UPS if the unit gets them, wire the site up for remote access,
           then keep it healthy. Read it top to bottom the first time; after that, jump to the part you
           need.
         </p>
@@ -123,8 +129,10 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
           {/* ================= PART 1 — stand up a gateway ================= */}
           <PartHeading n="Part 1" title="Stand up a gateway">
             A gateway is one Raspberry Pi (or one shared server) running one collector per asset.
-            These four steps take it from a sealed box to an asset showing <b>online</b> on the
-            dashboard. Do them in order — each one depends on the last.
+            These six steps take it from a sealed box to an asset showing <b>online</b> on the
+            dashboard. Do them in order — each one depends on the last, and the two that people
+            skip (join the tailnet, create the asset) are the two that force a second trip when
+            they are left out.
           </PartHeading>
 
           {/* ---------------- 1. New Pi setup ---------------- */}
@@ -149,14 +157,24 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
               <li>
                 Click <b>Next → Edit Settings</b> before writing, and set:
                 <ul className="doc-ul mt-1.5">
-                  <li>Hostname (e.g. <code className="doc-code">{infra.sampleHostname}</code>)</li>
+                  <li>
+                    <b>Hostname</b> — <code className="doc-code">&lt;asset&gt;-pi</code>, e.g.{" "}
+                    <code className="doc-code">{infra.sampleHostname}</code>. The asset code has to be
+                    in there: it is how the app matches this machine to the unit on the tailnet.
+                  </li>
                   <li>Enable SSH (password authentication is fine to start)</li>
                   <li>
-                    Username + password — this is the account you&rsquo;ll SSH in as <i>and</i> the
-                    one the collector service will run as, so write it down; you&rsquo;ll type it into
-                    the admin panel in step 2
+                    <b>Username + password</b> — the account you&rsquo;ll SSH in as <i>and</i> the one
+                    the collector runs as. The fleet uses{" "}
+                    <code className="doc-code">{infra.piUser}</code>; whatever you pick has to match
+                    the <b>Service user</b> on the asset in step 3.
                   </li>
-                  <li>Wi-Fi SSID, password, and country — if it&rsquo;ll be on Wi-Fi</li>
+                  <li>
+                    <b>Wi-Fi SSID, password and country</b> — bake these in whenever the Pi will use
+                    Wi-Fi for its uplink, including the common case where its one Ethernet port goes
+                    straight to the MagMon. See{" "}
+                    <a className="doc-a" href="#site-topology">how the Pi reaches the MagMon</a>.
+                  </li>
                   <li>Locale / timezone</li>
                 </ul>
               </li>
@@ -167,10 +185,21 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             <P>Once you&rsquo;re in, bring it fully up to date and reboot:</P>
             <CodeBlock code={`sudo apt update && sudo apt full-upgrade -y\nsudo reboot`} />
             <P>
-              Then install the one library the collector needs. This is <b>per machine</b>, not per
-              asset — do it once and it covers every collector you install later:
+              Then the dependencies. These are <b>per machine</b>, not per asset — do them once and
+              they cover every collector you install later. The first line is all a MagMon-only
+              gateway needs; install the other two now anyway if this unit might ever get sensors or
+              a UPS, so you are not doing apt work in a trailer later:
             </P>
-            <CodeBlock code={`sudo apt-get install -y python3-requests`} />
+            <CodeBlock code={`sudo apt-get install -y python3-requests                    # MagMon collector
+sudo apt-get install -y python3-pymodbus nut-server nut-client   # environmental collector
+# if python3-pymodbus is not packaged for your release:
+#   sudo pip3 install --break-system-packages pymodbus`} />
+            <P>
+              And the serial groups, needed only if an RS-485 sensor bus is ever plugged in. Harmless
+              on a unit without one, and easy to forget on a unit that gets one later:
+            </P>
+            <CodeBlock code={`sudo usermod -aG dialout,plugdev ${infra.piUser}
+# log out and back in for it to take effect`} />
             <Callout variant="note" title="Static-ish addressing">
               For a site Pi, reserve its IP in the router&rsquo;s DHCP by MAC address rather than
               hand-configuring one on the Pi — it survives re-imaging and avoids collisions. Extra
@@ -178,8 +207,153 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             </Callout>
           </Section>
 
-          {/* ---------------- 2. Generate the install script ---------------- */}
-          <Section id="get-script" step="Step 2" title="Generate the install script in Admin">
+          {/* ---------------- Tailscale ---------------- */}
+          <Section id="tailscale" step="Step 2" title="Join the tailnet (Tailscale)">
+            <P>
+              Tailscale puts every Pi on one private mesh network so you can reach it by a stable{" "}
+              <code className="doc-code">100.x.y.z</code> address from anywhere, no port forwarding.
+              All {infra.deviceScopeLabel} live on the <b>{infra.tailnetAccount}</b> tailnet.
+            </P>
+            <P>
+              Do this <b>before</b> the collector, while the Pi is still on your bench and easy to
+              reach. Everything after this step — copying scripts up, reading journals, fixing a bad
+              address — is then the same whether the Pi is on your desk or in a trailer three hours
+              away, and you never have to plan a second trip to finish an install.
+            </P>
+            <ol className="doc-ol">
+              <li>Install it on the Pi:</li>
+            </ol>
+            <CodeBlock code={`curl -fsSL https://tailscale.com/install.sh | sh`} />
+            <ol className="doc-ol" start={2}>
+              <li>Bring it up — this prints a login URL:</li>
+            </ol>
+            <CodeBlock code={`sudo tailscale up`} />
+            <ol className="doc-ol" start={3}>
+              <li>
+                Open that URL and sign in with the <b>{infra.tailnetAccount}</b> account to join the
+                device to that tailnet.
+              </li>
+              <li>
+                Approve the machine in the{" "}
+                <a className="doc-a" href="https://login.tailscale.com/admin/machines" target="_blank" rel="noreferrer">
+                  Tailscale admin console
+                </a>
+                . For an always-on gateway, open its menu and <b>disable key expiry</b> so it never
+                drops off.
+              </li>
+              <li>Confirm its tailnet address:</li>
+            </ol>
+            <CodeBlock code={`tailscale ip -4\ntailscale status`} />
+            <Callout variant="note" title="Name it clearly — the dashboard reads these names">
+              Set the machine name in the admin console to match the asset (same as the hostname). It
+              keeps <code className="doc-code">tailscale status</code> reading like a fleet list rather
+              than a wall of IPs, and it is how the app tells &ldquo;the Pi is offline&rdquo; apart
+              from &ldquo;the Pi is up but not reporting&rdquo; — a distinction that decides which of
+              the two troubleshooting paths below you take.
+            </Callout>
+          </Section>
+
+          {/* ---------------- 3. Create the asset ---------------- */}
+          <Section id="add-asset" step="Step 3" title="Create the asset in Admin">
+            <P>
+              The asset has to exist in the dashboard before there is a script to install: the
+              generator bakes that asset&rsquo;s gateway token, its device address and its service
+              user into the file. Skipping ahead here is the usual cause of an install that runs
+              cleanly and reports nothing.
+            </P>
+            <P className="text-[var(--text)] font-medium">
+              <b>Admin → + Add asset</b>, then:
+            </P>
+            <table className="cheat-table my-1">
+              <tbody>
+                <tr>
+                  <td className="desc">Asset name</td>
+                  <td className="cmd">
+                    The unit code, e.g. {sampleAsset}
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      Goes in the filenames, the service names and the Pi hostname. Match it exactly.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">Site name + address</td>
+                  <td className="cmd">
+                    The facility, e.g. a hospital and its street address
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      The address is geocoded for outside weather on the card — a rough address is
+                      better than none, and it can be edited later.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">Modality</td>
+                  <td className="cmd">
+                    MRI / PET/CT / Nuc Med
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      MRI is the only one with a MagMon to scrape; the device fields appear only for
+                      it. Everything else is an environmental unit — see Part 2.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">Stale threshold</td>
+                  <td className="cmd">
+                    Comfortably above the poll interval
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      A 5-minute poll wants about 30 minutes, so one missed report is not an alarm.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">Service user</td>
+                  <td className="cmd">
+                    The login user on the target machine
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      The one you set when flashing. It becomes <code className="doc-code">User=</code>{" "}
+                      in the systemd unit; wrong here fails the service with{" "}
+                      <code className="doc-code">217/USER</code>.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">MagMon address + port</td>
+                  <td className="cmd">
+                    MRI only — the device&rsquo;s address <i>as the Pi sees it</i>
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      Not how you reach it from the office or over a VPN. See{" "}
+                      <a className="doc-a" href="#site-topology">how the Pi reaches the MagMon</a>.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">MagMon credentials</td>
+                  <td className="cmd">
+                    Pre-filled with the fleet default
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      Change them only if this site&rsquo;s device was given its own login.
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <Callout variant="warn" title="The asset name has to appear in the Pi's hostname">
+              The app matches a Tailscale machine to an asset by finding the asset code inside the
+              machine&rsquo;s hostname — separator-insensitive, so{" "}
+              <code className="doc-code">{sampleAsset.toLowerCase()}-pi</code> and{" "}
+              <code className="doc-code">{sampleAsset.toLowerCase()}pi</code> both match, while an
+              adjacent digit does not, so a shorter code cannot match a longer one. Get this wrong and everything
+              still reports — you simply never get the &ldquo;Pi offline&rdquo; signal that tells a
+              dead gateway apart from a dead device.
+            </Callout>
+            <Callout variant="note" title="Nothing to fill in for the token">
+              The gateway token is generated for you and only ever leaves the app inside a downloaded
+              script. If one is ever rotated, every deployed copy of that asset&rsquo;s script stops
+              reporting until you re-download and redeploy it.
+            </Callout>
+          </Section>
+
+          {/* ---------------- 4. Generate the install script ---------------- */}
+          <Section id="get-script" step="Step 4" title="Generate the install script in Admin">
             <P>
               Nothing is copied by hand. Each asset gets its <b>own</b> generated collector and its
               own systemd unit, carrying that asset&rsquo;s gateway token and its MagMon&rsquo;s
@@ -197,7 +371,18 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
                 <code className="doc-code">whoami</code> on the machine if you&rsquo;re unsure; a
                 wrong value here fails the service with <code className="doc-code">217/USER</code>.
               </li>
-              <li>Set the poll interval if it needs to differ from the default, then click <b>Regenerate</b>.</li>
+              <li>
+                Leave <b>Collector</b> on <b>MagMon</b>. The switch only appears on an MRI asset,
+                because that is the only kind of unit that could run either collector — a magnet
+                fitted with sensors or a UPS runs <i>both</i>, and you download each pair in turn.
+                Part 2 covers that.
+              </li>
+              <li>
+                Set the poll interval if it needs to differ from the default, then click{" "}
+                <b>Regenerate</b>. Five minutes is the fleet default and it does <i>not</i> limit
+                resolution: each cycle collects every new one-minute row the device has logged since
+                the last one, so the stored history is minute-by-minute either way.
+              </li>
               <li>
                 Click <b>Download script</b> and <b>Download systemd unit</b>. You now have two files
                 in <code className="doc-code">~/Downloads</code>:
@@ -222,12 +407,12 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
           </Section>
 
           {/* ---------------- 3. SCP ---------------- */}
-          <Section id="scp" step="Step 3" title="Copy the files to the Pi with SCP">
+          <Section id="scp" step="Step 5" title="Copy the files to the Pi with SCP">
             <P>
               <code className="doc-code">scp</code> copies files over the same SSH connection. It
               runs from your laptop, not from the Pi.
             </P>
-            <P className="text-[var(--text)] font-medium">Send the two files from step 2 up:</P>
+            <P className="text-[var(--text)] font-medium">Send the two files from step 4 up:</P>
             <CodeBlock code={`scp ~/Downloads/${infra.servicePrefix}-<ASSET>.py      <user>@<host>:/home/<user>/\nscp ~/Downloads/${infra.servicePrefix}-<ASSET>.service <user>@<host>:/home/<user>/`} />
             <P className="text-[var(--text)] font-medium">Other shapes you&rsquo;ll want:</P>
             <table className="cheat-table my-1">
@@ -256,16 +441,31 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
           </Section>
 
           {/* ---------------- 4. Install + verify ---------------- */}
-          <Section id="install-collector" step="Step 4" title="Install the collector and verify it reports">
+          <Section id="install-collector" step="Step 6" title="Install the collector and verify it reports">
             <P>
               Now SSH in — everything below runs <b>on the Pi</b>. The unit file is already correct,
               so this is just: put the script in place, put the unit in place, start it.
             </P>
             <CodeBlock code={`sudo install -o <user> -g "$(id -gn <user>)" -m 700 \\\n  /home/<user>/${infra.servicePrefix}-<ASSET>.py ${infra.scriptBase}-<ASSET>.py\n\nsudo cp /home/<user>/${infra.servicePrefix}-<ASSET>.service \\\n        /etc/systemd/system/${infra.servicePrefix}-<ASSET>.service\n\nsudo systemctl daemon-reload\nsudo systemctl enable --now ${infra.servicePrefix}-<ASSET>`} />
             <P className="text-[var(--text)] font-medium">
-              Verify — all three must pass before you call it done:
+              Verify — all four must pass before you call it done:
             </P>
-            <CodeBlock code={`systemctl status ${infra.servicePrefix}-<ASSET> --no-pager      # active (running)\njournalctl -u ${infra.servicePrefix}-<ASSET> -n 30 --no-pager   # "reported OK", no errors\npgrep -c -f ${infra.processMatch}-<ASSET>                        # prints exactly 1`} />
+            <CodeBlock code={`systemctl status ${infra.servicePrefix}-<ASSET> --no-pager      # active (running)\njournalctl -u ${infra.servicePrefix}-<ASSET> -n 30 --no-pager   # "reported N sample(s)", no errors\npgrep -c -f ${infra.processMatch}-<ASSET>                        # prints exactly 1\nls -l /var/tmp/${infra.servicePrefix}-<ASSET>.hwm                # exists after the SECOND cycle`} />
+            <Callout variant="note" title="The first cycle reports 1 sample. The second is the one to read.">
+              A fresh start has no high-water mark, so the collector deliberately sends only the
+              newest row rather than dumping an hour of history. One poll interval later it should
+              report <b>one sample per minute elapsed</b> — five on a five-minute poll — and write the{" "}
+              <code className="doc-code">.hwm</code> file. If the second cycle also says{" "}
+              <code className="doc-code">reported 1 sample(s)</code> and no{" "}
+              <code className="doc-code">.hwm</code> appears, the unit is storing one reading per poll
+              instead of every minute:{" "}
+              <a className="doc-a" href="#resolution-check">confirm minute resolution</a>.
+            </Callout>
+            <Callout variant="note" title="'normal fetch failed … trying raw socket fallback' is normal">
+              Several MagMons answer with a malformed HTTP status line that Python refuses to parse,
+              so the collector retries the same request over a raw socket and carries on. Seeing that
+              line once per cycle is expected on those units and is not a fault.
+            </Callout>
             <P>
               …and the asset flips to <b>online</b> on the dashboard within a couple of minutes. If
               any check fails, go to <a className="doc-a" href="#troubleshooting">troubleshooting</a>.
@@ -289,28 +489,39 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
           </Section>
 
           {/* ================= PART 2 — environmental units ================= */}
-          <PartHeading n="Part 2" title="Environmental units (PET/CT)">
-            A PET/CT trailer has no MagMon to scrape. Its gateway watches the space instead:
-            three temperature/humidity sensors on an RS-485 bus and the UPS feeding the
-            trailer. Everything about the Pi itself &mdash; flashing the card, the network, SSH
-            &mdash; is the same as Part 1, so do Step 1 there first and pick this part up from
-            the wiring.
+          <PartHeading n="Part 2" title="Environmental hardware (sensors + UPS)">
+            Temperature and humidity sensors on an RS-485 bus, and the UPS feeding the trailer.
+            The hardware and the collector are the same wherever they go &mdash; what changes is
+            whether they are the whole job or an addition to a magnet. Steps 1 to 3 are shared;
+            Step 4 comes in two versions, one for each case. Everything about the Pi itself is
+            Part 1, so do that first.
           </PartHeading>
 
-          <Section id="env-overview" title="What differs from a MagMon gateway">
+          <Section id="env-overview" title="What it adds, and to what">
             <P>
-              Same Pi, same tailnet, same systemd pattern. Four things change, and every one of
-              them is a place a MagMon habit will trip you up.
+              This is an <b>additive</b> set of channels, not a different kind of unit. Whichever
+              of these are fitted is what the dashboard draws:
             </P>
             <table className="cheat-table my-1">
               <tbody>
                 <tr>
-                  <td className="desc">Asset modality</td>
-                  <td className="cmd">PET/CT &mdash; set when you add the asset</td>
+                  <td className="desc">Zone temp / humidity</td>
+                  <td className="cmd">
+                    up to three XY-MD02 sensors on one RS-485 bus
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      One is fine. Two or three is a wiring decision, never a code change &mdash;
+                      only the zones that report get drawn.
+                    </span>
+                  </td>
                 </tr>
                 <tr>
-                  <td className="desc">MagMon address</td>
-                  <td className="cmd">none &mdash; the field is hidden for this modality</td>
+                  <td className="desc">Mains / UPS power</td>
+                  <td className="cmd">
+                    on-battery state, battery %, input volts, via NUT
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      The fleet-wide outage rule starts paging for this unit the moment it reports.
+                    </span>
+                  </td>
                 </tr>
                 <tr>
                   <td className="desc">Collector</td>
@@ -318,14 +529,44 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
                 </tr>
                 <tr>
                   <td className="desc">Extra packages</td>
-                  <td className="cmd">python3-pymodbus, nut-client</td>
+                  <td className="cmd">python3-pymodbus, nut-server, nut-client</td>
+                </tr>
+              </tbody>
+            </table>
+            <P className="text-[var(--text)] font-medium">The two cases:</P>
+            <table className="cheat-table my-1">
+              <tbody>
+                <tr>
+                  <td className="desc">
+                    On an <b>MRI</b>
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      Step 4 &middot; MRI
+                    </span>
+                  </td>
+                  <td className="cmd">
+                    An addition. The asset stays modality MRI and keeps its MagMon address; its Pi
+                    runs BOTH collectors, reporting one asset. Helium, bay temperature and mains
+                    power land in the same row and show on one card.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">
+                    On a <b>PET/CT</b> or <b>Nuc Med</b> unit
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      Step 4 &middot; PET/CT &middot; Nuc Med
+                    </span>
+                  </td>
+                  <td className="cmd">
+                    The whole job. There is no MagMon, so the asset is created with that modality,
+                    the device-address fields disappear, and one collector runs on its own.
+                  </td>
                 </tr>
               </tbody>
             </table>
             <P>
-              The unit names differ on purpose. A site that ever runs both collectors on one box
-              needs two distinct services, paths and log streams, or they fight over each
-              other&rsquo;s files.
+              The collector names differ from the MagMon one on purpose &mdash; separate service,
+              path, lock file and log tag &mdash; because on a magnet the two run side by side and
+              would otherwise fight over each other&rsquo;s files.
             </P>
             <Callout variant="note" title="A blank channel is never a zero">
               A sensor that fails to answer is reported as <b>no reading</b>, not as 0. That is
@@ -365,7 +606,7 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
               <b>Both</b> groups, because which one owns the device depends on the adapter:{" "}
               <code className="doc-code">ls -l /dev/ttyUSB0</code> shows{" "}
               <code className="doc-code">root dialout</code> on some and{" "}
-              <code className="doc-code">root plugdev</code> on others (NM1019&rsquo;s, 2026-09-03).
+              <code className="doc-code">root plugdev</code> on others &mdash; both seen in this fleet.
               And a trailing <code className="doc-code">+</code> on those permissions is an ACL that
               logind grants <i>the logged-in user</i> &mdash; so a hand-run scan works over SSH while
               the collector, which has no seat, is refused. Testing by hand proves nothing about the
@@ -453,28 +694,108 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             </P>
           </Section>
 
-          <Section id="env-collector" step="Step 4" title="Create the asset and install the collector">
-            <P className="text-[var(--text)] font-medium">In the web app:</P>
+          <Section id="env-on-a-magnet" step="Step 4 · MRI" title="Install it alongside a MagMon collector">
+            <P>
+              A UPS or a bay sensor on an <b>MRI</b> unit is an <b>addition</b>, not a different
+              kind of unit. The asset stays on modality <b>MRI</b> with its MagMon address intact,
+              and its Pi runs <b>both</b> collectors &mdash; two scripts, two services, two lock
+              files, one asset.
+            </P>
+            <P>
+              Nothing about the asset changes &mdash; no new asset, no modality edit, no second tile
+              on the dashboard.
+            </P>
             <ol className="doc-ol">
               <li>
-                <b>Admin → + Add asset</b>. Set <b>Modality</b> to <b>PET/CT</b> &mdash; the MagMon
-                address and credential fields disappear, because there is no MagMon to reach.
+                Wire and address only the sensors actually being fitted (Steps 1&ndash;3 above). One
+                sensor gives one tile; the collector polls all three addresses regardless, so a
+                second one added later is a wiring job with no redeploy.
               </li>
               <li>
-                Set <b>Stale threshold</b> comfortably above the poll interval. A 5-minute poll
-                wants roughly 20 minutes, so one missed report is not an alarm.
+                <b>Admin → the asset → Get install script</b>, then set <b>Collector</b> to{" "}
+                <b>Environmental</b>. Set the poll interval to <b>1 minute</b> &mdash; see below for
+                why that is free on a magnet &mdash; and download the script and the systemd unit.
               </li>
               <li>
-                Set <b>Service user</b> to the login user on the Pi (
-                <code className="doc-code">{infra.piUser}</code>).
+                Install them exactly as in <a className="doc-a" href="#install-collector">Step 6</a>,
+                substituting the environmental names. Nothing about either install changes because
+                the other one is there:
+                <CodeBlockInline code={`sudo install -o <user> -g "$(id -gn <user>)" -m 700 \\
+  /home/<user>/${infra.envServicePrefix}-<ASSET>.py ${infra.envScriptBase}-<ASSET>.py
+sudo cp /home/<user>/${infra.envServicePrefix}-<ASSET>.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ${infra.envServicePrefix}-<ASSET>`} />
               </li>
               <li>
-                Save, then <b>Download script</b> and <b>Download systemd unit</b> from the panel
-                that appears.
+                Watch a cycle. You want one line per fitted zone, one UPS line, and{" "}
+                <code className="doc-code">reported N channel(s)</code>:
+                <CodeBlockInline code={`journalctl -u ${infra.envServicePrefix}-<ASSET> -f`} />
               </li>
             </ol>
+            <Callout variant="note" title="Poll environmental channels every minute on a magnet">
+              It costs nothing here. The MagMon collector already writes a row for every minute, and
+              the environmental readings merge into those same rows &mdash; so a one-minute poll adds
+              no rows at all, it only fills columns. And it matters for power: the alert crons run
+              every minute, so a five-minute poll can burn a third of a UPS&rsquo;s runtime before
+              anyone is paged. On a standalone unit the trade is different &mdash; there, every poll
+              is a new row.
+            </Callout>
+            <Callout variant="note" title="&quot;No sensor answered&quot; on unfitted zones is expected">
+              Addresses with nothing on them log one line per cycle for the first three cycles, then
+              drop to being retried every tenth cycle so they stop costing a Modbus timeout on every
+              poll. A zone you <i>did</i> fit showing that line is the fault &mdash; check its
+              address first.
+            </Callout>
+            <Callout variant="warn" title="Two collectors on this box is correct">
+              The Part 1 check <code className="doc-code">pgrep -c -f {infra.processMatch}</code>{" "}
+              counts MagMon collectors only, but a bare{" "}
+              <code className="doc-code">pgrep -c -f gateway</code> prints <b>2</b> on a mixed unit.
+              That is the healthy state, not a doubled collector. Check the specific names:
+              <CodeBlockInline code={`pgrep -c -f ${infra.processMatch}-<ASSET>      # 1\npgrep -c -f ${infra.envProcessMatch}-<ASSET>         # 1`} />
+            </Callout>
+            <Callout variant="note" title="Both collectors write the same minute">
+              Each one merges its own channels into that minute&rsquo;s row and leaves the
+              other&rsquo;s alone, so the card shows helium, bay temperature and mains power
+              together rather than one blanking the other. Nothing to configure.
+            </Callout>
+            <Callout variant="note" title="Half a unit can go quiet, and the app says which half">
+              Because either collector keeps the asset reporting, &ldquo;online&rdquo; on a mixed
+              unit does not mean both halves are alive. Each side keeps its own clock, so a dark one
+              gets a red chip on the card &mdash; <b>MagMon not connected</b> if it has never
+              reported, <b>MagMon silent</b> if it was reporting and stopped, <b>Env silent</b> for
+              the reverse &mdash; and raises one alert naming the collector, rather than six
+              sensor-fault events for the channels it carried. Expect the &ldquo;not
+              connected&rdquo; chip in the window between installing the environmental collector and
+              the MagMon one; it clears itself the moment magnet telemetry lands.
+            </Callout>
+          </Section>
+
+          <Section id="env-standalone" step="Step 4 · PET/CT · Nuc Med" title="Create the asset and install the collector">
+            <P>
+              A unit with no MagMon &mdash; a PET/CT or Nuc Med trailer or lab &mdash; is an
+              ordinary asset whose only channels are environmental. One collector, no device
+              address, everything else identical to Part 1.
+            </P>
+            <ol className="doc-ol">
+              <li>
+                Create the asset as in <a className="doc-a" href="#add-asset">Step 3</a>, setting{" "}
+                <b>Modality</b> to <b>PET/CT</b> or <b>Nuc Med</b>. The MagMon address and
+                credential fields disappear &mdash; there is no device to reach. A stale threshold
+                of about 20 minutes suits a 5-minute poll.
+              </li>
+              <li>
+                <b>Get install script</b> hands back the environmental collector automatically; there
+                is no Collector switch, because this unit can only run the one.
+              </li>
+              <li>
+                Set the poll interval. Unlike a magnet, <b>every poll here is a new row</b> &mdash;
+                five minutes is the sensible default, and one minute is a five-fold increase in
+                stored history for readings that move slowly.
+              </li>
+              <li>Download the script and the systemd unit.</li>
+            </ol>
             <P className="text-[var(--text)] font-medium">On the Pi &mdash; dependencies first:</P>
-            <CodeBlock code={`sudo apt-get install -y python3-requests python3-pymodbus nut-client\n# if python3-pymodbus is not packaged for your release:\n#   sudo pip3 install --break-system-packages pymodbus`} />
+            <CodeBlock code={`sudo apt-get install -y python3-requests python3-pymodbus nut-server nut-client\n# if python3-pymodbus is not packaged for your release:\n#   sudo pip3 install --break-system-packages pymodbus\nsudo usermod -aG dialout,plugdev <user>   # then log out and back in`} />
             <P className="text-[var(--text)] font-medium">
               Copy the two files up (same SCP as{" "}
               <a className="doc-a" href="#scp">Part 1</a>), then install:
@@ -483,9 +804,10 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             <P className="text-[var(--text)] font-medium">Verify &mdash; all four before you call it done:</P>
             <CodeBlock code={`systemctl status ${infra.envServicePrefix}-<ASSET> --no-pager   # active (running)\njournalctl -u ${infra.envServicePrefix}-<ASSET> -n 30 --no-pager # three zones + a UPS line\npgrep -c -f ${infra.envProcessMatch}-<ASSET>                     # prints exactly 1\nupsc ups | grep ups.status                                       # OL`} />
             <P>
-              Then check the dashboard: the asset shows three zone tiles with readings, a green{" "}
-              <b>Wall power</b> chip, and a battery percentage. If a zone reads an em-dash, go back
-              to <a className="doc-a" href="#env-addressing">Step 2</a> and re-run the bus scan.
+              Then check the dashboard: the asset shows a tile per fitted zone with readings, a green{" "}
+              <b>Wall power</b> chip, and a battery percentage. If a zone you fitted reads an
+              em-dash, go back to <a className="doc-a" href="#env-addressing">Step 2</a> and re-run
+              the bus scan.
             </P>
             <Callout variant="warn" title="systemd, never cron">
               Same rule as the MagMon collector, same reason: this script never exits, so a cron
@@ -530,54 +852,101 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
             </Callout>
           </Section>
 
-          <Section id="env-on-a-magnet" title="Fitting env hardware to a magnet">
+          {/* ================= PART 3 — site + network ================= */}
+          <PartHeading n="Part 3" title="Site and network setup">
+            Two different questions, and it is worth keeping them apart: how the <b>Pi</b> reaches
+            the <b>MagMon</b> (a decision made at install time, and the one that decides the device
+            address you put on the asset), and how <b>you</b> reach the Pi afterwards. Cellular
+            sites come in behind an <b>iR305</b>; everything on the tailnet is reachable directly
+            over Tailscale from anywhere.
+          </PartHeading>
+
+          {/* ---------------- How the Pi reaches the MagMon ---------------- */}
+          <Section id="site-topology" title="How the Pi reaches the MagMon">
             <P>
-              A UPS or a bay sensor on an <b>MRI</b> unit is an <b>addition</b>, not a different
-              kind of unit. The asset stays on modality <b>MRI</b> with its MagMon address intact,
-              and its Pi runs <b>both</b> collectors &mdash; two scripts, two services, two lock
-              files, one asset. NM1019 is the first of these.
+              The collector talks to the device over the LAN, so the address you enter as the
+              <b> MagMon address</b> on the asset is whatever the <i>Pi</i> can reach &mdash; not
+              what your laptop reaches, and not what a VPN server reaches. Two shapes cover the
+              fleet.
+            </P>
+
+            <P className="text-[var(--text)] font-medium">
+              A. Both on the router&rsquo;s LAN &mdash; the simple one
+            </P>
+            <P>
+              The MagMon and the Pi each plug into the site router (or a small switch behind it) and
+              get addresses on the same subnet. Nothing to configure on the Pi; the device address is
+              its LAN IP. Use this whenever there is a spare LAN port. It also means the MagMon&rsquo;s
+              own web interface is reachable from anything else on that LAN.
+            </P>
+
+            <P className="text-[var(--text)] font-medium">
+              B. Pi on Wi-Fi, MagMon on a private cable &mdash; when the device stays off the site network
+            </P>
+            <P>
+              The Pi uplinks over the router&rsquo;s Wi-Fi and its single Ethernet port runs straight
+              to the MagMon. The device is then reachable only from its own Pi, which is a real
+              security gain and keeps a hospital network out of the picture entirely. Two things have
+              to be true or it silently does not work:
             </P>
             <ol className="doc-ol">
               <li>
-                <b>Admin → the asset → Get install script</b>, then use the <b>Collector</b> switch
-                in the panel to pick <b>MagMon</b> or <b>Environmental</b>. Download the script and
-                the systemd unit for each; the filenames already differ.
+                <b>Bake the Wi-Fi credentials in when you flash the card</b> (Part 1, Step 1). With
+                Ethernet committed to the device, Wi-Fi is the only uplink &mdash; a Pi that cannot
+                join it is a Pi you cannot reach.
               </li>
               <li>
-                Install both exactly as in{" "}
-                <a className="doc-a" href="#env-collector">Step 5</a> and Part 1 &mdash; nothing
-                about either install changes because the other one is there.
-              </li>
-              <li>
-                Wire and address only the sensors actually being fitted. The dashboard draws the
-                zones that report, so one sensor gives one tile, and a second one added later needs
-                no redeploy &mdash; the collector already polls all three addresses.
+                <b>The Wi-Fi subnet and the device subnet must differ.</b> Two interfaces on one
+                subnet makes routing ambiguous. Check the router&rsquo;s LAN range before you start.
               </li>
             </ol>
-            <Callout variant="warn" title="Two collectors on this box is correct">
-              The Part 1 check <code className="doc-code">pgrep -c -f {infra.processMatch}</code>{" "}
-              counts MagMon collectors only, but a bare{" "}
-              <code className="doc-code">pgrep -c -f gateway</code> prints <b>2</b> on a mixed unit.
-              That is the healthy state, not a doubled collector. Check the specific names:
-              <CodeBlockInline code={`pgrep -c -f ${infra.processMatch}-<ASSET>      # 1\npgrep -c -f ${infra.envProcessMatch}-<ASSET>         # 1`} />
+            <P>
+              A direct cable has no DHCP server, so give <code className="doc-code">eth0</code> a
+              static address on the device&rsquo;s subnet. Keep the MagMon&rsquo;s existing address if
+              it has one &mdash; matching the Pi to the device is far easier than reconfiguring the
+              device, and a device that kept its address through a router swap needs nothing done to
+              it at all. <code className="doc-code">ipv4.never-default</code> is the load-bearing
+              flag: it keeps the default route on Wi-Fi, so reporting and Tailscale are unaffected.
+            </P>
+            <CodeBlock code={`sudo nmcli con add type ethernet ifname eth0 con-name magmon-link \\
+  ipv4.method manual ipv4.addresses 10.0.0.10/24,169.254.7.10/16 \\
+  ipv4.never-default yes ipv6.method disabled connection.autoconnect-priority 100
+
+sudo nmcli con up magmon-link`} />
+            <P>
+              The second, link-local address costs nothing and covers the case where the device was
+              on DHCP from an old router and has fallen back to <code className="doc-code">169.254.x.x</code>.
+              Then confirm the routing and the device, in that order:
+            </P>
+            <CodeBlock code={`ip -4 addr show eth0        # the static address is on the interface
+ip route | head -3          # default MUST be via wlan0, not eth0
+ping -c3 -W2 <magmon-host>
+curl -sS -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' http://<magmon-host>/`} />
+            <P>
+              Any HTTP status &mdash; 302 to the login page is the usual one &mdash; means the
+              collector will be able to talk to it.
+            </P>
+            <Callout variant="note" title="If you don't know the device's address">
+              Listen to what it says on the wire rather than guessing subnets. With the cable in and
+              the interface up, its own broadcasts give it away:
+              <CodeBlockInline code={`sudo apt-get install -y tcpdump
+sudo tcpdump -ni eth0 -c 20      # ARP/DHCP chatter reveals its IP or subnet
+ip neigh show dev eth0           # anything that has answered`} />
+              The device&rsquo;s front panel usually shows it too.
             </Callout>
-            <Callout variant="note" title="Both collectors write the same minute">
-              Each one merges its own channels into that minute&rsquo;s row and leaves the
-              other&rsquo;s alone, so the unit&rsquo;s card shows helium, bay temperature and mains
-              power together rather than one blanking the other. Nothing to configure &mdash; but it
-              does mean the env collector keeps the unit looking fresh if the MagMon side stops. A
-              silent MagMon then surfaces as a <b>sensor fault</b> on the magnet channels rather
-              than as an offline unit.
+            <Callout variant="warn" title="One profile, not three">
+              <code className="doc-code">nmcli con add</code> does not replace a profile of the same
+              name, it adds another one &mdash; run it twice and a reboot picks one at random. If you
+              have repeated it, clear them out and add one:
+              <CodeBlockInline code={`for u in $(nmcli -t -f UUID,NAME con show | awk -F: '$2=="magmon-link"{print $1}'); do sudo nmcli con delete "$u"; done`} />
+            </Callout>
+            <Callout variant="note" title="Reaching the device yourself, on shape B">
+              Only the Pi can see it, so browse it through an SSH tunnel to that named Pi &mdash;
+              see <a className="doc-a" href="#reach-magmon">open a unit&rsquo;s MagMon</a>. That is
+              the recommended route on shape A as well, for a different reason: several sites reuse
+              the same private address.
             </Callout>
           </Section>
-
-          {/* ================= PART 3 — site + network ================= */}
-          <PartHeading n="Part 3" title="Site and network setup">
-            How you <i>reach</i> a gateway once it is deployed, which depends on the site. Cellular
-            sites come in behind an <b>iR305</b> router; everything on the tailnet is reachable
-            directly over <b>Tailscale</b> from anywhere. Set up Tailscale on every gateway you can —
-            it makes the rest of this document one-step instead of two.
-          </PartHeading>
 
           {/* ---------------- iR305 ---------------- */}
           <Section id="ir305" title="Remote access via the iR305 (InHand Device Manager)">
@@ -616,46 +985,6 @@ export default function DocsContent({ infra }: { infra: DocsInfra }) {
               If the iR305 itself drops, the dashboard says so separately from the asset. That means
               the <i>site&rsquo;s connectivity</i> is down and telemetry has nowhere to go — the magnet
               underneath may be perfectly fine. Restore the router first, then re-read the asset.
-            </Callout>
-          </Section>
-
-          {/* ---------------- Tailscale ---------------- */}
-          <Section id="tailscale" title="Install Tailscale and join the tailnet">
-            <P>
-              Tailscale puts every Pi on one private mesh network so you can reach it by a stable{" "}
-              <code className="doc-code">100.x.y.z</code> address from anywhere, no port forwarding.
-              All {infra.deviceScopeLabel} live on the <b>{infra.tailnetAccount}</b> tailnet.
-            </P>
-            <ol className="doc-ol">
-              <li>Install it on the Pi:</li>
-            </ol>
-            <CodeBlock code={`curl -fsSL https://tailscale.com/install.sh | sh`} />
-            <ol className="doc-ol" start={2}>
-              <li>Bring it up — this prints a login URL:</li>
-            </ol>
-            <CodeBlock code={`sudo tailscale up`} />
-            <ol className="doc-ol" start={3}>
-              <li>
-                Open that URL and sign in with the <b>{infra.tailnetAccount}</b> account to join the
-                device to that tailnet.
-              </li>
-              <li>
-                Approve the machine in the{" "}
-                <a className="doc-a" href="https://login.tailscale.com/admin/machines" target="_blank" rel="noreferrer">
-                  Tailscale admin console
-                </a>
-                . For an always-on gateway, open its menu and <b>disable key expiry</b> so it never
-                drops off.
-              </li>
-              <li>Confirm its tailnet address:</li>
-            </ol>
-            <CodeBlock code={`tailscale ip -4\ntailscale status`} />
-            <Callout variant="note" title="Name it clearly — the dashboard reads these names">
-              Set the machine name in the admin console to match the asset (same as the hostname). It
-              keeps <code className="doc-code">tailscale status</code> reading like a fleet list rather
-              than a wall of IPs, and it is how the app tells &ldquo;the Pi is offline&rdquo; apart
-              from &ldquo;the Pi is up but not reporting&rdquo; — a distinction that decides which of
-              the two troubleshooting paths below you take.
             </Callout>
           </Section>
 
@@ -807,7 +1136,7 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
             <P>
               A healthy result is <code className="doc-code">active</code> followed by a
               startup line carrying the version, e.g.{" "}
-              <code className="doc-code">starting for asset &lsquo;NM1035&rsquo; v2026.08.20-1</code>.
+              <code className="doc-code">starting for asset &lsquo;{sampleAsset}&rsquo; v2026.09.04-1</code>.
               Restarting makes the collector run a cycle immediately, so one extra reading
               lands out of step with the five-minute rhythm — that is the restart, not a fault.
             </P>
@@ -920,6 +1249,9 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
               <Cmd c="SSH works, service inactive/failed" d="Collector problem. See the install-failure table below." />
               <Cmd c="SSH works, service running, ping OK, getent FAILS" d="Pi-local DNS failure. This is the classic one — see below." />
               <Cmd c="Everything green, journal says 'reported OK'" d="Telemetry is flowing. If values look wrong, judge the magnet itself." />
+              <Cmd c="Card shows 'MagMon not connected' or 'MagMon silent'" d="A unit with two collectors has one down. The other keeps it reporting, so the status chip stays green — check that specific service, not the asset." />
+              <Cmd c="Card shows 'Env silent'" d="Same, the other way round: the sensors or UPS link stopped while the MagMon side keeps reporting." />
+              <Cmd c="Every zone blank on a unit with sensors" d="Almost always serial permissions, not sensors — see the dialout/plugdev note in Part 2." />
             </CheatGroup>
 
             <Callout variant="warn" title="Offline while the Pi looks perfectly healthy = suspect DNS">
@@ -946,7 +1278,7 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
               <code className="doc-code">Environment=PYTHONUNBUFFERED=1</code>; units deployed before
               that don&rsquo;t. Trust <code className="doc-code">systemctl status</code> and CPU time
               over a live <code className="doc-code">journalctl -f</code>, and fix it by re-downloading
-              <i>both</i> files from Admin and redoing step 4. Units must live in{" "}
+              <i>both</i> files from Admin and redoing step 6. Units must live in{" "}
               <code className="doc-code">/etc/systemd/system/</code> — confirm which file is actually
               loaded with{" "}
               <code className="doc-code">
@@ -970,11 +1302,11 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
             <P className="text-[var(--text)] font-medium">Install-time failures (fresh deploys):</P>
             <CheatGroup title="Symptom → fix">
               <Cmd c="ModuleNotFoundError: 'requests'" d="python3-requests was never installed. Install it, then restart the service." />
-              <Cmd c="Service state 217/USER" d="The Service user you set in Admin doesn't exist here. Check whoami, re-download, redo step 4." />
-              <Cmd c="Permission denied on the .py" d="Wrong owner or mode — re-run the sudo install line in step 4 exactly." />
+              <Cmd c="Service state 217/USER" d="The Service user you set in Admin doesn't exist here. Check whoami, re-download, redo step 6." />
+              <Cmd c="Permission denied on the .py" d="Wrong owner or mode — re-run the sudo install line in step 6 exactly." />
               <Cmd c="'another copy already holds the lock'" d="A second copy really is running. pgrep -af, kill the extras, remove any cron entry." />
-              <Cmd c="'Cannot reach MagMon at <ip>:<port>'" d="Wrong or unroutable MagMon address for this site. Fix it in Admin → Edit, re-download, redo step 4." />
-              <Cmd c="Still offline after a few minutes" d="Token mismatch — most likely rotated. Re-download the current script and redo step 4." />
+              <Cmd c="'Cannot reach MagMon at <ip>:<port>'" d="Wrong or unroutable MagMon address for this site. Fix it in Admin → Edit, re-download, redo step 6." />
+              <Cmd c="Still offline after a few minutes" d="Token mismatch — most likely rotated. Re-download the current script and redo step 6." />
             </CheatGroup>
 
             <Callout variant="note" title="Telling a real magnet fault from a collection bug">
@@ -994,6 +1326,81 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
               disable, delete, or clean up those cron entries as part of gateway work. If one is
               filling the disk, ask before touching it, and archive anything you remove: several of
               those scripts exist on the Pi and nowhere else.
+            </Callout>
+          </Section>
+
+          {/* ---------------- Minute resolution ---------------- */}
+          <Section id="resolution-check" title="Confirm a collector is storing every minute">
+            <P>
+              A collector can be perfectly healthy and still be storing a twelfth of what the device
+              is serving. The MagMons log a row a minute; the collector fetches the last hour each
+              cycle and files every row newer than the last one it sent. If it cannot read the
+              device&rsquo;s timestamps it degrades quietly instead of failing: it files just the
+              newest row, stamped with the current time. The unit reports on schedule, the charts
+              draw, and the resolution is gone. It ran that way fleet-wide from August 2026 until it
+              was noticed on an install in September.
+            </P>
+            <P className="text-[var(--text)] font-medium">The tell, in the journal:</P>
+            <CodeBlock code={`journalctl -u ${infra.servicePrefix}-<ASSET> -n 20 --no-pager | grep 'reported'`} />
+            <table className="cheat-table my-1">
+              <tbody>
+                <tr>
+                  <td className="desc">Healthy</td>
+                  <td className="cmd">
+                    reported 5 sample(s) &mdash; on a 5-minute poll
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      One per minute elapsed. The first cycle after any restart reports 1 by design.
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="desc">Degraded</td>
+                  <td className="cmd">
+                    reported 1 sample(s) &mdash; every cycle, forever
+                    <span className="block text-[10px] text-[var(--text-dim)]">
+                      And no <code className="doc-code">.hwm</code> file, which is only written when a
+                      row&rsquo;s timestamp parses.
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <CodeBlock code={`ls -l /var/tmp/${infra.servicePrefix}-<ASSET>.hwm   # missing = nothing has ever dated`} />
+            <P>
+              The same thing is visible from the dashboard side without SSH: a degraded unit stores
+              exactly <b>60 ÷ poll-minutes</b> rows an hour &mdash; a flat 12/hour on a five-minute
+              poll, never more.
+            </P>
+            <P className="text-[var(--text)] font-medium">
+              The fix is a script redeploy, not a device change:
+            </P>
+            <ol className="doc-ol">
+              <li>
+                Check the asset&rsquo;s <b>collector version</b> in Admin. Anything older than the
+                current generator is suspect, and the panel marks it &ldquo;behind&rdquo;.
+              </li>
+              <li>
+                Redeploy it &mdash; <a className="doc-a" href="#replace-script">replace a collector
+                script</a>. Script swap and restart; the systemd unit does not change.
+              </li>
+              <li>
+                Watch the <i>second</i> cycle after the restart. Five samples and a{" "}
+                <code className="doc-code">.hwm</code> file means it is filing every minute.
+              </li>
+            </ol>
+            <Callout variant="note" title="Confirming the device really is logging every minute">
+              Pull the minute table by hand and look at the spacing. One-minute steps mean the data is
+              there and the collector is the problem; five-minute steps mean the device itself is
+              configured to log at that interval, and no collector change will help:
+              <CodeBlockInline code={`curl -s --http0.9 --max-time 25 -u <user>:<pass> \\
+  "http://<magmon-host>/goform/showMinutesCGI?num_hours=1&start_day=0&start_hour=1" \\
+  | grep -oE '[0-9]{2}:[0-9]{2}' | tail -15`} />
+            </Callout>
+            <Callout variant="warn" title="Expect roughly five times the rows per unit">
+              Raw samples are purged on a rolling window, so the database settles at a new steady
+              state a week after a unit is converted rather than growing without bound &mdash; but
+              convert the fleet deliberately and watch the size as you go. Daily rollups carry the
+              long history, so shortening the raw window is the first lever if it gets tight.
             </Callout>
           </Section>
 
