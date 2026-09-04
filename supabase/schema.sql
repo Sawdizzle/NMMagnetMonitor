@@ -550,11 +550,17 @@ grant execute on function public.cryo_coldhead_clause(uuid, text) to service_rol
 -- here -- a NULL is the absence of information, so a POWER OUTAGE could go
 -- unreported because the MagMon collector wrote after the environmental one.
 --
+-- `data` needs the same treatment for the same reason (2026-09-04): on a mixed
+-- unit the newest row is almost always the environmental one, so returning its
+-- blob verbatim hid the device's own payload -- the coldhead and recondenser
+-- temperatures every cryogenic judgement depends on, and the EC error codes.
+-- The newest MagMon-carrying payload is merged UNDER the newest one, so the
+-- device's keys come back and anything the newest row carries (the NUT status
+-- string) still wins.
+--
 -- The window is anchored to the newest row rather than to now(), so a unit that
 -- stopped reporting still shows the values it last had; staleness remains the
--- job of last_sample_at and sensor_fault. `data` stays the newest row's payload
--- verbatim (MagMon error codes, the NUT status string) -- merging two devices'
--- payloads would invent a sample that never existed.
+-- job of last_sample_at and sensor_fault.
 create or replace view public.latest_telemetry
   with (security_invoker = true) as
 select
@@ -563,7 +569,7 @@ select
   n.recorded_at,
   n.created_at,
   c.he_lvl, c.he_press, c.h2o_flow, c.h2o_temp, c.shield, c.cs1,
-  n.data,
+  coalesce(m.data, '{}'::jsonb) || coalesce(n.data, '{}'::jsonb) as data,
   c.s1_temp_f, c.s1_rh, c.s2_temp_f, c.s2_rh, c.s3_temp_f, c.s3_rh,
   c.ups_on_battery, c.ups_batt_pct, c.ups_input_v, c.ups_runtime_s
 from public.assets a
@@ -574,6 +580,16 @@ cross join lateral (
   order by ts.recorded_at desc
   limit 1
 ) n
+left join lateral (
+  select ts.data
+  from public.telemetry_samples ts
+  where ts.asset_id = a.id
+    and ts.recorded_at <= n.recorded_at
+    and ts.recorded_at >  n.recorded_at - interval '15 minutes'
+    and (ts.he_lvl is not null or ts.he_press is not null or ts.shield is not null)
+  order by ts.recorded_at desc
+  limit 1
+) m on true
 cross join lateral (
   select
     (array_agg(w.he_lvl         order by w.recorded_at desc) filter (where w.he_lvl         is not null))[1] as he_lvl,
