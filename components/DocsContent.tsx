@@ -450,7 +450,16 @@ sudo apt-get install -y python3-pymodbus nut-server nut-client   # environmental
             <P className="text-[var(--text)] font-medium">
               Verify — all four must pass before you call it done:
             </P>
-            <CodeBlock code={`systemctl status ${infra.servicePrefix}-<ASSET> --no-pager      # active (running)\njournalctl -u ${infra.servicePrefix}-<ASSET> -n 30 --no-pager   # "reported N sample(s)", no errors\npgrep -c -f ${infra.processMatch}-<ASSET>                        # prints exactly 1\nls -l /var/tmp/${infra.servicePrefix}-<ASSET>.hwm                # exists after the SECOND cycle`} />
+            <CodeBlock code={`systemctl status ${infra.servicePrefix}-<ASSET> --no-pager      # active (running)\njournalctl -u ${infra.servicePrefix}-<ASSET> -n 30 --no-pager   # "reported N sample(s)", no errors\npgrep -af ${infra.processMatch}-<ASSET>                          # ONE python line, and you can see it\nls -l /var/tmp/${infra.servicePrefix}-<ASSET>.hwm                # exists after the SECOND cycle`} />
+            <Callout variant="warn" title="Use pgrep -af, not pgrep -c, over SSH">
+              Run as <code className="doc-code">ssh host &quot;… pgrep -c -f {infra.processMatch}-&lt;ASSET&gt;&quot;</code>,
+              the count comes back <b>one too high</b>: the remote shell&rsquo;s own command line
+              contains the text being searched for, so pgrep matches the question. Typed at a prompt
+              it is fine, which is why this is easy to miss.{" "}
+              <code className="doc-code">-af</code> prints what matched, so a real collector
+              (<code className="doc-code">/usr/bin/python3 {infra.scriptBase}-&lt;ASSET&gt;.py</code>)
+              is obvious next to a <code className="doc-code">bash -c</code> echoing your own command.
+            </Callout>
             <Callout variant="note" title="The first cycle reports 1 sample. The second is the one to read.">
               A fresh start has no high-water mark, so the collector deliberately sends only the
               newest row rather than dumping an hour of history. One poll interval later it should
