@@ -61,7 +61,18 @@ function liveNavItems(session: Session): NavItem[] {
       href: "/admin",
       label: "Admin",
       icon: <GearIcon />,
-      isActive: (p) => p.startsWith("/admin"),
+      isActive: (p) => p.startsWith("/admin") && !p.startsWith("/admin/handbook"),
+    });
+  }
+  // The handbook summarises the whole estate — every unit, every open alert —
+  // so it sits with Admin rather than with Docs. Same reasoning as the panel it
+  // lives under: this is the view you would not hand to a site contact.
+  if (session.role === "admin") {
+    items.push({
+      href: "/admin/handbook",
+      label: "Handbook",
+      icon: <BookIcon />,
+      isActive: (p) => p.startsWith("/admin/handbook"),
     });
   }
   // The live runbook carries real infrastructure identifiers, so it is a
