@@ -100,7 +100,17 @@ on their own account:
   4.40 K) and it is what precedes boil-off: the cryocooler is losing the coldhead while the
   recondenser is still cold. Helium is fine today at 76.4 %.
 - **NM1037 — helium 35.4 %**, the lowest in the fleet after the two known-down units, and below the
-  50 % fleet alarm line.
+  50 % fleet alarm line. Not urgent, though, and it is worth recording why: it has been 35.34-35.36 %
+  every day for 21 days. It is not losing anything — it needs a fill scheduled, not a response.
+- **Three units read "compressor powered off or cable disconnected"** — NM1001, NM1031 and NM1037 —
+  while their coldheads sit at 3.89-4.14 K. A compressor genuinely stopped for weeks cannot leave a
+  coldhead at 4 K, and NM1001's device says so itself with EC 125, "No 24v supply from compressor 1".
+  These are sense-line faults. The alert now says so (see below).
+- **NM1031 is the one that is actually losing helium**: 70.67 % to 61.11 % in eight days, about
+  1.2 %/day, with its coldhead at 3.89 K and vessel pressure high (EC 25). A cold coldhead means the
+  cryocooler is working, so this is venting or a leak, not boil-off — a valve or a seal, not a
+  cryocooler. Worth noting against the fleet's baseline: every healthy magnet here moved less than
+  0.1 % in 21 days, so this unit is losing helium roughly a hundred times faster than its neighbours.
 
 ## What this changes
 
@@ -126,6 +136,20 @@ on their own account:
    healthy helium level. A "we have never seen this channel in a nominal state" flag at onboarding
    would have made its condition unmissable on day one instead of arriving as a threshold alarm two
    weeks later.
+
+## Changed as a result (2026-09-04)
+
+Both of these were detection that already worked and wording that did not say what was found:
+
+- The **cs1 alarm** now appends what the coldhead implies — "the magnet is still cold (coldhead
+  4.14 K), so this reads as a lost 24 V sense line rather than a stopped compressor — check the
+  cable before the compressor", or, on a genuinely warm unit, "consistent with a compressor that
+  really has stopped".
+- The **helium trend finding** does the same for the other direction: "the coldhead is at 3.89 K, so
+  the cryocooler is running — this reads as venting or a leak rather than boil-off".
+
+Both come from one helper, `cryo_coldhead_clause`, which returns nothing at all when there is no
+coldhead reading rather than guessing at a mechanism.
 
 ## Follow-ups
 

@@ -1309,6 +1309,22 @@ ssh <user>@<pi-host> 'sudo cp -n ${infra.scriptBase}-<ASSET>.py ${infra.scriptBa
               <Cmd c="Still offline after a few minutes" d="Token mismatch — most likely rotated. Re-download the current script and redo step 6." />
             </CheatGroup>
 
+            <Callout variant="note" title="&quot;Compressor powered off or cable disconnected&quot; — the coldhead tells you which">
+              That status code covers two different jobs, and the cryogenics decide between them. A
+              compressor genuinely stopped for weeks <b>cannot</b> leave a coldhead at 4 K, so a cold
+              coldhead beside that alarm means the MagMon has lost its 24 V sense line and the
+              cryocooler is still running &mdash; check the cable before you order a compressor. A
+              coldhead up at 50 K or 300 K beside the same code means it really has stopped. The
+              alert now says which of the two it is; this is the reasoning behind it.
+            </Callout>
+            <Callout variant="note" title="Falling helium with a cold coldhead is not boil-off">
+              Same idea, the other way round. If the coldhead is at 4 K the cryocooler is working, so
+              helium leaving the vessel is going out somewhere else &mdash; a relief valve or a seal,
+              not a cryogenic failure. A warming coldhead alongside falling helium is the boil-off
+              case. Worth knowing how small the normal signal is: across this fleet a healthy magnet
+              moves <b>less than 0.1 % of helium in three weeks</b>, so any sustained daily loss is a
+              large departure long before the level looks low.
+            </Callout>
             <Callout variant="note" title="Telling a real magnet fault from a collection bug">
               When the numbers look alarming, cross-check the two independent read paths — the HTTP
               scrape and the FTP file use completely different parsers. If both agree to the decimal,

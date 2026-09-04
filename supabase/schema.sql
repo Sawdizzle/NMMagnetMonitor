@@ -84,11 +84,15 @@
 -- and environmental collectors write the same minute row for one asset and give
 -- each collector family its own freshness clock.
 --
--- BEHIND below: evaluate_alerts. It is missing the 2026-08-31 presence gate on
--- environmental sensor faults (migration
--- sensor_fault_gate_by_presence_not_modality) and the 2026-09-03
--- magmon_silent / env_silent family events (alerts_name_the_silent_collector).
--- Read the live function before changing alerting.
+-- BEHIND below: evaluate_alerts and evaluate_diagnostics. evaluate_alerts is
+-- missing the 2026-08-31 presence gate on environmental sensor faults
+-- (sensor_fault_gate_by_presence_not_modality), the 2026-09-03 magmon_silent /
+-- env_silent family events (alerts_name_the_silent_collector), and the
+-- 2026-09-04 coldhead clause on the cs1 message; evaluate_diagnostics is
+-- missing that same clause on the helium trend
+-- (name_the_mechanism_on_compressor_and_helium_alerts, which rewrites both
+-- functions from their own live source rather than restating them). Read the
+-- live functions before changing alerting.
 --
 -- Read this file as the MagMon core, not the whole schema.
 -- =====================================================================
@@ -477,6 +481,50 @@ create or replace view public.public_assets
          tailscale_online, tailscale_status_at,
          last_sample_at
   from public.assets;
+
+-- cryo_coldhead_clause: what the coldhead says about a unit, in words.
+--
+-- Two alerts describe a symptom with two different causes, and the coldhead
+-- decides which. "cs1 = 33 — compressor powered off or cable disconnected" on a
+-- magnet whose coldhead is at 4 K is a lost 24 V sense line, not a stopped
+-- compressor: a compressor genuinely stopped for weeks cannot leave a coldhead
+-- cold. Helium falling while the coldhead is cold is not boil-off either — the
+-- cryocooler is working and the helium is leaving another way, which is a valve
+-- or a seal rather than a cryocooler.
+--
+-- Returns '' rather than a guess when there is no coldhead reading; callers
+-- concatenate it directly onto their message.
+create or replace function public.cryo_coldhead_clause(p_asset_id uuid, p_context text)
+ returns text
+ language sql
+ stable
+ security definer
+ set search_path to 'public'
+as $function$
+  select case
+    when v.cold is null then ''
+    when p_context = 'compressor' and v.cold < 6 then
+      format('. The magnet is still cold (coldhead %s K), so this reads as a lost 24 V sense line rather than a stopped compressor — check the cable before the compressor',
+             round(v.cold, 2))
+    when p_context = 'compressor' then
+      format('. The coldhead is at %s K, which is consistent with a compressor that really has stopped',
+             round(v.cold, 2))
+    when p_context = 'helium' and v.cold < 6 then
+      format('. The coldhead is at %s K, so the cryocooler is running — this reads as venting or a leak rather than boil-off',
+             round(v.cold, 2))
+    when p_context = 'helium' then
+      format('. The coldhead is at %s K, consistent with boil-off from a cryocooler that is not keeping up',
+             round(v.cold, 2))
+    else ''
+  end
+  from (
+    select safe_numeric(lt.data->>'ColdheadRuO') as cold
+    from latest_telemetry lt where lt.asset_id = p_asset_id
+  ) v;
+$function$;
+revoke execute on function public.cryo_coldhead_clause(uuid, text) from public, anon, authenticated;
+grant execute on function public.cryo_coldhead_clause(uuid, text) to service_role;
+
 
 -- latest_telemetry: the latest value PER CHANNEL, not the latest row.
 --
