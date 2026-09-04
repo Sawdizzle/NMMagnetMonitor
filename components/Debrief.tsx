@@ -300,6 +300,8 @@ function kindLabel(kind: string): string {
       return "Sensor fault";
     case "cooling_loss":
       return "Cooling fault";
+    case "boiloff":
+      return "Helium loss";
     case "trend":
       return "Trend";
     case "flatline":

@@ -151,12 +151,20 @@ Both of these were detection that already worked and wording that did not say wh
 Both come from one helper, `cryo_coldhead_clause`, which returns nothing at all when there is no
 coldhead reading rather than guessing at a mechanism.
 
+Helium is now judged against each unit's own baseline rather than a fixed level
+(`evaluate_boiloff`). The fleet numbers make the case: the eleven healthy magnets sit between
+0.0007 and 0.0198 %/day, and NM1031 is at 1.639 %/day — eighty times the next-highest unit. The old
+rule fired on *time to a bound*, so a magnet at 80 % losing half a percent a day projected a hundred
+days out and said nothing at all. This one fires on departure from normal, which is the shape of the
+signal that was missed here.
+
 ## Follow-ups
 
 - [ ] Confirm the quench date against site records; 2026-08-17 is the only candidate our data offers
 - [ ] Decide the disposition of the magnet (refill and ramp, or retire) before the replacement iR305 lands
 - [ ] Take NM1004 **out** of maintenance deliberately once it reports again — if it is still empty the
       alarms should be seen, not suppressed
+- [x] Helium watched against each unit's own baseline, not a fixed line (2026-09-04)
 - [ ] Alert ageing/escalation for long-open critical events
 - [ ] Distinguish "resolved because stale" from "resolved because recovered"
 - [ ] Extend daily-rollup retention, and snapshot the triggering reading into `alert_events.detail`

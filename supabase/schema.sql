@@ -84,6 +84,12 @@
 -- and environmental collectors write the same minute row for one asset and give
 -- each collector family its own freshness clock.
 --
+-- NOT BELOW AT ALL: evaluate_boiloff (2026-09-04,
+-- boiloff_against_each_units_own_baseline) — helium judged against each unit's
+-- own previous fortnight rather than a fixed level, on its own 5-minute cron.
+-- Helium was removed from evaluate_diagnostics' generic trend rule in the same
+-- migration, so there is one helium alert and it is that one.
+--
 -- BEHIND below: evaluate_alerts and evaluate_diagnostics. evaluate_alerts is
 -- missing the 2026-08-31 presence gate on environmental sensor faults
 -- (sensor_fault_gate_by_presence_not_modality), the 2026-09-03 magmon_silent /

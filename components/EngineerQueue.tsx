@@ -42,6 +42,7 @@ const KIND_LABELS: Record<string, string> = {
   sensor_fault: "Sensor fault",
   cooling_loss: "Cooling fault",
   trend: "Trend",
+  boiloff: "Helium loss",
   flatline: "Flatlined",
   bound: "Out of range",
   // Non-paging by design (see _upsert_finding): recorded and shown here, never

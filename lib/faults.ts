@@ -327,6 +327,18 @@ function serverFaults(asset: FleetAsset, existing: Fault[]): Fault[] {
         break;
       }
 
+      case "boiloff": {
+        // Helium judged against the unit's own baseline rather than a fixed
+        // line. The pill leads with the RATE, because that is the thing that is
+        // abnormal — the level itself can still look perfectly healthy while a
+        // magnet loses a hundred times what its neighbours do.
+        const rate = num(e.detail?.loss_per_day);
+        fault = { key: "boiloff", label: "Helium falling",
+                  detail: rate !== null ? `${fmt(rate, 2)} %/day` : "see alert",
+                  severity: e.severity };
+        break;
+      }
+
       case "flatline": {
         const v = num(e.detail?.value);
         fault = { key: `flat:${e.field}`, label: `${named(e.field, "Metric")} flatlined`,
