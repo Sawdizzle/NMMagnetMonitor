@@ -89,13 +89,30 @@ export default function TvWall() {
   }, POLL_MS);
 
   // ---- a ticking clock (also refreshes "x min ago" + re-derives health) ---
+  //
+  // Aligned to the minute, not every second. `now` is listed in the deps of
+  // every memo below — deliberately, so status stays live as time passes — which
+  // means each tick re-sorts the fleet, rebuilds the alert list and re-derives
+  // every alarm. At 1 Hz that ran about nine passes over the fleet EVERY SECOND,
+  // forever, on a machine that sits unattended for months.
+  //
+  // Nothing on screen resolves finer than a minute: the clock renders hours and
+  // minutes, and the ages read "4 Min Ago". Scheduling to the next minute
+  // boundary rather than on a 60s interval means the displayed minute flips when
+  // it actually changes — this is both 60x less work and a more accurate clock
+  // than the 1 Hz version, which could show a minute up to a second late.
   useEffect(() => {
-    // seeds the clock on mount. Date.now() cannot be rendered on the
-    // server without a hydration mismatch, so the first value has to land here.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
+    let timeout: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      setNow(Date.now());
+      // +50ms so a timer firing a hair early does not land in the previous
+      // minute and re-render twice for one change.
+      timeout = setTimeout(tick, 60_000 - (Date.now() % 60_000) + 50);
+    };
+    // Seeds the clock on mount. Date.now() cannot be rendered on the server
+    // without a hydration mismatch, so the first value has to land here.
+    tick();
+    return () => clearTimeout(timeout);
   }, []);
 
   // ---- keep the TV awake -------------------------------------------------
@@ -304,6 +321,11 @@ export default function TvWall() {
   // Every open issue as its own "ASSET — error" line for the scrolling ticker:
   // criticals and warnings both, so a warning stays visible until it's cleared
   // or accepted (maintenance). Maintenance units are excluded by design.
+  // The five header counts, in one pass — see tallyLevels.
+  // `now` is listed for the same reason as the memos around it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tally = useMemo(() => tallyLevels(ordered), [ordered, now]);
+
   // `now` is listed on purpose. It is not read in the callback, but the
   // helpers called here derive status from the current time, so the tick is
   // what keeps the wall live; drop it and the display freezes at first paint.
@@ -350,12 +372,12 @@ export default function TvWall() {
         </div>
 
         <div className="tv-summary" aria-live="off">
-          <Tally color={ALARM_COLORS.critical} n={countLevel(ordered, "critical")} label="Alarm" />
-          <Tally color={ALARM_COLORS.warning} n={countLevel(ordered, "warning")} label="Warning" />
+          <Tally color={ALARM_COLORS.critical} n={tally.critical} label="Alarm" />
+          <Tally color={ALARM_COLORS.warning} n={tally.warning} label="Warning" />
 
-          <Tally color={ALARM_COLORS.ok} n={countLevel(ordered, "ok")} label="Nominal" />
-          <Tally color={ALARM_COLORS.unknown} n={countLevel(ordered, "unknown")} label="No data" />
-          <Tally color={ALARM_COLORS.maintenance} n={countLevel(ordered, "maintenance")} label="Maint." />
+          <Tally color={ALARM_COLORS.ok} n={tally.ok} label="Nominal" />
+          <Tally color={ALARM_COLORS.unknown} n={tally.unknown} label="No data" />
+          <Tally color={ALARM_COLORS.maintenance} n={tally.maintenance} label="Maint." />
         </div>
 
         <div className="tv-header-right">
@@ -881,6 +903,25 @@ function Metric({
   );
 }
 
+/**
+ * Every alarm level counted in ONE pass over the fleet.
+ *
+ * Was five separate countLevel() calls, each filtering the whole list and
+ * re-deriving every asset's alarm — five passes to produce five numbers from
+ * the same data, on a display that recomputed them continuously.
+ */
+function tallyLevels(assets: FleetAsset[]): Record<AlarmLevel, number> {
+  const counts: Record<AlarmLevel, number> = {
+    critical: 0,
+    warning: 0,
+    ok: 0,
+    unknown: 0,
+    maintenance: 0,
+  };
+  for (const a of assets) counts[computeAssetAlarm(a).level]++;
+  return counts;
+}
+
 function Tally({ color, n, label }: { color: string; n: number; label: string }) {
   return (
     <div className="tv-tally" data-zero={n === 0 ? "true" : "false"}>
@@ -953,10 +994,6 @@ function coldheadFromData(data: unknown): number | null {
 
 function readColdheadK(asset: FleetAsset): number | null {
   return coldheadFromData(asset.latest?.data);
-}
-
-function countLevel(assets: FleetAsset[], level: AlarmLevel): number {
-  return assets.filter((a) => computeAssetAlarm(a).level === level).length;
 }
 
 function clampInt(raw: string | null, min: number, max: number, fallback: number): number {
