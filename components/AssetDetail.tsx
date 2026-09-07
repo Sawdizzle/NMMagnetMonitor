@@ -33,7 +33,7 @@ import { useAmbient } from "@/lib/useAmbient";
 import { alignAmbient } from "@/lib/ambientAlign";
 import FieldRing from "@/components/FieldRing";
 import { WeatherChip, WeatherPanel } from "@/components/SiteWeather";
-import MetricLineChart from "@/components/MetricLineChart";
+import TrendChart from "@/components/TrendChart";
 
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 24;
@@ -367,7 +367,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
       {showMagmon && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-10">
           {METRICS.map((m) => (
-            <MetricLineChart
+            <TrendChart
               key={m.key}
               samples={buckets}
               metricKey={m.key}
@@ -387,7 +387,7 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
           className={`grid grid-cols-1 ${ENV_GRID_COLS[zones.length] ?? "md:grid-cols-3"} gap-4 mb-10`}
         >
           {envChartSpecs(zones).map((m) => (
-            <MetricLineChart
+            <TrendChart
               key={m.key}
               samples={buckets}
               metricKey={m.key}
