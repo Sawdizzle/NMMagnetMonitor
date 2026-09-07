@@ -3737,3 +3737,129 @@ grant  execute on function public.cleanup_old_suppressions()         to service_
 -- could never reach the default.
 revoke execute on function public.default_org_id() from public, anon, authenticated;
 grant  execute on function public.default_org_id() to service_role;
+
+
+-- =====================================================================
+-- INDEXES
+-- =====================================================================
+--
+-- Everything below EXISTS IN PRODUCTION. It is collected here because it
+-- did not: a 2026-09-06 audit compared pg_indexes against this file and
+-- found TWELVE indexes live that were recorded nowhere — most of them the
+-- foreign-key companions Supabase's advisor prompts for, added through the
+-- dashboard and never written down. Rebuilding a staging or second-region
+-- instance from this file would have produced a database that worked and
+-- was mysteriously slow, which is the worst way for drift to surface.
+--
+-- The rule this section exists to keep: an index added in the dashboard is
+-- not done until it is written here. `select indexdef from pg_indexes where
+-- schemaname='public'` is the check.
+--
+-- Indexes declared next to their table above are not repeated.
+
+
+-- --- telemetry_samples: the helium series ----------------------------
+--
+-- org_helium_15min() is the slowest query any user waits on — the boil-off
+-- forecast on every dashboard and every wall display, every ten minutes per
+-- open tab. It read the WHOLE table on every call, and the obvious fixes
+-- both fail for the same non-obvious reason:
+--
+--   An index on recorded_at alone is never used. Retention is 7 days and
+--   the function's default window is 168 hours, so the time predicate
+--   selects 91 % of the rows — the planner correctly prefers a seq scan.
+--
+--   Rewriting the join as a per-asset lateral does not help either: the
+--   planner flattens it straight back to the same hash join, because with
+--   no narrow index there is nothing better to flatten it to.
+--
+-- What actually cost the time was width, not row count. The table is 100 MB
+-- and 52 MB of that is the raw MagMon `data` blob; this query needs three
+-- columns totalling about 1 MB. Covering he_lvl turns the scan index-ONLY,
+-- so the heap — and the blob with it — is never touched.
+--
+-- Partial on he_lvl because an environmental unit reports no helium at all,
+-- and the function already carries the matching `he_lvl is not null`.
+--
+-- Measured on the live fleet, 18 assets over 168 h:
+--   before  1,617 ms warm / 8,979 ms cold, 9,125 shared buffers
+--   after     194 ms,                      2,076 shared buffers
+--
+-- Index-only scans need the visibility map, and this table takes ~1,400
+-- inserts a minute, so autovacuum falling behind shows up here as rising
+-- Heap Fetches long before it shows up anywhere else. That is the number to
+-- watch if this query ever creeps back up.
+create index if not exists telemetry_helium_idx
+  on public.telemetry_samples (asset_id, recorded_at) include (he_lvl)
+  where he_lvl is not null;
+
+create index if not exists idx_telemetry_asset_created
+  on public.telemetry_samples using btree (asset_id, created_at desc);
+create index if not exists idx_telemetry_created_at
+  on public.telemetry_samples using btree (created_at);
+
+
+-- --- alert_events: the open-alert lookup -----------------------------
+--
+-- evaluate_alerts() runs every minute and is five `for ... loop` blocks,
+-- each asking `not exists (select 1 from alert_events where asset_id = ...
+-- and resolved_at is null)` per iteration. The plain asset_id index below
+-- cannot serve that: `resolved_at is null` is not in it, so every check
+-- scanned the table and rechecked. Over 45 days that was 4.8 million
+-- sequential scans reading 1.5 BILLION tuples from a 604-row table.
+--
+-- Cheap today — 604 rows is a dozen pages — which is exactly why it was
+-- easy to miss. The shape is O(assets x open events) and both grow.
+--
+-- Partial on the predicate the evaluator actually uses, so the index holds
+-- only OPEN alerts: it stays small no matter how much resolved history
+-- accumulates, and the lookups come back index-only with no heap fetch.
+create index if not exists alert_events_open_idx
+  on public.alert_events (asset_id, kind) where resolved_at is null;
+create index if not exists alert_events_open_rule_idx
+  on public.alert_events (alert_rule_id) where resolved_at is null;
+
+-- Unqualified companions, kept for the joins that do not carry
+-- `resolved_at is null` — the asset page's history read, and the rule
+-- cascade. suppression_id has taken zero scans since it was created and is
+-- a candidate for removal, recorded here rather than quietly dropped.
+create index if not exists alert_events_asset_id_idx
+  on public.alert_events using btree (asset_id);
+create index if not exists alert_events_alert_rule_id_idx
+  on public.alert_events using btree (alert_rule_id);
+create index if not exists alert_events_suppression_id_idx
+  on public.alert_events using btree (suppression_id);
+
+
+-- --- foreign-key companions -----------------------------------------
+--
+-- An un-indexed foreign key makes every DELETE on the parent scan the whole
+-- child table to enforce the constraint. These are what make deleting an
+-- asset, an org or a user a bounded operation rather than a full scan of
+-- everything that references it.
+create index if not exists alert_recipients_org_id_idx
+  on public.alert_recipients using btree (org_id);
+create index if not exists alert_rules_asset_id_idx
+  on public.alert_rules using btree (asset_id);
+create index if not exists alert_suppressions_asset_id_idx
+  on public.alert_suppressions using btree (asset_id);
+create index if not exists org_members_org_id_idx
+  on public.org_members using btree (org_id);
+create index if not exists dm_webhook_events_matched_asset_idx
+  on public.dm_webhook_events using btree (matched_asset);
+create index if not exists idx_assets_tailscale_device_id
+  on public.assets using btree (tailscale_device_id);
+
+
+-- --- user_sessions ---------------------------------------------------
+--
+-- resolve_session() runs on EVERY authenticated request, so this table is
+-- read far more often than its 13 rows suggest. expires_at serves
+-- cleanup_expired_sessions; active_org and user_id are the FK companions
+-- that keep deleting an org or a user from scanning every live session.
+create index if not exists user_sessions_user_idx
+  on public.user_sessions using btree (user_id);
+create index if not exists user_sessions_active_org_idx
+  on public.user_sessions using btree (active_org);
+create index if not exists user_sessions_expires_idx
+  on public.user_sessions using btree (expires_at);
