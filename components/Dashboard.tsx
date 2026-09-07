@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type TelemetrySample } from "@/lib/supabase";
+import { type TelemetrySample, type HistorySample } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { collectorStatuses, computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
@@ -38,9 +38,19 @@ type AssetWithTelemetry = FleetAsset;
 const POLL_MS = 30_000;
 const HISTORY_HOURS = 1;
 
+/**
+ * A channel the fleet grid can draw.
+ *
+ * Bounded to keys carried by BOTH the newest reading and a history row, because
+ * each metric is rendered as a value off `latest` and a sparkline off `history`
+ * — and those are now different types. A channel that exists on only one of them
+ * is a compile error here rather than an undefined tile at runtime.
+ */
+type MetricKey = Extract<keyof HistorySample, keyof TelemetrySample>;
+
 // `label` is the full form used on the cards; `short` is the compact header used
 // by the collapsed table, where seven columns share a phone's width.
-const METRICS: { key: keyof TelemetrySample; label: string; short: string; unit: string; color: string }[] = [
+const METRICS: { key: MetricKey; label: string; short: string; unit: string; color: string }[] = [
   { key: "he_lvl", label: "He Lvl", short: "He Lvl", unit: "%", color: "#22d3ee" },
   { key: "h2o_flow", label: "H2O Flow", short: "Flow", unit: "gpm", color: "#5b93f7" },
   { key: "he_press", label: "He Press", short: "Press", unit: "psi", color: "#4ade80" },
@@ -801,7 +811,7 @@ function ZoneTiles({
 }: {
   zones: EnvZone[];
   latest: TelemetrySample | null;
-  history: TelemetrySample[];
+  history: HistorySample[];
 }) {
   // Indexed through a Record rather than typed keys: the channels differ only
   // by a column-name prefix, and spelling out six accessors to satisfy the type

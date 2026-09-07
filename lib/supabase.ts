@@ -100,6 +100,43 @@ export type TelemetrySample = {
   data: Record<string, unknown> | null;
 };
 
+/**
+ * One row of fleet HISTORY — the trailing window behind each card, used only to
+ * draw sparklines and to decide which channel sections a unit has.
+ *
+ * Deliberately not a TelemetrySample. The fleet read used to `select("*")`, so
+ * every history row carried the raw MagMon `data` blob: on the live fleet that
+ * was 709 kB an hour of which 88 % was blob, shipped every 30 seconds to every
+ * open dashboard and wall display, to draw six 90-pixel sparklines. This is the
+ * projection those sparklines actually read.
+ *
+ * `coldhead` is the one thing lifted OUT of the blob rather than dropped with
+ * it: the wall display charts coldhead temperature, and it is not a typed
+ * column — devices spell it ColdheadRuO, Coldhead or ColdHead depending on
+ * firmware. org_fleet_history() resolves the three and returns a number, so no
+ * caller has to know that. See lib/fleetQueries.
+ *
+ * A channel with no reading is ABSENT, not null. No unit reports all seventeen
+ * — a magnet sends six and leaves eleven empty — and `"s1_temp_f":null,` costs
+ * as many bytes as a real reading would. Every reader already routes through
+ * envNum / numVal or a `number | null | undefined` cast, all of which treat a
+ * missing key exactly as they treat a null one.
+ *
+ * `id`, `created_at` and `asset_id` are absent because nothing renders them —
+ * asset_id is consumed server-side to group the rows and does not travel.
+ */
+export type HistorySample = { recorded_at: string } & Partial<
+  Pick<
+    TelemetrySample,
+    | "he_lvl" | "he_press" | "h2o_flow" | "h2o_temp" | "shield" | "cs1"
+    | "s1_temp_f" | "s1_rh" | "s2_temp_f" | "s2_rh" | "s3_temp_f" | "s3_rh"
+    | "ups_on_battery" | "ups_batt_pct" | "ups_input_v"
+  > & {
+    /** Coldhead temperature in K, resolved from the raw blob's three spellings. */
+    coldhead: number | null;
+  }
+>;
+
 // A fired alert, from the alert_events table (public-readable). Opened and
 // resolved by evaluate_alerts() on its cron; notified_at is stamped once a
 // notifier delivers it (Phase 3). kind is 'offline' | 'threshold'.

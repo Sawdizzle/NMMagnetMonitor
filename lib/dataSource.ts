@@ -20,7 +20,7 @@
 // the is_demo org). One data path, and the demo exercises exactly what Numed
 // uses, org scoping included.
 
-import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
+import type { Asset, TelemetrySample, TelemetryBucket, HistorySample, AlertEvent, AlertRule } from "./supabase";
 import type { HeliumPoint } from "./forecast";
 import type { AmbientResult, WeatherResult } from "./weatherTypes";
 
@@ -54,8 +54,12 @@ export type FleetAlertEvent = {
 };
 
 export type FleetAsset = Asset & {
+  // The newest reading, in full — the cards read its error codes, its cryo
+  // channels and the rest of the raw blob, so this one row keeps everything.
   latest: TelemetrySample | null;
-  history: TelemetrySample[];
+  // The trailing window, projected down to what sparklines actually read. NOT
+  // TelemetrySample: see HistorySample for why the blob does not travel.
+  history: HistorySample[];
   // Per-asset threshold overrides (alert_rules rows where asset_id = this asset).
   // Fleet-wide defaults (asset_id null) are left to the built-in FAULT_THRESHOLDS
   // / the server evaluator; only overrides ride along here. Empty when none.

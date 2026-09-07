@@ -3740,6 +3740,80 @@ grant  execute on function public.default_org_id() to service_role;
 
 
 -- =====================================================================
+-- FLEET HISTORY (the sparkline window)
+-- =====================================================================
+--
+-- The fleet read used to pull history straight off the table with
+-- `select("*")`, which meant every row carried the raw MagMon `data` blob.
+-- On the live fleet that was 829 kB of JSON an hour, shipped every 30
+-- seconds to every open dashboard and every wall display, so that six
+-- 90-pixel sparklines could be drawn from about a sixth of it.
+--
+-- This returns the seventeen channels those sparklines actually read, plus
+-- the coldhead lifted out of the blob — it is charted by the wall display
+-- but is not a typed column, and devices spell it ColdheadRuO, Coldhead or
+-- ColdHead depending on firmware. Resolving the three here means no caller
+-- has to know that. The regex guard matters: the blob is free-form device
+-- output, and an unguarded ::numeric on a non-numeric value would fail the
+-- whole request rather than blank one sparkline.
+--
+--   before  966 bytes/row, 829 kB/hour
+--   after   168 bytes/row, 144 kB/hour   (5.8x)
+--
+-- The row cap is PER ASSET, which is the part worth keeping. The old code
+-- capped at 5,000 rows across the whole fleet while ordering recorded_at
+-- ASCENDING, so when it bound it discarded the NEWEST readings and every
+-- card silently lost the right-hand edge of its trend — invisible at 17
+-- assets, arriving without warning at about 85. A per-asset cap cannot
+-- starve one unit to feed another, whatever the fleet grows to.
+--
+-- Null channels are stripped in the route layer rather than here: no unit
+-- reports all seventeen, and `"s1_temp_f":null,` costs as many bytes as a
+-- reading. See lib/fleetQueries.
+create or replace function public.org_fleet_history(
+  p_org_id uuid,
+  p_hours integer default 1,
+  p_max_per_asset integer default 240
+)
+returns table (
+  asset_id uuid, recorded_at timestamptz,
+  he_lvl numeric, he_press numeric, h2o_flow numeric, h2o_temp numeric, shield numeric, cs1 numeric,
+  s1_temp_f numeric, s1_rh numeric, s2_temp_f numeric, s2_rh numeric, s3_temp_f numeric, s3_rh numeric,
+  ups_on_battery numeric, ups_batt_pct numeric, ups_input_v numeric,
+  coldhead numeric
+)
+language sql stable security definer set search_path to 'public'
+as $function$
+  select r.asset_id, r.recorded_at,
+         r.he_lvl, r.he_press, r.h2o_flow, r.h2o_temp, r.shield, r.cs1,
+         r.s1_temp_f, r.s1_rh, r.s2_temp_f, r.s2_rh, r.s3_temp_f, r.s3_rh,
+         r.ups_on_battery, r.ups_batt_pct, r.ups_input_v,
+         case when r.cold ~ '^\s*-?[0-9]+(\.[0-9]+)?\s*$' then btrim(r.cold)::numeric end as coldhead
+  from (
+    select t.asset_id, t.recorded_at,
+           t.he_lvl, t.he_press, t.h2o_flow, t.h2o_temp, t.shield, t.cs1,
+           t.s1_temp_f, t.s1_rh, t.s2_temp_f, t.s2_rh, t.s3_temp_f, t.s3_rh,
+           t.ups_on_battery, t.ups_batt_pct, t.ups_input_v,
+           coalesce(t.data->>'ColdheadRuO', t.data->>'Coldhead', t.data->>'ColdHead') as cold,
+           row_number() over (partition by t.asset_id order by t.recorded_at desc) as rn
+    from telemetry_samples t
+    join assets a on a.id = t.asset_id
+    where a.org_id = p_org_id
+      and t.recorded_at >= now() - make_interval(hours => greatest(least(p_hours, 24 * 7), 1))
+  ) r
+  where r.rn <= greatest(least(p_max_per_asset, 2000), 1)
+  order by r.asset_id, r.recorded_at
+$function$;
+
+-- Takes an org id and no session, so it must never be reachable from the
+-- public API: the route layer resolves the org from the session cookie
+-- first. Same reasoning as asset_telemetry_15min above.
+revoke execute on function public.org_fleet_history(uuid, integer, integer)
+  from public, anon, authenticated;
+grant  execute on function public.org_fleet_history(uuid, integer, integer) to service_role;
+
+
+-- =====================================================================
 -- INDEXES
 -- =====================================================================
 --

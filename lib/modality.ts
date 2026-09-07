@@ -23,7 +23,7 @@
 // gets two zones or three is still undecided, and the answer must not be a code
 // change. Whichever zones report are the zones that show.
 
-import type { TelemetryBucket, TelemetrySample } from "./supabase";
+import type { TelemetryBucket, TelemetrySample, HistorySample } from "./supabase";
 
 export const MODALITY_MRI = "MRI";
 export const MODALITY_PETCT = "PET/CT";
@@ -138,8 +138,15 @@ export function envNum(v: unknown): number | null {
   return null;
 }
 
-/** Anything with telemetry columns on it: a raw sample or a 15-minute bucket. */
-export type ChannelRow = TelemetrySample | TelemetryBucket | null | undefined;
+/**
+ * Anything with telemetry columns on it: a raw sample, a projected history row,
+ * or a 15-minute bucket.
+ *
+ * These helpers only ever index channel names off the row, so they do not care
+ * which of the three they are handed — which is what lets the fleet read ship
+ * the narrow HistorySample without every presence check needing to know.
+ */
+export type ChannelRow = TelemetrySample | HistorySample | TelemetryBucket | null | undefined;
 
 function anyValue(rows: readonly ChannelRow[], keys: readonly string[]): boolean {
   for (const row of rows) {

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { supabaseAdmin } from "./supabaseServer";
-import type { Asset, TelemetrySample, TelemetryBucket, AlertEvent, AlertRule } from "./supabase";
+import type { Asset, TelemetrySample, TelemetryBucket, HistorySample, AlertEvent, AlertRule } from "./supabase";
 import type {
   FleetAlertEvent,
   FleetAsset,
@@ -41,7 +41,12 @@ const PUBLIC_ASSET_COLUMNS =
   // status chip, because on a mixed unit last_sample_at alone cannot say.
   "last_magmon_sample_at, last_env_sample_at";
 
-const HISTORY_ROW_LIMIT = 5000;
+// Sparkline points kept per asset, not across the fleet — a per-asset cap is
+// what makes the bound survive fleet growth. 240 is four hours of minute-
+// resolution data, well clear of the one hour the dashboard and the wall
+// display actually ask for, so it only ever binds on a deliberately wide
+// `?hours=` and then costs the oldest points rather than the newest.
+const HISTORY_ROWS_PER_ASSET = 240;
 
 /** One row of the engineer queue: an open alert plus the asset it belongs to. */
 export type OpenAlertRow = {
@@ -139,8 +144,6 @@ export async function listOrgAssets(orgId: string): Promise<{ assets: Asset[]; e
 }
 
 export async function loadFleetForOrg(orgId: string, historyHours: number): Promise<FleetResult> {
-  const historyCutoff = new Date(Date.now() - historyHours * 60 * 60 * 1000).toISOString();
-
   const { data: assetRows, error: assetsErr } = await supabaseAdmin
     .from("assets")
     .select(PUBLIC_ASSET_COLUMNS)
@@ -162,16 +165,26 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
     { data: openEvents, error: openErr },
   ] = await Promise.all([
     supabaseAdmin.from("latest_telemetry").select("*").in("asset_id", ids),
-    supabaseAdmin
-      // recorded_at = true reading time (not created_at = ingest time), so the
-      // window and ordering stay correct now the collector batch-reports minute
-      // rows whose created_at is all "now" but recorded_at spans the hour.
-      .from("telemetry_samples")
-      .select("*")
-      .in("asset_id", ids)
-      .gte("recorded_at", historyCutoff)
-      .order("recorded_at", { ascending: true })
-      .limit(HISTORY_ROW_LIMIT),
+    // The trailing window for the sparklines, projected server-side.
+    //
+    // This was `from("telemetry_samples").select("*")`, which carried the raw
+    // MagMon `data` blob on every row: 709 kB an hour on the live fleet, 88 %
+    // of it blob, every 30 seconds to every open dashboard and wall display, to
+    // draw six 90-pixel sparklines. The RPC returns the seventeen channels those
+    // sparklines read plus the coldhead lifted out of the blob — 84 kB for the
+    // same 865 rows.
+    //
+    // It also replaces the old global `.limit(5000)`. That limit ordered
+    // recorded_at ASCENDING, so when it bound it discarded the NEWEST readings
+    // and every card silently lost the right-hand edge of its trend — harmless
+    // at 17 assets, arriving without warning at about 85. org_fleet_history
+    // caps rows PER ASSET instead, so no unit can crowd out another and every
+    // card keeps its most recent points whatever the fleet grows to.
+    supabaseAdmin.rpc("org_fleet_history", {
+      p_org_id: orgId,
+      p_hours: historyHours,
+      p_max_per_asset: HISTORY_ROWS_PER_ASSET,
+    }),
     // Per-asset overrides only; fleet-wide rows (asset_id null) stay server-side
     // with evaluate_alerts. org_id filter is belt-and-braces alongside asset_id.
     supabaseAdmin
@@ -201,11 +214,28 @@ export async function loadFleetForOrg(orgId: string, historyHours: number): Prom
   }
 
   const latestByAsset = new Map((latest ?? []).map((t) => [t.asset_id, t as TelemetrySample]));
-  const historyByAsset = new Map<string, TelemetrySample[]>();
-  for (const sample of (history ?? []) as TelemetrySample[]) {
-    const arr = historyByAsset.get(sample.asset_id) ?? [];
-    arr.push(sample);
-    historyByAsset.set(sample.asset_id, arr);
+  // asset_id groups the rows and then stops: it is the key of the map, so
+  // repeating it on all 865 rows of the response would be pure weight.
+  //
+  // Null channels are dropped rather than serialised. Every row carries a slot
+  // for all seventeen channels, but no unit reports all seventeen — a magnet
+  // sends six and leaves eleven null, and `"s1_temp_f":null,` costs the same
+  // eighteen bytes as a reading would. That was 200 of the 353 bytes in a row.
+  //
+  // Safe because every reader already goes through envNum / numVal / a
+  // `number | null | undefined` cast, all of which treat a missing key exactly
+  // as they treat null — an absent channel and a null one mean the same thing
+  // here, which is why the presence helpers index by name rather than by shape.
+  // It also self-corrects: as the fleet-wide sensor rollout fills these in, the
+  // keys come back because there is finally something in them.
+  const historyByAsset = new Map<string, HistorySample[]>();
+  for (const row of (history ?? []) as (HistorySample & { asset_id: string })[]) {
+    const { asset_id, ...sample } = row;
+    const trimmed: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(sample)) if (v !== null) trimmed[k] = v;
+    const arr = historyByAsset.get(asset_id) ?? [];
+    arr.push(trimmed as unknown as HistorySample);
+    historyByAsset.set(asset_id, arr);
   }
   const rulesByAsset = new Map<string, AlertRule[]>();
   for (const r of (rules ?? []) as AlertRule[]) {

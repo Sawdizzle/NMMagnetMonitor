@@ -796,7 +796,7 @@ function TvMetrics({
     ...(showMagmon
       ? [
           <Metric key="cold" label="Coldhead" value={cold} unit="K" digits={1}
-            series={asset.history.map((h) => coldheadFromData(h.data))} color="#38bdf8" emphasize />,
+            series={asset.history.map((h) => numVal(h.coldhead))} color="#38bdf8" emphasize />,
           <Metric key="he" label="Helium" value={numVal(asset.latest?.he_lvl)} unit="%" digits={1}
             series={asset.history.map((h) => numVal(h.he_lvl))} color="#5b93f7" />,
           <Metric key="press" label="He Press" value={numVal(asset.latest?.he_press)} unit="psi" digits={2}
