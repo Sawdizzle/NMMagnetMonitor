@@ -313,7 +313,9 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
             </div>
           )}
         </div>
-        <FieldRing status={status} size={56} />
+        {/* Alarm level, not connectivity — the same fold the fault pills above
+            it, the fleet card and the wall display all use. */}
+        <FieldRing level={alarm.level} live={status === "online"} size={56} />
       </header>
 
       {latest && showMagmon && (

@@ -7,7 +7,7 @@ import { type TelemetrySample } from "@/lib/supabase";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
 import { collectorStatuses, computeAssetHealth, connectivityStatuses, CONNECTIVITY_COLORS, minutesSince, STATUS_COLORS, STATUS_LABELS } from "@/lib/health";
-import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, groupAlertItems, ALARM_COLORS, type FaultSeverity } from "@/lib/faults";
+import { computeAssetAlarm, sortByAlarmPriority, buildAlertItems, groupAlertItems, ALARM_COLORS, ALARM_LABELS, type AssetAlarm, type FaultSeverity } from "@/lib/faults";
 import { cryoState, CRYO_COLORS, CRYO_SHORT_LABELS } from "@/lib/cryo";
 import { useFleetForecasts } from "@/lib/useFleetForecasts";
 import { useWeather } from "@/lib/useWeather";
@@ -59,6 +59,38 @@ const FAULT_METRIC: Record<string, keyof TelemetrySample> = {
   he_press: "he_press",
   shield: "shield",
 };
+
+/**
+ * What a screen reader hears for one unit, on the card and in the table.
+ *
+ * Both surfaces wrap the unit in a link, and an aria-label on a link REPLACES
+ * everything inside it — so this string is the entire accessible rendering of
+ * that unit, not an addition to it. It used to report connectivity alone
+ * ("MM-1002, online, last seen 1 minutes ago"), which meant a unit with its
+ * compressor off and its coldhead at 58 K was announced as healthy: the fault
+ * pills were on screen, inside the link, and therefore silent.
+ *
+ * The faults are the actionable part, so they are named. Connectivity needs no
+ * separate clause: when a unit is not reporting, computeAssetAlarm() synthesises
+ * the "Offline 4 h" / "Reporting stalled 30 min" fault itself, so the outage
+ * already reads out of `faults`.
+ *
+ * The age matches the "N min ago" the card and the row show, so what is heard
+ * and what is on screen are the same number.
+ */
+function assetAccessibleName(asset: AssetWithTelemetry, alarm: AssetAlarm, mins: number | null): string {
+  const state = ALARM_LABELS[alarm.level].toLowerCase();
+  const faults = alarm.faults.map((f) => `${f.label} ${f.detail}`).join(", ");
+  // "0 minutes ago" is what the card prints and what a reader would stumble
+  // over hearing; a fresh reading is spoken as what it means instead.
+  const age =
+    mins === null
+      ? "never reported"
+      : mins === 0
+        ? "reading is current"
+        : `last reading ${mins} ${mins === 1 ? "minute" : "minutes"} ago`;
+  return `${asset.name}, ${faults ? `${state}: ${faults}` : state}, ${age}. View details.`;
+}
 
 // One column per zone on a card, so the temperature row and the humidity row
 // beneath it line up zone-for-zone. Whole class names because Tailwind scans
@@ -539,7 +571,6 @@ function rowChrome(asset: AssetWithTelemetry, basePath: string) {
   const mins = minutesSince(asset.last_sample_at);
   return {
     alarm,
-    status,
     href: `${basePath}/asset/${asset.id}`,
     // Colored edge = the single folded alarm level (matches the TV card rail),
     // falling back to plain connectivity color when nothing's wrong.
@@ -550,21 +581,24 @@ function rowChrome(asset: AssetWithTelemetry, basePath: string) {
       : mins === null
         ? "never reported"
         : `${mins} min ago`,
+    // The row's coloured edge has always been alarm-aware; its accessible name
+    // was not, and announced a unit in alarm as merely "online". Both now come
+    // from the same place, so the two cannot drift apart.
+    label: assetAccessibleName(asset, alarm, mins),
   };
 }
 
 function AssetNameCell({
   asset,
   href,
-  status,
+  label,
   sub,
-  maintenance,
 }: {
   asset: AssetWithTelemetry;
   href: string;
-  status: string;
+  /** The row's full accessible name, from rowChrome — see assetAccessibleName. */
+  label: string;
   sub: string;
-  maintenance: boolean;
 }) {
   return (
     <td className="ft-asset">
@@ -572,7 +606,7 @@ function AssetNameCell({
         href={href}
         className="ft-name"
         onClick={(e) => e.stopPropagation()}
-        aria-label={`${asset.name}, ${maintenance ? "maintenance" : status}, ${sub}. View details.`}
+        aria-label={label}
       >
         <span className="ft-dot" aria-hidden="true" />
         {asset.name}
@@ -584,7 +618,7 @@ function AssetNameCell({
 
 function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: string }) {
   const router = useRouter();
-  const { alarm, status, href, edge, alarming, sub } = rowChrome(asset, basePath);
+  const { alarm, href, edge, alarming, sub, label } = rowChrome(asset, basePath);
 
   // Which cell (if any) each fault should light up, and how severely.
   const faultCell: Partial<Record<keyof TelemetrySample, FaultSeverity>> = {};
@@ -601,7 +635,7 @@ function AssetRow({ asset, basePath }: { asset: AssetWithTelemetry; basePath: st
       style={{ ["--sc" as string]: edge }}
       onClick={() => router.push(href)}
     >
-      <AssetNameCell asset={asset} href={href} status={status} sub={sub} maintenance={alarm.maintenance} />
+      <AssetNameCell asset={asset} href={href} label={label} sub={sub} />
       {METRICS.map((m) => {
         const value = asset.latest?.[m.key] as number | null | undefined;
         const sev = faultCell[m.key];
@@ -655,7 +689,7 @@ function EnvRow({
   zones: EnvZone[];
 }) {
   const router = useRouter();
-  const { alarm, status, href, edge, alarming, sub } = rowChrome(asset, basePath);
+  const { alarm, href, edge, alarming, sub, label } = rowChrome(asset, basePath);
   const t = asset.latest as unknown as Record<string, unknown> | null;
   const power = powerState(t?.ups_on_battery);
   const batt = envNum(t?.ups_batt_pct);
@@ -673,7 +707,7 @@ function EnvRow({
       style={{ ["--sc" as string]: edge }}
       onClick={() => router.push(href)}
     >
-      <AssetNameCell asset={asset} href={href} status={status} sub={sub} maintenance={alarm.maintenance} />
+      <AssetNameCell asset={asset} href={href} label={label} sub={sub} />
       {zones.map((z) => {
         const temp = envNum(t?.[`${z.key}_temp_f`]);
         const rh = envNum(t?.[`${z.key}_rh`]);
@@ -862,9 +896,12 @@ function AssetCard({
   return (
     <Link
       href={`${basePath}/asset/${asset.id}`}
-      aria-label={`${asset.name}, ${STATUS_LABELS[status]}, ${mins === null ? "never reported" : `last seen ${mins} minutes ago`}. View details.`}
+      aria-label={assetAccessibleName(asset, alarm, mins)}
       className="asset-card group rounded-2xl border border-[var(--border-soft)] bg-[var(--card)] hover:bg-[var(--card-hover)] hover:border-[var(--border)] transition-colors p-5 pl-6 flex flex-col gap-4"
-      style={{ ["--sc" as string]: STATUS_COLORS[status] }}
+      // The rail is the folded alarm level, matching the ring above it, the
+      // fleet table's row edge and the TV card. Connectivity alone painted a
+      // magnet with two critical faults green down its whole left side.
+      style={{ ["--sc" as string]: ALARM_COLORS[alarm.level] }}
     >
       <div className="flex items-start justify-between">
         <div>
@@ -874,7 +911,7 @@ function AssetCard({
             <WeatherChip weather={weather} />
           </p>
         </div>
-        <FieldRing status={status} />
+        <FieldRing level={alarm.level} live={status === "online"} />
       </div>
 
       {(alarm.faults.length > 0 || refillLabel) && (

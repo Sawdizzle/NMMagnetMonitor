@@ -15,7 +15,11 @@
 // "maintenance" level so the display never cries wolf over them.
 
 import type { FleetAsset } from "./dataSource";
-import { computeAssetHealth, isReachable, minutesSince, type HealthStatus } from "./health";
+// Extension-qualified because this is a VALUE import and tests/faults.test.mts
+// reaches it through Node's test runner, which strips types but resolves
+// specifiers literally — see the allowImportingTsExtensions note in
+// tsconfig.json. The type-only import above is erased and needs no extension.
+import { computeAssetHealth, isReachable, minutesSince, type HealthStatus } from "./health.ts";
 
 // ---- tunable thresholds --------------------------------------------------
 

@@ -1,14 +1,30 @@
-import { STATUS_COLORS, type HealthStatus } from "@/lib/health";
+import { ALARM_COLORS, type AlarmLevel } from "@/lib/faults";
 
+/**
+ * The unlabelled status ring on a fleet card and the asset header.
+ *
+ * Coloured by the folded ALARM level, not by connectivity. It used to take a
+ * HealthStatus — which answers only "did the unit phone home?" — so a unit that
+ * was reporting perfectly while its compressor was off and its coldhead sat at
+ * 58 K drew a green ring. That is the loudest signal on the card and it was
+ * saying the opposite of the fault pills directly beneath it, while the TV wall
+ * showed the same unit in red. The colour now comes from the same
+ * computeAssetAlarm() the wall display and the fleet table use.
+ *
+ * `live` stays connectivity, and only drives the pulse: colour says how the
+ * magnet IS, the heartbeat says whether we are still hearing from it. A unit in
+ * alarm that is still reporting keeps pulsing — in red.
+ */
 export default function FieldRing({
-  status,
+  level,
+  live,
   size = 44,
 }: {
-  status: HealthStatus;
+  level: AlarmLevel;
+  live: boolean;
   size?: number;
 }) {
-  const color = STATUS_COLORS[status];
-  const pulsing = status === "online";
+  const color = ALARM_COLORS[level];
   return (
     <svg width={size} height={size} viewBox="0 0 44 44" fill="none" aria-hidden="true" role="presentation">
       <circle
@@ -28,7 +44,7 @@ export default function FieldRing({
         strokeWidth="1.5"
       />
       <circle cx="22" cy="22" r="4.5" fill={color}>
-        {pulsing && (
+        {live && (
           <animate
             attributeName="opacity"
             values="1;0.4;1"
