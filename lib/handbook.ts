@@ -1,7 +1,7 @@
 import "server-only";
 
 import { listOrgAssets, loadOpenAlertsForOrg } from "./fleetQueries";
-import { COLLECTOR_VERSION } from "./piScript";
+import { COLLECTOR_VERSION } from "./collectorVersion";
 import { usesMagmon } from "./modality";
 
 /**

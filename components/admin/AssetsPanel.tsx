@@ -13,21 +13,19 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { type Asset } from "@/lib/supabase";
-import {
-  generatePiScript,
-  generateEnvPiScript,
-  generateSystemdUnit,
-  COLLECTOR_VERSION,
-  ENV_COLLECTOR_VERSION,
-} from "@/lib/piScript";
+// Only the two version strings, never the generator. lib/piScript is 62 kB of
+// Python held as template strings, and importing anything from it here shipped
+// the lot to the browser — see lib/collectorActions.
+import { COLLECTOR_VERSION, ENV_COLLECTOR_VERSION } from "@/lib/collectorVersion";
 import { MODALITIES, MODALITY_MRI, usesMagmon, modalityBadge } from "@/lib/modality";
 import { zipStore } from "@/lib/zip";
 import { actionError } from "@/lib/errors";
+import { adminBuildScript, adminBuildAllScripts } from "@/lib/collectorActions";
 import {
   adminCreateAsset,
+  adminGetAssetConfig,
   adminUpdateAsset,
   adminDeleteAsset,
-  adminGetAssetConfig,
   adminRotateGatewayToken,
   adminSetAssetMaintenance,
   type SiteGeocodeRow,
@@ -135,20 +133,10 @@ export default function AssetsPanel({
       modality: string;
     };
     setServiceUser(assetServiceUser);
-    buildScript({
-      name: created.name,
-      token: created.gateway_token,
-      // From the row the database returned, not from the form: the RPC
-      // normalises a blank modality to 'MRI', and the script must match what
-      // was actually stored rather than what was typed.
-      modality: created.modality,
-      host: created.monitor_host,
-      port: created.monitor_port,
-      username: created.monitor_username,
-      password: created.monitor_password,
-      svcUser: assetServiceUser,
-    });
-    setScriptForAsset(created.id);
+    // Built from the stored row, not the form: the RPC normalises a blank
+    // modality to 'MRI', and the script must match what was actually stored
+    // rather than what was typed.
+    await loadScript(created.id, { serviceUser: assetServiceUser });
     setAssetServiceUser("pi");
     setAssetModality(MODALITY_MRI);
   }
@@ -218,89 +206,33 @@ export default function AssetsPanel({
   // needs the device's address and credentials and the environmental branch
   // needs none of them, and a positional call with four empty strings in the
   // middle is exactly the sort of thing that ends up on the wrong Pi.
-  function buildScript(opts: {
-    name: string;
-    token: string;
-    modality: string;
-    host?: string | null;
-    port?: number;
-    username?: string;
-    password?: string;
-    svcUser?: string;
-    /**
-     * Which collector to generate, when the unit could run either.
-     *
-     * A MagMon unit that has also been fitted with a UPS or zone sensors runs
-     * BOTH collectors on the same Pi, for the same asset — NM1019 is the first.
-     * Modality alone cannot express that: it says whether there is a magnet to
-     * scrape, not what else is bolted to the trailer. Left unset, modality
-     * still decides, so nothing changes for a unit with only one of the two.
-     */
-    variant?: "magmon" | "env";
-  }) {
-    const svcUser = opts.svcUser ?? serviceUser;
-    const shared = {
-      assetName: opts.name,
-      gatewayToken: opts.token,
-      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  /**
+   * Fetch a built script for one asset and show it.
+   *
+   * The generation itself happens on the server (lib/collectorActions): the
+   * generator is 62 kB of Python held as template strings, and importing it
+   * here shipped all of it to the browser to produce a file the server could
+   * just as easily have handed over finished.
+   */
+  async function loadScript(
+    assetId: string,
+    opts: { serviceUser?: string; variant?: "magmon" | "env" } = {}
+  ) {
+    const { data, error } = await adminBuildScript(assetId, {
       intervalMinutes: pollMinutes,
-      serviceUser: svcUser,
-    };
-    if (opts.variant === "env" || !usesMagmon(opts.modality)) {
-      setScriptText(
-        generateEnvPiScript({
-          ...shared,
-          // A magnet that also carries env hardware gets a script that says so:
-          // the header is the install instructions a tech reads on the Pi, and
-          // on a mixed unit it has to mention the MagMon collector running
-          // beside it rather than claim to be the only thing on the box.
-          modality: opts.modality,
-          alongsideMagmon: usesMagmon(opts.modality),
-        })
-      );
-      setScriptVariant("env");
-      return;
-    }
-    setScriptText(
-      generatePiScript({
-        ...shared,
-        monitorHost: opts.host ?? "",
-        monitorPort: opts.port ?? 80,
-        monitorUsername: opts.username ?? "MMService",
-        monitorPassword: opts.password ?? "MagnetMonitor",
-      })
-    );
-    setScriptVariant("magmon");
+      ...opts,
+    });
+    if (error || !data) return fail(error ? actionError("Could not build the install script", error) : "Could not build the install script.");
+    setScriptText(data.script);
+    setScriptVariant(data.variant);
+    // Echo back the service user the files were actually built for, so the
+    // panel's field and the generated User= cannot disagree.
+    setServiceUser(data.serviceUser);
+    setScriptForAsset(assetId);
   }
 
   async function handleGetScriptForExisting(asset: Asset, variant?: "magmon" | "env") {
-    const { data, error } = await adminGetAssetConfig(asset.id);
-    const config = data && data[0];
-    if (error || !config) return fail(error ? actionError("Could not retrieve config", error) : "Could not retrieve config: not found.");
-    // monitor_host is nullable, and the MagMon collector needs it to reach the
-    // device. Previously a null flowed straight into the template and produced a
-    // script that could never connect; say so instead. An environmental asset is
-    // SUPPOSED to have no monitor host, so the check applies only to MagMons.
-    if (usesMagmon(asset.modality) && !config.monitor_host) {
-      return fail(`"${asset.name}" has no monitor host set. Edit the asset and add the MagMon's address before generating a script.`);
-    }
-    // Default the panel's service-user field to this asset's stored value, and
-    // build with it so the .py + unit come out with the right User=.
-    const su = asset.service_user || "pi";
-    setServiceUser(su);
-    buildScript({
-      name: asset.name,
-      token: config.gateway_token,
-      modality: asset.modality,
-      host: config.monitor_host,
-      port: config.monitor_port,
-      username: config.monitor_username,
-      password: config.monitor_password,
-      svcUser: su,
-      variant,
-    });
-    setScriptForAsset(asset.id);
+    await loadScript(asset.id, { variant });
   }
 
   async function handleRotateToken() {
@@ -348,16 +280,22 @@ export default function AssetsPanel({
     downloadFile(scriptText, `${scriptStem}${suffix}.py`, "text/x-python");
   }
 
-  function downloadUnitFile() {
+  async function downloadUnitFile() {
     const asset = assets.find((a) => a.id === scriptForAsset);
     if (!asset) return;
+    // Re-asked rather than cached alongside the script: the panel's poll
+    // interval and service user can be edited after the script was generated,
+    // and a unit file built from stale values is exactly the mismatch that
+    // puts the wrong User= on a Pi.
+    const { data, error } = await adminBuildScript(asset.id, {
+      intervalMinutes: pollMinutes,
+      serviceUser,
+      variant: scriptVariant,
+    });
+    if (error || !data) return fail(error ? actionError("Could not build the unit file", error) : "Could not build the unit file.");
     // Named per asset for the same reason as the script: nine downloads in a
     // row must not collide in ~/Downloads and get installed on the wrong Pi.
-    downloadFile(
-      generateSystemdUnit({ assetName: asset.name, serviceUser, variant: scriptVariant }),
-      `${scriptStem}-${asset.name}.service`,
-      "text/plain"
-    );
+    downloadFile(data.unit, `${scriptStem}-${asset.name}.service`, "text/plain");
   }
 
   function downloadBlob(blob: Blob, filename: string) {
@@ -376,66 +314,25 @@ export default function AssetsPanel({
     if (assets.length === 0 || downloadingAll) return;
     setDownloadingAll(true);
     try {
-      const built = await Promise.all(
-        assets.map(async (a) => {
-          const { data, error } = await adminGetAssetConfig(a.id);
-          const cfg = data && data[0];
-          if (error || !cfg) return { name: a.name, ok: false as const };
-          const env = !usesMagmon(a.modality);
-          // No monitor host = the MagMon script could never reach the device, so
-          // count it as a failure rather than emitting a broken file. An
-          // environmental asset has no monitor host by design and is exempt.
-          if (!env && !cfg.monitor_host) return { name: a.name, ok: false as const };
-          const su = a.service_user || "pi";
-          const shared = {
-            assetName: a.name,
-            gatewayToken: cfg.gateway_token,
-            supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-            intervalMinutes: pollMinutes,
-            serviceUser: su,
-          };
-          const script = env
-            ? generateEnvPiScript(shared)
-            : generatePiScript({
-                ...shared,
-                monitorHost: cfg.monitor_host as string,
-                monitorPort: cfg.monitor_port,
-                monitorUsername: cfg.monitor_username,
-                monitorPassword: cfg.monitor_password,
-              });
-          const unit = generateSystemdUnit({
-            assetName: a.name,
-            serviceUser: su,
-            variant: env ? "env" : "magmon",
-          });
-          const stem = env ? "nm-env-gateway" : "nm-magmon-gateway";
-          return { name: a.name, ok: true as const, script, unit, stem };
-        })
-      );
-
-      const files: { name: string; content: string }[] = [];
-      const failed: string[] = [];
-      for (const r of built) {
-        if (!r.ok) {
-          failed.push(r.name);
-          continue;
-        }
-        files.push({ name: `${r.name}/${r.stem}-${r.name}.py`, content: r.script });
-        files.push({ name: `${r.name}/${r.stem}-${r.name}.service`, content: r.unit });
-      }
-
+      // One call, not one per asset. This used to make an adminGetAssetConfig
+      // round trip for every unit and generate each script in the browser —
+      // seventeen sequential authorizations to build one archive.
+      const { data, error } = await adminBuildAllScripts({ intervalMinutes: pollMinutes });
+      if (error || !data) return fail(error ? actionError("Could not build the scripts", error) : "Could not build the scripts.");
+      const { files, skipped } = data;
       if (files.length === 0) {
         return fail("Could not build any scripts — no asset configs came back.");
       }
-
+      // Zipping stays here: lib/zip is 107 dependency-free lines, so moving it
+      // would save nothing and would push a megabyte of archive back through
+      // the action boundary as base64.
       downloadBlob(zipStore(files), "magmon-gateway-scripts.zip");
       const okCount = files.length / 2;
       notify(
-        failed.length
-          ? `Bundled ${okCount} asset${okCount === 1 ? "" : "s"}; skipped ${failed.length} (${failed.join(", ")}).`
+        skipped.length
+          ? `Bundled ${okCount} asset${okCount === 1 ? "" : "s"}; skipped ${skipped.length} (${skipped.join(", ")}).`
           : `Bundled scripts for all ${okCount} asset${okCount === 1 ? "" : "s"}.`,
-        failed.length ? "error" : "success"
+        skipped.length ? "error" : "success"
       );
     } finally {
       setDownloadingAll(false);

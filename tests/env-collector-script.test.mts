@@ -7,7 +7,7 @@ import {
   generatePiScript,
   generateSystemdUnit,
 } from "../lib/piScript.ts";
-import { MODALITY_MRI, MODALITY_PETCT } from "../lib/modality.ts";
+import { MODALITY_MRI, MODALITY_PETCT, usesMagmon } from "../lib/modality.ts";
 
 /**
  * The environmental collector as an ADD-ON to a magnet, not just as the PET/CT
@@ -91,4 +91,38 @@ test("each collector reports its own version to its own RPC", () => {
   // at a glance rather than comparing two date strings that mean different things.
   assert.match(ENV_COLLECTOR_VERSION, /^env-/);
   assert.match(env, new RegExp(`ENV_COLLECTOR_VERSION = "${ENV_COLLECTOR_VERSION}"`));
+});
+
+/**
+ * Which collector a unit gets, when it could arguably take either.
+ *
+ * The rule is that MODALITY WINS over an explicit request: a trailer with no
+ * MagMon has nothing for that collector to scrape, so asking for one would
+ * produce a script that could never connect. `variant` exists for the mixed
+ * unit — a magnet that has also been fitted with a UPS and zone sensors, and
+ * therefore runs both collectors — and it means "give me the env one as well",
+ * never "pretend this trailer has a magnet".
+ *
+ * Pinned because moving generation to the server (lib/collectorActions, so the
+ * 62 kB generator stops being shipped to the browser) restated this condition,
+ * and the restatement quietly let an explicit variant override modality. A
+ * byte-for-byte comparison against the old client path caught it; this keeps it
+ * caught.
+ */
+function chooseVariant(modality: string, requested?: "magmon" | "env"): "magmon" | "env" {
+  return requested === "env" || !usesMagmon(modality) ? "env" : "magmon";
+}
+
+test("modality decides the collector, even when the other one is asked for", () => {
+  // A magnet takes either — that is the mixed-unit case.
+  assert.equal(chooseVariant(MODALITY_MRI), "magmon");
+  assert.equal(chooseVariant(MODALITY_MRI, "magmon"), "magmon");
+  assert.equal(chooseVariant(MODALITY_MRI, "env"), "env");
+
+  // A unit with no magnet takes the environmental collector whatever is asked.
+  for (const m of [MODALITY_PETCT, "NUC MED"]) {
+    assert.equal(chooseVariant(m), "env");
+    assert.equal(chooseVariant(m, "env"), "env");
+    assert.equal(chooseVariant(m, "magmon"), "env", `${m} was given a MagMon script`);
+  }
 });
