@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getDataSource, type FleetAsset } from "@/lib/dataSource";
+import { usePolling } from "@/lib/usePolling";
 import { useDemo } from "@/lib/demoContext";
 import { minutesSince } from "@/lib/health";
 import {
@@ -75,26 +76,17 @@ export default function TvWall() {
   const [now, setNow] = useState<number>(() => 0);
 
   // ---- data: poll the fleet, same source as the dashboard ----------------
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const { assets: rows, error: err } = await getDataSource(demo).loadFleet(HISTORY_HOURS);
-      if (!alive) return;
-      if (err) {
-        setError(err);
-        return; // keep showing the last good frame; recover on the next tick
-      }
-      setAssets(rows);
-      setError(null);
-      setLoaded(true);
-    };
-    load();
-    const id = setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [demo]);
+  usePolling(async (signal) => {
+    const { assets: rows, error: err } = await getDataSource(demo).loadFleet(HISTORY_HOURS, signal);
+    if (signal.aborted) return;
+    if (err) {
+      setError(err);
+      return; // keep showing the last good frame; recover on the next tick
+    }
+    setAssets(rows);
+    setError(null);
+    setLoaded(true);
+  }, POLL_MS);
 
   // ---- a ticking clock (also refreshes "x min ago" + re-derives health) ---
   useEffect(() => {

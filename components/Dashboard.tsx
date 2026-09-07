@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, type ReactNode } from "react";
+import { usePolling } from "@/lib/usePolling";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type TelemetrySample, type HistorySample } from "@/lib/supabase";
@@ -144,8 +145,10 @@ export default function Dashboard() {
     localStorage.setItem(VIEW_KEY, v);
   }, []);
 
-  const load = useCallback(async () => {
-    const { assets: rows, error: err } = await getDataSource(demo).loadFleet(HISTORY_HOURS);
+  usePolling(async (signal) => {
+    const { assets: rows, error: err } = await getDataSource(demo).loadFleet(HISTORY_HOURS, signal);
+    // A superseded response must not overwrite a newer one — see usePolling.
+    if (signal.aborted) return;
     if (err) {
       setError(err);
       return;
@@ -154,16 +157,7 @@ export default function Dashboard() {
     setError(null);
     setLoading(false);
     setLastRefreshed(new Date());
-  }, [demo]);
-
-  useEffect(() => {
-    // load() is async: every setState in it runs after an await, on a
-    // later tick, not synchronously during the effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
-    const interval = setInterval(load, POLL_MS);
-    return () => clearInterval(interval);
-  }, [load]);
+  }, POLL_MS);
 
   // Sort so anything alerting (offline/stale or a value-fault like a warm
   // coldhead) floats to the top of the grid, and gather the open issues for the

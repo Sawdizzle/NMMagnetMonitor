@@ -4,8 +4,9 @@
 // weather chips. Stations report hourly at best and the server caches for ten
 // minutes, so anything faster would re-serve identical bytes.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { getDataSource } from "./dataSource";
+import { usePolling } from "./usePolling";
 import type { AmbientResult } from "./weatherTypes";
 
 const AMBIENT_POLL_MS = 10 * 60_000;
@@ -18,21 +19,12 @@ export function useAmbient(assetId: string, demo: boolean, hours: number): Ambie
   // state inside the effect would still leave.
   const [loaded, setLoaded] = useState<{ assetId: string; result: AmbientResult } | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    const run = async () => {
-      const next = await getDataSource(demo).loadAmbient(assetId, hours);
-      // Hold nothing on error: an empty trace just hides the dashed line, which
-      // is the right failure for context that is nice to have.
-      if (alive && !next.error) setLoaded({ assetId, result: next });
-    };
-    run();
-    const t = setInterval(run, AMBIENT_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [assetId, demo, hours]);
+  usePolling(async (signal) => {
+    const next = await getDataSource(demo).loadAmbient(assetId, hours, signal);
+    // Hold nothing on error: an empty trace just hides the dashed line, which
+    // is the right failure for context that is nice to have.
+    if (!signal.aborted && !next.error) setLoaded({ assetId, result: next });
+  }, AMBIENT_POLL_MS);
 
   return loaded?.assetId === assetId ? loaded.result : EMPTY;
 }

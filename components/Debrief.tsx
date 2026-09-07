@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { getDataSource, type DebriefEntry, type DebriefResult } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
+import { usePolling } from "@/lib/usePolling";
 import { NO_TELEMETRY_KINDS } from "@/lib/health";
 import OrgMark from "./OrgMark";
 
@@ -76,21 +77,12 @@ export default function Debrief() {
   const [data, setData] = useState<DebriefResult | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const result = await getDataSource(demo).loadDebrief();
-      if (!alive) return;
-      setData(result);
-      setLoading(false);
-    };
-    load();
-    const interval = setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [demo]);
+  usePolling(async (signal) => {
+    const result = await getDataSource(demo).loadDebrief(signal);
+    if (signal.aborted) return;
+    setData(result);
+    setLoading(false);
+  }, POLL_MS);
 
   if (loading && !data) {
     return (

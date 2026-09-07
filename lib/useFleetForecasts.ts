@@ -11,8 +11,9 @@
 // with its own ownership check, every 10 minutes for every open dashboard and
 // wall display. Now it is one call to loadFleetHelium.
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { getDataSource } from "./dataSource";
+import { usePolling } from "./usePolling";
 import { heliumForecast, type HeliumForecast } from "./forecast";
 
 const FLEET_FORECAST_HOURS = 24 * 7;
@@ -29,24 +30,19 @@ export function useFleetForecasts(
   // keeps the forecast load on its own slow schedule instead of restarting.
   const idsKey = useMemo(() => [...assetIds].sort().join(","), [assetIds]);
 
-  useEffect(() => {
-    if (!idsKey) return;
-    const ids = idsKey.split(",");
-    let alive = true;
-    const run = async () => {
-      const { series } = await getDataSource(demo).loadFleetHelium(FLEET_FORECAST_HOURS);
-      if (!alive) return;
+  usePolling(
+    async (signal) => {
+      const { series } = await getDataSource(demo).loadFleetHelium(FLEET_FORECAST_HOURS, signal);
+      if (signal.aborted) return;
       // Fit per asset from the one payload. An asset with no helium history
       // simply has no entry, and heliumForecast handles the empty case.
+      const ids = idsKey.split(",");
       setForecasts(Object.fromEntries(ids.map((id) => [id, heliumForecast(series[id] ?? [])])));
-    };
-    run();
-    const t = setInterval(run, FLEET_FORECAST_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [idsKey, demo]);
+    },
+    FLEET_FORECAST_POLL_MS,
+    // Nothing to forecast until the fleet list has arrived.
+    idsKey.length > 0
+  );
 
   return forecasts;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import Link from "next/link";
 import { type Asset, type TelemetrySample, type TelemetryBucket, type AlertEvent, type AlertRule } from "@/lib/supabase";
 import { getDataSource, type FleetAlertEvent, type FleetAsset } from "@/lib/dataSource";
@@ -30,6 +30,7 @@ import {
 } from "@/lib/modality";
 import { useWeather } from "@/lib/useWeather";
 import { useAmbient } from "@/lib/useAmbient";
+import { usePolling } from "@/lib/usePolling";
 import { alignAmbient } from "@/lib/ambientAlign";
 import FieldRing from "@/components/FieldRing";
 import { WeatherChip, WeatherPanel } from "@/components/SiteWeather";
@@ -69,13 +70,16 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const loadDetail = async (signal: AbortSignal) => {
     // Pre-aggregated into 15-minute averaged buckets (at most 96 rows for a 24h
     // window in the live path) so the chart/table cost is fixed regardless of
     // how many raw readings a gateway actually sent.
     const { asset: assetRow, latest: latestRow, buckets: bucketRows, alertRules: rules, error: err } = await getDataSource(
       demo
-    ).loadAssetDetail(assetId, HISTORY_HOURS);
+    ).loadAssetDetail(assetId, HISTORY_HOURS, signal);
+
+    // A superseded response must not overwrite a newer one — see usePolling.
+    if (signal.aborted) return;
 
     if (err || !assetRow) {
       setError(err || "Asset not found");
@@ -89,16 +93,9 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
     setAlertRules(rules);
     setError(null);
     setLoading(false);
-  }, [assetId, demo]);
+  };
 
-  useEffect(() => {
-    // load() is async: every setState in it runs after an await, on a
-    // later tick, not synchronously during the effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
-    const interval = setInterval(load, POLL_MS);
-    return () => clearInterval(interval);
-  }, [load]);
+  usePolling(loadDetail, POLL_MS);
 
   // Outside conditions at this site. Loads fleet-wide in one request (the same
   // call the dashboard makes, so navigating here is usually a cache hit) and we
@@ -123,39 +120,24 @@ export default function AssetDetail({ assetId }: { assetId: string }) {
   const showMagmon = usesMagmon(asset?.modality);
   const [forecast, setForecast] = useState<HeliumForecast | null>(null);
   const [forecastLoaded, setForecastLoaded] = useState(false);
-  useEffect(() => {
-    if (!showMagmon) return;
-    let alive = true;
-    const run = async () => {
-      const { points } = await getDataSource(demo).loadHeliumSeries(assetId, FORECAST_HOURS);
-      if (!alive) return;
+  usePolling(
+    async (signal) => {
+      const { points } = await getDataSource(demo).loadHeliumSeries(assetId, FORECAST_HOURS, signal);
+      if (signal.aborted) return;
       setForecast(heliumForecast(points));
       setForecastLoaded(true);
-    };
-    run();
-    const id = setInterval(run, FORECAST_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [assetId, demo, showMagmon]);
+    },
+    FORECAST_POLL_MS,
+    showMagmon
+  );
 
   // Persisted alert history (alert_events), on the same 30s cadence as telemetry.
   // Failures are tolerated (empty list) so the page still renders without alerts.
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
-  useEffect(() => {
-    let alive = true;
-    const run = async () => {
-      const { events } = await getDataSource(demo).loadAssetAlerts(assetId);
-      if (alive) setAlerts(events);
-    };
-    run();
-    const id = setInterval(run, POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [assetId, demo]);
+  usePolling(async (signal) => {
+    const { events } = await getDataSource(demo).loadAssetAlerts(assetId, undefined, signal);
+    if (!signal.aborted) setAlerts(events);
+  }, POLL_MS);
 
   if (loading) return <div className="p-10 text-[var(--text-muted)]">Loading&hellip;</div>;
   if (error || !asset)

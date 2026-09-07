@@ -130,29 +130,29 @@ export type DebriefResult = {
 };
 
 export interface DataSource {
-  loadFleet(historyHours: number): Promise<FleetResult>;
-  loadAssetDetail(assetId: string, historyHours: number): Promise<AssetDetailResult>;
+  loadFleet(historyHours: number, signal?: AbortSignal): Promise<FleetResult>;
+  loadAssetDetail(assetId: string, historyHours: number, signal?: AbortSignal): Promise<AssetDetailResult>;
   // A downsampled he_lvl series (15-min buckets) over `historyHours`, for the
   // boil-off forecast. Uses the same pre-aggregation as the detail charts so a
   // multi-day window stays a few hundred rows, not tens of thousands of raw ones.
-  loadHeliumSeries(assetId: string, historyHours: number): Promise<HeliumSeriesResult>;
+  loadHeliumSeries(assetId: string, historyHours: number, signal?: AbortSignal): Promise<HeliumSeriesResult>;
   // Fleet-wide equivalent for the glance surfaces (dashboard + TV), which need
   // every asset's trend at once. Fetching them one at a time was 17 round trips
   // per refresh; this is one.
-  loadFleetHelium(historyHours: number): Promise<FleetHeliumResult>;
+  loadFleetHelium(historyHours: number, signal?: AbortSignal): Promise<FleetHeliumResult>;
   // Persisted alert_events for one asset (open + recent resolved), newest first.
   // The system-of-record view that evaluate_alerts() maintains on its cron.
-  loadAssetAlerts(assetId: string, limit?: number): Promise<AssetAlertsResult>;
+  loadAssetAlerts(assetId: string, limit?: number, signal?: AbortSignal): Promise<AssetAlertsResult>;
   // The 9am-to-9am alert digest for the whole org. Derived on read from
   // alert_events — no snapshot table, no nightly job.
-  loadDebrief(): Promise<DebriefResult>;
+  loadDebrief(signal?: AbortSignal): Promise<DebriefResult>;
   // Outside conditions at each site, keyed by asset id. Its own call rather
   // than a field on loadFleet: the fleet poll is every 30s and must not wait on
   // api.weather.gov, and weather that is ten minutes old is still weather.
-  loadWeather(): Promise<WeatherResult>;
+  loadWeather(signal?: AbortSignal): Promise<WeatherResult>;
   // Outside temperature over the same window the asset page charts, so the
   // water trend can be read against the weather that drove it.
-  loadAmbient(assetId: string, historyHours: number): Promise<AmbientResult>;
+  loadAmbient(assetId: string, historyHours: number, signal?: AbortSignal): Promise<AmbientResult>;
 }
 
 // ---- one implementation, two prefixes ------------------------------------
@@ -164,12 +164,18 @@ type WithError = { error: string | null };
 
 async function getJson<T extends WithError>(
   path: string,
-  onError: (message: string) => T
+  onError: (message: string) => T,
+  signal?: AbortSignal
 ): Promise<T> {
   try {
     // no-store: these are live readings behind a session, and a cached response
     // would be both stale and a cross-tenant hazard.
-    const res = await fetch(path, { cache: "no-store" });
+    //
+    // The signal comes from usePolling and fires when a newer tick starts, when
+    // the tab is hidden, or on unmount. An abort lands in the catch below like
+    // any other failure; callers guard on `signal.aborted` before setState, so
+    // a superseded response is dropped rather than rendered.
+    const res = await fetch(path, { cache: "no-store", signal });
     const body = (await res.json().catch(() => null)) as T | null;
     if (!res.ok) {
       // 401 = the session cookie expired or was cleared. Surfaced as an ordinary
@@ -191,53 +197,57 @@ async function getJson<T extends WithError>(
  */
 function makeDataSource(base: string): DataSource {
   return {
-    async loadFleet(historyHours) {
+    async loadFleet(historyHours, signal) {
       return getJson<FleetResult>(`${base}/fleet?hours=${historyHours}`, (error) => ({
         assets: [],
         error,
-      }));
+      }), signal);
     },
 
-    async loadAssetDetail(assetId, historyHours) {
+    async loadAssetDetail(assetId, historyHours, signal) {
       return getJson<AssetDetailResult>(
         `${base}/asset/${encodeURIComponent(assetId)}?hours=${historyHours}`,
-        (error) => ({ asset: null, latest: null, buckets: [], alertRules: [], error })
+        (error) => ({ asset: null, latest: null, buckets: [], alertRules: [], error }),
+        signal
       );
     },
 
-    async loadHeliumSeries(assetId, historyHours) {
+    async loadHeliumSeries(assetId, historyHours, signal) {
       return getJson<HeliumSeriesResult>(
         `${base}/asset/${encodeURIComponent(assetId)}/helium?hours=${historyHours}`,
-        (error) => ({ points: [], error })
+        (error) => ({ points: [], error }),
+        signal
       );
     },
 
-    async loadFleetHelium(historyHours) {
+    async loadFleetHelium(historyHours, signal) {
       return getJson<FleetHeliumResult>(`${base}/fleet/helium?hours=${historyHours}`, (error) => ({
         series: {},
         error,
-      }));
+      }), signal);
     },
 
-    async loadAssetAlerts(assetId, limit = 20) {
+    async loadAssetAlerts(assetId, limit = 20, signal) {
       return getJson<AssetAlertsResult>(
         `${base}/asset/${encodeURIComponent(assetId)}/alerts?limit=${limit}`,
-        (error) => ({ events: [], error })
+        (error) => ({ events: [], error }),
+        signal
       );
     },
 
-    async loadWeather() {
-      return getJson<WeatherResult>(`${base}/weather`, (error) => ({ weather: {}, error }));
+    async loadWeather(signal) {
+      return getJson<WeatherResult>(`${base}/weather`, (error) => ({ weather: {}, error }), signal);
     },
 
-    async loadAmbient(assetId, historyHours) {
+    async loadAmbient(assetId, historyHours, signal) {
       return getJson<AmbientResult>(
         `${base}/asset/${encodeURIComponent(assetId)}/ambient?hours=${historyHours}`,
-        (error) => ({ points: [], station: null, error })
+        (error) => ({ points: [], station: null, error }),
+        signal
       );
     },
 
-    async loadDebrief() {
+    async loadDebrief(signal) {
       return getJson<DebriefResult>(`${base}/debrief`, (error) => ({
         // A failed fetch must still carry a window the UI can render a header
         // from, so the error state looks like the page rather than a blank slab.
@@ -245,7 +255,7 @@ function makeDataSource(base: string): DataSource {
         entries: [],
         counts: { opened: 0, resolved: 0, stillOpen: 0, assetsAffected: 0 },
         error,
-      }));
+      }), signal);
     },
   };
 }

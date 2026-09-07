@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { getDataSource } from "@/lib/dataSource";
 import { useDemo } from "@/lib/demoContext";
+import { usePolling } from "@/lib/usePolling";
 
 // The dashboard's way into the morning debrief, with an overnight count on it.
 //
@@ -17,19 +18,10 @@ export default function DebriefLink() {
   const { demo, basePath } = useDemo();
   const [opened, setOpened] = useState<number | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const { counts, error } = await getDataSource(demo).loadDebrief();
-      if (alive && !error) setOpened(counts.opened);
-    };
-    load();
-    const interval = setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [demo]);
+  usePolling(async (signal) => {
+    const { counts, error } = await getDataSource(demo).loadDebrief(signal);
+    if (!signal.aborted && !error) setOpened(counts.opened);
+  }, POLL_MS);
 
   return (
     <Link
