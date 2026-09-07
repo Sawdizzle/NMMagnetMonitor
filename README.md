@@ -20,6 +20,29 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Database
+
+The schema lives in `supabase/`. One rule:
+
+```bash
+npm run db:check
+```
+
+**A database change is not finished until that passes.** It asks the running
+database what exists and fails if anything is declared nowhere in the repo.
+
+It matters because it was not always true. A 2026-09-06 audit found twelve
+indexes and forty of ninety-nine functions live in production and recorded
+nowhere — `resolve_session` and `_admin_actor` among them. A rebuild from the
+repo would not have been slow; it would not have authenticated anybody. Objects
+added through the Supabase dashboard never pass through a file, and nothing was
+comparing the two.
+
+The baseline migration has not been created yet — it needs the database
+password, which is deliberately not in `.env.local`. See
+[`supabase/migrations/README.md`](supabase/migrations/README.md) for the two
+commands.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

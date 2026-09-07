@@ -3740,6 +3740,81 @@ grant  execute on function public.default_org_id() to service_role;
 
 
 -- =====================================================================
+-- SCHEMA INVENTORY (what the repo is supposed to declare)
+-- =====================================================================
+--
+-- Backs `npm run db:check` (scripts/check-schema-drift.mjs), which answers the
+-- question this file had quietly stopped answering: does the repo still
+-- describe the database that is actually running?
+--
+-- It did not. A 2026-09-06 audit found twelve indexes and FORTY of ninety-nine
+-- functions live in production and declared nowhere here, including
+-- resolve_session, create_session and _admin_actor — a rebuild from this file
+-- would not have been slow, it would not have authenticated anybody. Nothing
+-- noticed for months because nothing was looking.
+--
+-- This exists as an RPC rather than a plain query because PostgREST exposes
+-- only the `public` schema, so pg_catalog is unreachable over REST. Returning
+-- it through a SECURITY DEFINER function is what lets the check run on the
+-- service-role key alone — no database password, no Docker, no linked project,
+-- so it works in CI as easily as on a laptop.
+--
+-- Two exclusions, both decided HERE in SQL rather than guessed at by the script:
+--
+--   constraint-backed indexes  `constraint assets_name_unique unique (name)`
+--                              inside a CREATE TABLE produces an index of that
+--                              name, and the table already declares it.
+--                              pg_constraint.conindid identifies those exactly;
+--                              a `_key$` name pattern only guesses, and got
+--                              assets_name_unique wrong on the first attempt.
+--   extension-owned functions  pg_net installs its own machinery into public.
+--                              pg_depend deptype='e' names them precisely.
+--
+-- Read-only and metadata-only: names and definitions of database objects, never
+-- row data. Still service_role-only, because an object inventory is a map of
+-- the attack surface and there is no reason for a browser to hold one.
+create or replace function public.schema_inventory()
+returns table (kind text, name text, detail text)
+language sql
+stable
+security definer
+set search_path to 'public'
+as $function$
+  select 'table', c.relname::text, null::text
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relkind = 'r'
+  union all
+  select 'view', c.relname::text, null::text
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relkind = 'v'
+  union all
+  select 'function', p.proname::text, pg_get_function_identity_arguments(p.oid)
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.prokind = 'f'
+     and not exists (select 1 from pg_depend d
+                      where d.objid = p.oid and d.deptype = 'e')
+  union all
+  select 'index', i.indexname::text, i.indexdef
+    from pg_indexes i
+    join pg_class ic on ic.relname = i.indexname
+    join pg_namespace inn on inn.oid = ic.relnamespace and inn.nspname = i.schemaname
+   where i.schemaname = 'public'
+     and not exists (select 1 from pg_constraint co where co.conindid = ic.oid)
+  union all
+  select 'trigger', t.tgname::text, c.relname::text
+    from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid
+    join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and not t.tgisinternal
+  union all
+  select 'cron', j.jobname::text, j.schedule::text from cron.job j
+$function$;
+
+revoke execute on function public.schema_inventory() from public, anon, authenticated;
+grant  execute on function public.schema_inventory() to service_role;
+
+
+-- =====================================================================
 -- FLEET HISTORY (the sparkline window)
 -- =====================================================================
 --
