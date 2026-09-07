@@ -330,16 +330,25 @@ export default function Dashboard() {
           </span>
           <div className="dash-ticker-viewport">
             {/* Two copies back-to-back → seamless -50% marquee. Pauses on hover
-                (see globals.css) so an item can be read and clicked. */}
+                (see globals.css) so an item can be read and clicked.
+                The second copy exists ONLY to make the loop seamless: it is
+                hidden from assistive tech and taken out of the tab order, or
+                every alert would be announced and tabbed through twice. Under
+                reduced motion, where there is no marquee to be seamless, CSS
+                drops it entirely and the list simply wraps. */}
             <div
               className="dash-ticker-track"
               style={{ animationDuration: `${Math.max(20, alertItems.length * 7)}s` }}
             >
-              {[...alertGroups, ...alertGroups].map((g, i) => (
+              {[...alertGroups, ...alertGroups].map((g, i) => {
+                const isClone = i >= alertGroups.length;
+                return (
                 <Link
                   key={i}
                   href={`${basePath}/asset/${g.assetId}`}
-                  className={`dash-ticker-item ${g.severity}`}
+                  aria-hidden={isClone || undefined}
+                  tabIndex={isClone ? -1 : undefined}
+                  className={`dash-ticker-item ${g.severity}${isClone ? " is-clone" : ""}`}
                 >
                   <span className="dash-ticker-dot" aria-hidden="true" />
                   <b>{g.asset}</b>
@@ -352,7 +361,8 @@ export default function Dashboard() {
                     </span>
                   ))}
                 </Link>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

@@ -603,8 +603,30 @@ button {
   border: 1px solid color-mix(in srgb, var(--rc) 40%, transparent);
   background: color-mix(in srgb, var(--rc) 12%, transparent);
 }
+/* Reduced motion: the ticker becomes a LIST, not a frozen marquee.
+   ------------------------------------------------------------------
+   Stopping the animation was not enough and was arguably worse than
+   leaving it running. The viewport is overflow:hidden and the track is
+   nowrap, so a halted marquee shows whichever alerts happen to fit the
+   card's width and clips the rest with no way to reach them — on a
+   fleet with seven open alerts, most of them simply were not there.
+
+   So the track wraps instead, the viewport stops clipping, and the
+   duplicate copy that exists only to make the crawl seamless is
+   dropped. Every alert is on screen, readable and clickable, with no
+   movement at all. */
 @media (prefers-reduced-motion: reduce) {
-  .dash-ticker-track { animation: none; }
+  .dash-ticker-track {
+    animation: none;
+    flex-wrap: wrap;
+    white-space: normal;
+    row-gap: 0.15rem;
+  }
+  .dash-ticker-viewport { overflow: visible; }
+  /* The tag column is centred against a single scrolling line; against a
+     wrapped block it should sit at the top. */
+  .dash-ticker { align-items: stretch; }
+  .dash-ticker-item.is-clone { display: none; }
 }
 
 /* ---- Asset card status rail + metric tiles ---- */
@@ -1932,4 +1954,15 @@ button {
   .tv-live-dot, .tv-card[data-level="critical"] .tv-level-dot {
     animation: none;
   }
+  /* Same reasoning as the dashboard ticker: a halted crawl clips every alert
+     past the first screenful, and on a wall display those are exactly the ones
+     nobody can scroll to. Wrap the band instead and drop the seam copy. */
+  .tv-ticker-track {
+    flex-wrap: wrap;
+    white-space: normal;
+    row-gap: 0.15rem;
+  }
+  .tv-ticker-viewport { overflow: visible; }
+  .tv-ticker { align-items: stretch; }
+  .tv-ticker-item.is-clone { display: none; }
 }

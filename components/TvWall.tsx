@@ -461,7 +461,14 @@ export default function TvWall() {
               style={{ animationDuration: `${Math.max(18, alertItems.length * 7)}s` }}
             >
               {[...alertGroups, ...alertGroups].map((g, i) => (
-                <span key={i} className={`tv-ticker-item ${g.severity}`}>
+                <span
+                  key={i}
+                  // The second copy exists only to make the crawl seamless.
+                  // Hidden from assistive tech so the wall's alert list is not
+                  // announced twice, and dropped by CSS under reduced motion.
+                  aria-hidden={i >= alertGroups.length || undefined}
+                  className={`tv-ticker-item ${g.severity}${i >= alertGroups.length ? " is-clone" : ""}`}
+                >
                   <span className="tv-ticker-dot" aria-hidden="true" />
                   <b>{g.asset}</b>
                   <span className="tv-ticker-sep">—</span>
