@@ -3108,27 +3108,61 @@ begin
       and a.last_sample_at is not null
       and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
   ),
-  totals as (
-    select l.org_id, l.id as asset_id, count(*) as n_total
+  -- ONE pass over the 24h window, with the four codes lifted out of the blob
+  -- here rather than re-read later.
+  --
+  -- This used to scan telemetry_samples TWICE — once to count each unit's
+  -- samples, once to pull the codes — which made evaluate_diagnostics the
+  -- largest single consumer of database CPU: 4.06 s a run, every five minutes.
+  -- `data` averages ~726 bytes a row, so the second pass dragged ~15 MB of
+  -- jsonb through shared buffers to read four short strings the first pass had
+  -- already visited.
+  --
+  -- `materialized` is load-bearing: without it Postgres inlines the CTE and
+  -- scans the table twice again, which is the whole problem.
+  --
+  -- Filtering on `data ? 'EC1'` is safe for BOTH uses. The device emits
+  -- EC1..EC4 as a severity-ranked list, so a row carrying any code carries EC1;
+  -- verified against 24 h of live data — 22,665 rows had EC1 and ZERO had
+  -- EC2-4 without it. It also skips the 10,363 rows in that window with no EC
+  -- data at all, which the second pass was reading for nothing.
+  --
+  -- NB: no alias here may be `r` — that is the record variable declared above,
+  -- and plpgsql substitutes it inside the statement before Postgres ever sees
+  -- the alias ("record r is not assigned yet").
+  raw as materialized (
+    select l.org_id, l.id as asset_id, l.name,
+           t.data->>'EC1' as ec1, t.data->>'EC2' as ec2,
+           t.data->>'EC3' as ec3, t.data->>'EC4' as ec4
     from live l
-    join telemetry_samples t on t.asset_id = l.id and t.created_at >= now() - interval '24 hours'
+    join telemetry_samples t
+      on t.asset_id = l.id and t.created_at >= now() - interval '24 hours'
     where t.data ? 'EC1'
-    group by 1, 2
+  ),
+  totals as (
+    select org_id, asset_id, count(*) as n_total from raw group by 1, 2
   ),
   -- PERSISTENT codes only. A code present on a fifth of a unit's samples is its
   -- steady state; a one-minute blip (CA1012 showed code 72 exactly once in a
   -- week) is not something to compare fleets on, and would flap a finding.
-  persistent as (
-    select tt.org_id, tt.asset_id, l.name, (v.code::numeric)::int as code
-    from totals tt
-    join live l on l.id = tt.asset_id
-    join telemetry_samples t on t.asset_id = tt.asset_id and t.created_at >= now() - interval '24 hours'
-    cross join lateral (values
-      (t.data->>'EC1'), (t.data->>'EC2'), (t.data->>'EC3'), (t.data->>'EC4')) as v(code)
+  --
+  -- Counted BEFORE the totals join rather than in a HAVING alongside it: with
+  -- n_total in the group key the planner sorted 42k rows and spilled 2.7 MB to
+  -- disk; grouping on the code alone hash-aggregates instead.
+  counted as (
+    select x.org_id, x.asset_id, x.name,
+           (v.code::numeric)::int as code, count(*) as n_seen
+    from raw x
+    cross join lateral (values (x.ec1), (x.ec2), (x.ec3), (x.ec4)) as v(code)
     where v.code is not null and v.code <> '0.0'
       and v.code ~ '^[0-9]+(\.[0-9]+)?$' and (v.code::numeric)::int <> 0
-    group by tt.org_id, tt.asset_id, l.name, (v.code::numeric)::int, tt.n_total
-    having count(*) >= greatest(10, tt.n_total / 5)
+    group by 1, 2, 3, 4
+  ),
+  persistent as (
+    select c.org_id, c.asset_id, c.name, c.code
+    from counted c
+    join totals tt on tt.org_id = c.org_id and tt.asset_id = c.asset_id
+    where c.n_seen >= greatest(10, tt.n_total / 5)
   ),
   sized as (select org_id, count(distinct asset_id) as fleet_n from totals group by 1),
   freq as (select org_id, code, count(distinct asset_id) as n_units from persistent group by 1, 2)
@@ -3137,12 +3171,10 @@ begin
   join freq f on f.org_id = p.org_id and f.code = p.code
   join sized s on s.org_id = p.org_id;
 
-  -- Below eight reporting units "unique in the fleet" means nothing, so a small
-  -- or half-offline fleet reports nothing rather than noise.
   for r in select * from _ec_now where fleet_n >= 8 and n_units = 1
   loop
     perform _upsert_finding(r.asset_id, 'anomaly', 'EC' || r.code, 'warning',
-      format('%s reports error code %s -- %s. No other unit in the fleet raises it.',
+      format('%s reports error code %s — %s. No other unit in the fleet raises it.',
              r.name, r.code, magmon_error_text(r.code)),
       jsonb_build_object('code', r.code, 'meaning', magmon_error_text(r.code),
                          'units_sharing_code', r.n_units, 'fleet_size', r.fleet_n));
