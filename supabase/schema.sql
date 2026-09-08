@@ -3979,6 +3979,47 @@ grant  execute on function public.org_fleet_history(uuid, integer, integer) to s
 -- inserts a minute, so autovacuum falling behind shows up here as rising
 -- Heap Fetches long before it shows up anywhere else. That is the number to
 -- watch if this query ever creeps back up.
+-- --- telemetry_samples: the device error codes ------------------------
+--
+-- evaluate_diagnostics_ec_outliers() reads the last 24 hours to compare which
+-- MagMon error codes each unit raises against the rest of its fleet. Only rows
+-- that actually carry codes matter, and a third of the window does not: the
+-- demo tenant's synthetic telemetry has no EC keys at all, so the scan was
+-- reading ~10,000 rows every five minutes purely to discard them.
+--
+-- Partial on the predicate the query already carries, so those rows are never
+-- visited rather than visited and filtered. 2 MB.
+--
+--   buffers touched by that scan   16,520 -> 8,229
+--
+-- Timed five times in one session this function goes
+-- [4015, 348, 276, 296, 280] ms: the first call in a fresh backend is an order
+-- of magnitude slower than the rest, and pg_cron runs each job in a fresh
+-- backend — which is why the cron median (~2.3 s) sits far closer to that first
+-- number than to the steady state, and why an isolated warm EXPLAIN says
+-- almost nothing about this job.
+--
+-- HONESTLY: this index did NOT move production. Cron medians across the three
+-- states, 483 / 136 / 118 runs:
+--
+--   before the rewrite        2,264 ms
+--   rewrite only              2,323 ms
+--   rewrite + this index      2,184 ms
+--
+-- Two to six per cent, against a bimodal spread with p90 at 3.2 s — noise. It
+-- is kept because it is structurally right and costs 2 MB: it halves the pages
+-- that scan must touch, and that scan grows with the fleet. But the EC scan is
+-- evidently NOT what dominates this function in production.
+--
+-- The unexamined suspect is the write path: each run makes ~150 calls to
+-- _upsert_finding / _resolve_finding, every one an INSERT or UPDATE on
+-- alert_events, while evaluate_alerts is writing to the same table every
+-- minute. That is where to look next, and it is a lock/WAL question rather
+-- than a scan one.
+create index if not exists telemetry_ec_codes_idx
+  on public.telemetry_samples (asset_id, created_at)
+  where data ? 'EC1';
+
 create index if not exists telemetry_helium_idx
   on public.telemetry_samples (asset_id, recorded_at) include (he_lvl)
   where he_lvl is not null;
