@@ -2836,6 +2836,46 @@ grant execute on function public.magmon_compressor_status_text(numeric) to anon,
 -- channels together mean one thing? Writes into alert_events like everything
 -- else, so findings inherit notification, acknowledgement and the fleet card.
 -- Scheduled every 5 minutes.
+-- BEFORE OPTIMISING THIS FUNCTION, READ THIS.
+--
+-- A 2026-09-06 audit called it "the largest single consumer of database CPU"
+-- and three separate attempts were made on it. All three were misdiagnoses,
+-- and the numbers that finally settled it are:
+--
+--   0.150 % of one core            (6,008 s of execution over 46 days)
+--   7.5 MB of WAL a day
+--   100.00 % buffer cache hit      (2 disk reads across 5,666 calls)
+--
+-- It is not a problem. It never was. What follows is the record of what it is
+-- NOT, so the next person does not spend another afternoon here:
+--
+--   NOT cold cache.      100 % cache hit; it does essentially no disk I/O.
+--   NOT write contention. alert_events updates are 99.7 % HOT, the table holds
+--                        43 dead tuples in 304 kB, and autovacuum has run
+--                        twice. There is no lock or bloat problem to find.
+--   NOT the EC scan.     Halving its buffers (telemetry_ec_codes_idx) moved
+--                        the cron median by 2-6 %, inside the noise.
+--   NOT data volume,     though it correlates: the cron median tracked the
+--     exactly            telemetry window's growth from 479 ms in August to
+--                        ~2.3 s now, which is what made volume look causal.
+--
+-- What it actually is: PER-INVOCATION PLANNING. The four loops below run 245
+-- iterations between them (101 trend + 22 cooling + 100 flatline + 22 bound),
+-- and each calls _upsert_finding or _resolve_finding, which issue their own
+-- statements — roughly 280 statement executions a run. plpgsql caches plans
+-- PER SESSION, and pg_cron launches a fresh backend for every job run, so
+-- every run pays the parse and plan cost from scratch. Timed six times inside
+-- one session the function reads [2753, 310, 306, 321, 295, 289] ms: the first
+-- call is nine times the steady state, and every cron run is a first call.
+--
+-- So if this ever does need to be faster, the lever is FEWER STATEMENTS — set
+-- based upserts in place of the 245 row-at-a-time loops — and not faster
+-- queries. Every attempt to make the queries faster has been measured and has
+-- not moved production.
+--
+-- And measure it in cron.job_run_details, never with a warm EXPLAIN ANALYZE in
+-- an open session. The two disagree by an order of magnitude, and the warm
+-- number is the misleading one.
 create or replace function public.evaluate_diagnostics()
 returns void language plpgsql security definer set search_path to 'public'
 as $function$
