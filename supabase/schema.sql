@@ -3109,17 +3109,26 @@ begin
       and a.last_sample_at >= now() - make_interval(mins => a.offline_threshold_minutes)
   ),
   -- ONE pass over the 24h window, with the four codes lifted out of the blob
-  -- here rather than re-read later.
-  --
-  -- This used to scan telemetry_samples TWICE — once to count each unit's
-  -- samples, once to pull the codes — which made evaluate_diagnostics the
-  -- largest single consumer of database CPU: 4.06 s a run, every five minutes.
-  -- `data` averages ~726 bytes a row, so the second pass dragged ~15 MB of
-  -- jsonb through shared buffers to read four short strings the first pass had
-  -- already visited.
+  -- here rather than re-read later. This used to scan telemetry_samples TWICE:
+  -- once to count each unit's samples, once to pull the codes. `data` averages
+  -- ~726 bytes a row, so the second pass dragged ~15 MB of jsonb through
+  -- shared buffers to read four short strings the first pass had visited.
   --
   -- `materialized` is load-bearing: without it Postgres inlines the CTE and
-  -- scans the table twice again, which is the whole problem.
+  -- scans the table twice again, which is the whole point of the rewrite.
+  --
+  -- HOW MUCH THIS IS WORTH, measured honestly after the fact: about 10 %.
+  -- Head to head on the same warm cache, old 301 ms vs new 265 ms, buffers
+  -- 21,378 -> 16,520 at the cost of ~1.4 MB of temp spill. The commit that
+  -- introduced this claimed 4.06 s -> 216 ms; that was a COLD-CACHE run of the
+  -- old form compared against a warm run of the new one, and it is wrong.
+  --
+  -- What actually drives this function's cost is VOLUME, not the extra scan.
+  -- Its cron median went 479 ms (late August) -> 2,264 ms (the 36 h before this
+  -- rewrite) -> 2,323 ms after it, tracking the growth of the 24-hour window as
+  -- the minute-resolution collector rollout progressed — now ~33,000 rows. Any
+  -- real fix has to read less, not read it more cleverly: a narrower window, a
+  -- rollup, or an expression index on the EC keys.
   --
   -- Filtering on `data ? 'EC1'` is safe for BOTH uses. The device emits
   -- EC1..EC4 as a severity-ranked list, so a row carrying any code carries EC1;
